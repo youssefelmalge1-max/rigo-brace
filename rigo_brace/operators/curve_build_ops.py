@@ -507,6 +507,16 @@ def _build_strict_shell(corset, settings):
     design_ops._mark_rim_boundary(
         corset, topology.boundary, topology.vertex_count
     )
+    # The finishing band cannot be recovered later: this shell is closed, so
+    # `trim_ops._edge_band_weights` finds no open boundary and returns nothing.
+    # Without the band, Smooth Trim Edge refuses to run and Vents cannot keep
+    # clear of the rim. Derive it from the rim marker, as the paired shell is
+    # the only moment the rim is still identifiable.
+    from .trim_ops import _bake_band_from_vertex_group
+
+    _bake_band_from_vertex_group(
+        corset, design_ops._RIM_BOUNDARY_GROUP, settings.edge_band
+    )
     _store_shell_properties(corset, settings, topology.boundary, radii)
     _store_outer_repair(corset, repair)
 
