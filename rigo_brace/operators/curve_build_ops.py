@@ -496,6 +496,21 @@ def _shell_geometry(source, settings, topology):
     return coordinates, faces, radii, repair
 
 
+def _mark_rim_fillet_points(corset, first_index, end_index):
+    """Add the rounded rim's intermediate profile points to the rim group.
+
+    Everything from the end of the paired inner/outer block onward was created
+    by `_rim_profile`, so the range is exactly the fillet.
+    """
+    group = corset.vertex_groups.get(design_ops._RIM_BOUNDARY_GROUP)
+    if group is None or end_index <= first_index:
+        return 0
+    indices = list(range(first_index, min(end_index, len(corset.data.vertices))))
+    if indices:
+        group.add(indices, 1.0, "REPLACE")
+    return len(indices)
+
+
 def _build_strict_shell(corset, settings):
     source = corset.data
     topology = _shell_topology(source, settings)
@@ -507,6 +522,13 @@ def _build_strict_shell(corset, settings):
     design_ops._mark_rim_boundary(
         corset, topology.boundary, topology.vertex_count
     )
+    # `_mark_rim_boundary` marks only the inner and outer rim rings. The rounded
+    # fillet's intermediate profile points sit beyond the paired block and were
+    # left unmarked, so manufacturing QA sampled opposing-wall distance ACROSS
+    # the fillet and reported ~0.38 mm no matter what wall was requested
+    # (measured 0.394/0.382/0.371 mm for 2/4/6 mm, while the true median was the
+    # request). That spurious minimum blocked export on every curve-built brace.
+    _mark_rim_fillet_points(corset, 2 * topology.vertex_count, len(coordinates))
     # The finishing band cannot be recovered later: this shell is closed, so
     # `trim_ops._edge_band_weights` finds no open boundary and returns nothing.
     # Without the band, Smooth Trim Edge refuses to run and Vents cannot keep

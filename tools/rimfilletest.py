@@ -44,7 +44,7 @@ def _mesh_state(brace):
 def _generate(settings, radius):
     settings.trim_fillet_radius = radius
     settings.trim_fillet_segments = 8
-    result = bpy.ops.rigo.generate_corset()
+    result = bpy.ops.rigo.generate_curve_corset()
     brace = bpy.data.objects.get("Rigo Corset")
     if result != {"FINISHED"} or brace is None:
         raise RuntimeError(f"brace generation failed at radius {radius}: {result}")

@@ -55,7 +55,7 @@ def _run():
         )
         _write(f"initial={initial} ok={initial_ok}")
 
-        generated = bpy.ops.rigo.generate_corset()
+        generated = bpy.ops.rigo.generate_curve_corset()
         brace = bpy.data.objects.get("Rigo Corset")
         brace_state = _state(scan, perimeter, brace, "BRACE")
         brace_finish_polls = all(
@@ -130,7 +130,7 @@ def _run():
         )
         _write(f"retrim={retrim_state} dirty={dirty_ok} ok={retrim_ok}")
 
-        updated = bpy.ops.rigo.generate_corset()
+        updated = bpy.ops.rigo.generate_curve_corset()
         brace = bpy.data.objects.get("Rigo Corset")
         updated_state = _state(scan, perimeter, brace, "BRACE")
         unique = [obj.name for obj in bpy.data.objects if obj.name.startswith("Rigo Corset")]
@@ -168,7 +168,7 @@ def _run():
 
         # Missing either source fingerprint must stale-block a legacy or
         # corrupt brace instead of allowing it through manufacturing QA.
-        restored = bpy.ops.rigo.generate_corset()
+        restored = bpy.ops.rigo.generate_curve_corset()
         brace = bpy.data.objects.get("Rigo Corset")
         del brace["rigo_source_trim_signature"]
         missing_record_qa = evaluate_brace_qa(bpy.context, brace)
@@ -188,7 +188,7 @@ def _run():
 
         # Force an unexpected exception after the private base is created.
         # The last canonical objects and working view must remain intact.
-        restored_again = bpy.ops.rigo.generate_corset()
+        restored_again = bpy.ops.rigo.generate_curve_corset()
         brace = bpy.data.objects.get("Rigo Corset")
         valid_base = bpy.data.objects.get("Rigo Corset Base")
         prior_mode = settings.design_view_mode
@@ -203,7 +203,7 @@ def _run():
         unexpected_error = ""
         unexpected_raised = False
         try:
-            unexpected_result = bpy.ops.rigo.generate_corset()
+            unexpected_result = bpy.ops.rigo.generate_curve_corset()
         except RuntimeError as error:
             unexpected_result = {"CANCELLED"}
             unexpected_error = str(error)

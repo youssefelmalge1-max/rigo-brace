@@ -617,26 +617,23 @@ def _draw_design(layout, context):
     row = box.row(align=True)
     row.prop(settings, "reinforcement", toggle=True)
     row.prop(settings, "symmetrical", toggle=True)
-    curve_row = box.row()
-    curve_row.enabled = perimeter is not None
-    curve_row.operator(
-        "rigo.generate_curve_corset",
-        text="Generate Curve Brace (Recommended)",
-        icon="CURVE_BEZCIRCLE",
-    )
+    # One generator. The retired legacy builder never read the paint mask, so
+    # it could keep the complement of what the orthotist painted, and it had no
+    # connected-component check, which is how a brace in detached pieces reached
+    # a user. `rigo.generate_corset` is gone; this is the only build path.
     generate_row = box.row()
     generate_row.enabled = perimeter is not None
     if brace is None:
-        generate_text = "Legacy Generate Brace"
+        generate_text = "Generate Brace"
         generate_icon = "CHECKMARK"
     elif dirty:
-        generate_text = "Legacy Update Brace"
+        generate_text = "Update Brace"
         generate_icon = "FILE_REFRESH"
     else:
-        generate_text = "Legacy Rebuild Brace"
+        generate_text = "Rebuild Brace"
         generate_icon = "FILE_REFRESH"
     generate_row.operator(
-        "rigo.generate_corset", text=generate_text, icon=generate_icon
+        "rigo.generate_curve_corset", text=generate_text, icon=generate_icon
     )
     if brace is not None:
         built_thickness = brace.get("rigo_requested_thickness_mm")

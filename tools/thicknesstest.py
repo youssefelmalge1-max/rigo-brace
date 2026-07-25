@@ -108,7 +108,7 @@ def _evaluated_wall_measurement(context, brace):
 
 def _build(settings, requested):
     settings.corset_thickness = requested
-    result = bpy.ops.rigo.generate_corset()
+    result = bpy.ops.rigo.generate_curve_corset()
     brace = bpy.data.objects.get("Rigo Corset")
     boundary, non_manifold, volume = _mesh_metrics(brace)
     pair_min = float(brace.get("rigo_pair_min_thickness_mm", -1.0))
@@ -219,7 +219,7 @@ def _run():
         settings.corset_thickness = 12.0
         infeasible_error = ""
         try:
-            infeasible_result = bpy.ops.rigo.generate_corset()
+            infeasible_result = bpy.ops.rigo.generate_curve_corset()
         except RuntimeError as error:
             infeasible_result = {"CANCELLED"}
             infeasible_error = str(error)

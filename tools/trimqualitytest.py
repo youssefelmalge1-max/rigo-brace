@@ -104,9 +104,27 @@ def _topology(corset):
     return boundary, non_manifold
 
 
+def _component_count(obj):
+    neighbours = {vertex.index: set() for vertex in obj.data.vertices}
+    for edge in obj.data.edges:
+        first, second = edge.vertices
+        neighbours[first].add(second)
+        neighbours[second].add(first)
+    remaining = set(neighbours)
+    components = 0
+    while remaining:
+        components += 1
+        pending = [remaining.pop()]
+        while pending:
+            linked = neighbours[pending.pop()] & remaining
+            remaining.difference_update(linked)
+            pending.extend(linked)
+    return components
+
+
 def _call_generate():
     try:
-        return bpy.ops.rigo.generate_corset(), ""
+        return bpy.ops.rigo.generate_curve_corset(), ""
     except RuntimeError as error:
         return {"CANCELLED"}, str(error)
 
@@ -313,43 +331,48 @@ def _run():
         corset = bpy.data.objects.get("Rigo Corset")
         boundary, non_manifold = _topology(corset)
         qa = evaluate_brace_qa(bpy.context, corset)
-        boundary_vertices = int(corset.get("rigo_trim_boundary_vertices", 0))
-        split_edges = int(corset.get("rigo_trim_boundary_split_edges", 0))
-        mean_spacing = float(
-            corset.get("rigo_trim_boundary_mean_spacing_mm", 999.0)
+        # The boundary-spacing and transition-refinement properties asserted
+        # here previously were written only by the retired legacy builder. The
+        # curve builder reaches the same goal - a closed, well-filleted solid
+        # whose rim follows the authored trim curve - by exact intersection
+        # instead, and records its own accuracy, so gate on that rather than on
+        # the old implementation's bookkeeping.
+        build_method = str(corset.get("rigo_build_method", ""))
+        curve_max_error = float(
+            corset.get("rigo_trim_curve_max_error_mm", 999.0)
         )
-        max_spacing = float(
-            corset.get("rigo_trim_boundary_max_spacing_mm", 999.0)
+        curve_p95_error = float(
+            corset.get("rigo_trim_curve_p95_error_mm", 999.0)
         )
+        rim_edges = int(corset.get("rigo_paired_rim_edges", 0))
         fillet_radius = float(corset.get("rigo_trim_fillet_radius_mm", 0.0))
         fillet_segments = int(corset.get("rigo_trim_fillet_segments", 0))
         transition_width = float(
             corset.get("rigo_trim_transition_width_mm", 0.0)
         )
-        transition_faces = int(
-            corset.get("rigo_trim_transition_refined_faces", 0)
-        )
+        components = _component_count(corset)
         shell_ok = (
             generate_result == {"FINISHED"}
             and boundary == 0
             and non_manifold == 0
-            and boundary_vertices > 100
-            and split_edges > 0
-            and mean_spacing <= 2.0
-            and max_spacing <= 2.5
+            and components == 1
+            and build_method == "CURVE_EXACT"
+            and rim_edges > 100
+            and curve_max_error <= 5.0
+            and curve_p95_error <= 0.75
             and abs(fillet_radius - 0.30) <= 0.01
             and fillet_segments == 6
             and abs(transition_width - 30.0) <= 0.01
-            and transition_faces > 0
             and not qa["self_intersection_pairs"]
         )
         _write(
             f"shell result={generate_result} boundary={boundary} "
-            f"nonmanifold={non_manifold} boundary_vertices={boundary_vertices} "
-            f"split_edges={split_edges} mean_spacing_mm={mean_spacing:.3f} "
-            f"max_spacing_mm={max_spacing:.3f} fillet_radius_mm={fillet_radius:.3f} "
+            f"nonmanifold={non_manifold} components={components} "
+            f"method={build_method} rim_edges={rim_edges} "
+            f"curve_max_mm={curve_max_error:.4f} curve_p95_mm={curve_p95_error:.4f} "
+            f"fillet_radius_mm={fillet_radius:.3f} "
             f"fillet_segments={fillet_segments} transition_width_mm="
-            f"{transition_width:.1f} transition_faces={transition_faces} intersections="
+            f"{transition_width:.1f} intersections="
             f"{qa['self_intersection_pairs']} error={generate_error!r} ok={shell_ok}"
         )
         _write(f"PASS={curve_ok and stress_guard_ok and shell_ok}")

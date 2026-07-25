@@ -67,7 +67,7 @@ def _run():
         bpy.context.view_layer.objects.active = scan
 
         settings.edge_band = 15.0
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         corset = bpy.data.objects.get("Rigo Corset")
         weights = _band_weights(corset)
         band_ok = len(weights) > 100

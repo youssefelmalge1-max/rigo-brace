@@ -80,7 +80,7 @@ def _run():
         )
         _mark(f"phase=perimeter points={len(spline.bezier_points)} curve_ok={curve_ok}")
 
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         corset = bpy.data.objects.get("Rigo Corset")
         boundary, non_manifold, components, aspect_p95, aspect_max = _shell_metrics(corset)
         shell_ok = (

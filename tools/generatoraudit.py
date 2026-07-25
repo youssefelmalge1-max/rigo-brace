@@ -175,7 +175,7 @@ def _run():
                 angle = previous[0] + (current[0] - previous[0]) * fraction
                 waist_intersections.append(math.degrees(angle))
             previous = current
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         generated = bpy.data.objects["Rigo Corset"]
 
         bpy.ops.wm.stl_import(filepath=_REFERENCE)

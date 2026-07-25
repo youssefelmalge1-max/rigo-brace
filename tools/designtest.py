@@ -31,7 +31,7 @@ def _run():
         settings.trim_top = 30.0
         settings.trim_bottom = 30.0
         settings.opening_width = 40.0
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
 
         corset = bpy.data.objects.get("Rigo Corset")
         ok_exists = corset is not None

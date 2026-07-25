@@ -31,7 +31,7 @@ def _run():
         points = len(perimeter.data.splines[0].bezier_points) if perimeter else 0
         generation_error = ""
         try:
-            generated = bpy.ops.rigo.generate_corset() == {"FINISHED"}
+            generated = bpy.ops.rigo.generate_curve_corset() == {"FINISHED"}
         except RuntimeError as error:
             generated = False
             generation_error = str(error)

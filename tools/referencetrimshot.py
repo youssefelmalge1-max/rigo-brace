@@ -26,7 +26,7 @@ def _run():
     try:
         scan, settings = prepare_reference_design()
         settings.corset_smooth = 11
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         corset = bpy.data.objects["Rigo Corset"]
         for obj in bpy.context.scene.objects:
             obj.hide_render = True

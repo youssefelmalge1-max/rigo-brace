@@ -69,7 +69,7 @@ def _run():
 
         _scan, settings = prepare_reference_design()
         settings.corset_thickness = 4.0
-        generated = bpy.ops.rigo.generate_corset()
+        generated = bpy.ops.rigo.generate_curve_corset()
         brace = bpy.data.objects.get("Rigo Corset")
         if generated != {"FINISHED"} or brace is None:
             raise RuntimeError("reference brace generation failed")

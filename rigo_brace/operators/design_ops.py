@@ -2951,10 +2951,6 @@ class RIGO_OT_reset_outline(Operator):
 
 _CLASSES = (
     RIGO_OT_design_view,
-    RIGO_OT_generate_corset,
-    RIGO_OT_edit_outline,
-    RIGO_OT_apply_outline,
-    RIGO_OT_reset_outline,
     RIGO_OT_place_slot,
     RIGO_OT_cut_slots,
     RIGO_OT_clear_slots,

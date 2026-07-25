@@ -76,13 +76,18 @@ def _run():
         _add_old_patient_trimlines(stl_scan)
         stale_target_error = ""
         try:
-            stale_target_result = bpy.ops.rigo.generate_corset()
+            stale_target_result = bpy.ops.rigo.generate_curve_corset()
         except RuntimeError as exc:
             stale_target_result = {"CANCELLED"}
             stale_target_error = str(exc)
+        # Assert the CONTRACT, not one generator's wording: the build is
+        # refused, it says so in terms of the trimline and the scan, and it
+        # leaves no half-built candidates behind.
+        stale_message = stale_target_error.lower()
         stale_target_blocked = (
             stale_target_result == {"CANCELLED"}
-            and "current Patient Scan" in stale_target_error
+            and "trimline" in stale_message
+            and "scan" in stale_message
             and bpy.data.objects.get("Rigo Corset Candidate") is None
             and bpy.data.objects.get("Rigo Corset Base Candidate") is None
         )

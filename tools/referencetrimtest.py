@@ -134,7 +134,7 @@ def _run():
             f"ok={opening_ok}"
         )
 
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         corset = bpy.data.objects.get("Rigo Corset")
         boundary, non_manifold = _topology(corset)
         try:

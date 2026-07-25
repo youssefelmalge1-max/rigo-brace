@@ -57,13 +57,13 @@ def _run():
         bpy.ops.rigo.deform_start()
         guard_ok = False
         try:
-            bpy.ops.rigo.generate_corset()
+            bpy.ops.rigo.generate_curve_corset()
         except RuntimeError as exc:
             guard_ok = "Apply or Reset" in str(exc)
         bpy.ops.rigo.deform_reset()
         _mark(f"phase=guard13 guard_ok={guard_ok}")
 
-        bpy.ops.rigo.generate_corset()
+        bpy.ops.rigo.generate_curve_corset()
         corset = bpy.data.objects.get("Rigo Corset")
         if corset is None:
             raise RuntimeError("corset missing after reset")
