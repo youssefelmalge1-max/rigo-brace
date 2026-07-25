@@ -19,6 +19,8 @@ from .mesh_intersections import triangle_intersection_pairs
 _AREA_EPSILON_M2 = 1.0e-12
 _RAY_EPSILON_M = 1.0e-5
 _THICKNESS_SAMPLE_LIMIT = 6000
+_RIM_PROVENANCE_GROUP = "RIGO_RIM_BOUNDARY"
+_STRUCTURAL_EXCLUSION_LIMIT = 0.20
 
 
 def _evaluated_triangles(context, brace):
@@ -132,6 +134,56 @@ def _sample_thickness_mm(
     return (minimum if valid else 0.0), valid, tested
 
 
+def _rim_provenance_vertices(brace, vertex_count):
+    """Vertices whose provenance is GENERATED rim geometry.
+
+    Membership is semantic - the builders tag the rim ring, the fillet
+    profile points and the rounded-junction bevel output into this one group
+    as they create them - so nothing here depends on index ranges or on
+    guessing from shape.
+    """
+    group = brace.vertex_groups.get(_RIM_PROVENANCE_GROUP)
+    if group is None or len(brace.data.vertices) != vertex_count:
+        return set()
+    return {
+        vertex.index
+        for vertex in brace.data.vertices
+        if any(
+            membership.group == group.index and membership.weight > 0.01
+            for membership in vertex.groups
+        )
+    }
+
+
+def _structural_wall_exclusion(triangles, rim_vertices):
+    """How much of the STRUCTURAL wall thickness sampling can never reach.
+
+    The old guard counted excluded vertices against every vertex in the
+    shell, so it measured rim tessellation density rather than safety: a
+    correctly built rounded rim reported 29.7 % while the wall it protects
+    measured 3.47 mm against a 3.0 mm requirement, and rounding the rim
+    further would have pushed it higher still.
+
+    Rim geometry carries no wall thickness to measure, so it leaves BOTH
+    sides of this ratio. A structural-wall vertex counts as excluded only
+    when EVERY triangle carrying it also touches rim geometry - then no
+    sampling stride, however fine, could ever measure it. That keeps the
+    original intent (unmeasured load-bearing wall is unsafe) while being
+    independent of how finely the rim is tessellated.
+    """
+    present = set()
+    reachable = set()
+    for triangle in triangles:
+        present.update(triangle)
+        if not any(index in rim_vertices for index in triangle):
+            reachable.update(triangle)
+    structural = present - rim_vertices
+    if not structural:
+        return 0.0, 0, 0
+    excluded = structural - reachable
+    return len(excluded) / len(structural), len(excluded), len(structural)
+
+
 def _scene_uses_millimetres(scene):
     return (
         scene.unit_settings.system == "METRIC"
@@ -163,17 +215,12 @@ def _collect_mesh_metrics(context, brace):
     centers, normals, areas, signed_volume = _face_data(vertices, triangles)
     edge_faces, boundary, nonmanifold = _topology_counts(triangles)
     bvh = BVHTree.FromPolygons(vertices, triangles, all_triangles=True, epsilon=0.0)
-    rim_group = brace.vertex_groups.get("RIGO_RIM_BOUNDARY")
-    excluded_vertices = set()
-    if rim_group is not None and len(brace.data.vertices) == len(vertices):
-        excluded_vertices = {
-            vertex.index
-            for vertex in brace.data.vertices
-            if any(
-                membership.group == rim_group.index and membership.weight > 0.01
-                for membership in vertex.groups
-            )
-        }
+    excluded_vertices = _rim_provenance_vertices(brace, len(vertices))
+    (
+        structural_exclusion,
+        structural_excluded,
+        structural_total,
+    ) = _structural_wall_exclusion(triangles, excluded_vertices)
     minimum, valid_samples, tested_samples = _sample_thickness_mm(
         bvh, triangles, centers, normals, excluded_vertices
     )
@@ -192,8 +239,15 @@ def _collect_mesh_metrics(context, brace):
         "thickness_valid_samples": valid_samples,
         "thickness_tested_samples": tested_samples,
         "thickness_coverage": valid_samples / tested_samples if tested_samples else 0.0,
+        # Diagnostics: how much of the shell is generated rim, how much is
+        # excluded in total, and - the guard - how much load-bearing wall
+        # sampling can never reach.
         "thickness_excluded_vertices": len(excluded_vertices),
         "thickness_excluded_fraction": len(excluded_vertices) / len(vertices),
+        "rim_vertex_fraction": len(excluded_vertices) / len(vertices),
+        "structural_wall_vertices": structural_total,
+        "structural_wall_excluded_vertices": structural_excluded,
+        "structural_wall_exclusion_fraction": structural_exclusion,
         "edge_count": len(edge_faces),
         "signature": _geometry_signature(vertices, triangles),
     }
@@ -210,7 +264,7 @@ def _qa_failure_reasons(mesh_metrics, minimum_required, units_ok):
         (mesh_metrics["self_intersections"] > 0, f"Found {mesh_metrics['self_intersections']} self-intersecting triangle pairs"),
         (mesh_metrics["signed_volume_m3"] <= 0.0, "Brace normals are inverted or the enclosed volume is invalid"),
         (mesh_metrics["thickness_coverage"] < 0.80, f"Wall-thickness sampling coverage is only {mesh_metrics['thickness_coverage'] * 100.0:.1f}%"),
-        (mesh_metrics.get("thickness_excluded_fraction", 0.0) > 0.20, "Trim-rim exclusion covers more than 20% of the shell vertices"),
+        (mesh_metrics.get("structural_wall_exclusion_fraction", 0.0) > _STRUCTURAL_EXCLUSION_LIMIT, f"Wall-thickness sampling cannot reach {mesh_metrics.get('structural_wall_exclusion_fraction', 0.0) * 100.0:.1f}% of the structural wall"),
         (mesh_metrics["min_thickness_mm"] + 1.0e-6 < minimum_required, f"Minimum sampled wall is {mesh_metrics['min_thickness_mm']:.2f} mm; required is {minimum_required:.2f} mm"),
         (not units_ok, "Scene must use Metric / Millimeters with scale length 1.0"),
     )
