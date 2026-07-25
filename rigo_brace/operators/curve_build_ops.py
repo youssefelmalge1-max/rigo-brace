@@ -8,7 +8,7 @@ import bpy
 from bpy.types import Operator
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
-from mathutils.geometry import interpolate_bezier
+from mathutils.geometry import interpolate_bezier, intersect_point_line
 from mathutils.kdtree import KDTree
 
 from ..core import (
@@ -23,6 +23,29 @@ _CUTTER_HALF_DEPTH_M = 0.0015
 _EXACT_CUT_WELD_M = 0.000005
 _RIM_MIN_EDGE_M = 0.0001
 _CUT_SLIVER_AREA_M2 = 5.0e-9
+_RIM_SPACING_RADIUS_FACTOR = 4.0
+_RIM_SPACING_MIN_M = 0.0008
+# Capped at the finest spacing proven to articulate the smallest genuine
+# boundary feature on the reference trimline (a ~1.8 mm hairpin nub): at the
+# earlier 2.5 mm cap the collapse floor (1.25 mm) mangled that nub into a
+# fold the rim strip crossed (4 wall-vs-rim overlaps at the default 1.0 mm
+# radius request). The consequence is that delivered fillet radius is
+# spacing-limited to ~0.35 x 1.2 mm regardless of larger requests - reported
+# honestly in the stored rigo_trim_fillet_* properties.
+_RIM_SPACING_MAX_M = 0.0012
+_RIM_SPLIT_TRIGGER = 1.3
+_RIM_COLLAPSE_TRIGGER = 0.5
+_RIM_CORNER_TURN_RAD = math.radians(50.0)
+_RIM_CORNER_WINDOW = 1.5
+_RIM_RELAX_PASSES = 30
+_RIM_RELAX_STEP = 0.5
+_RIM_RELAX_CAP = 0.33
+_RIM_RELAX_MAX_TURN_RAD = math.radians(40.0)
+_RIM_REPROJECT_MAX_M = 0.00015
+_RIM_CROSSING_REPAIR_PASSES = 4
+_RIM_BAND_SLIVER_TRIGGER = 0.35
+_RIM_REPAIR_MAX_EDGE = 0.75
+_RIM_FRAME_DOT_SAFE = 0.5
 
 
 @dataclass(frozen=True)
@@ -372,7 +395,702 @@ def _count_edge_components(edges):
     return components
 
 
-def _cut_surface(context, surface, projected, retained_region):
+def _rim_target_spacing_m(settings):
+    """Boundary spacing that makes the requested fillet radius achievable.
+
+    The per-vertex rim ceiling is 0.35 x local spacing, so the spacing must
+    exceed the delivered radius by a comfortable margin; 4x leaves the ceiling
+    above the request even where relaxation settles ~25 % below target. Both
+    clamps are physical: finer than 0.8 mm re-creates the dense clusters the
+    resample exists to remove, coarser than 2.5 mm starts to straighten the
+    clinical trimline between samples.
+    """
+    requested = settings.trim_fillet_radius * 0.001
+    thickness = settings.corset_thickness * 0.001
+    radius = min(requested, thickness * 0.45)
+    return min(
+        max(_RIM_SPACING_RADIUS_FACTOR * radius, _RIM_SPACING_MIN_M),
+        _RIM_SPACING_MAX_M,
+    )
+
+
+def _bm_boundary_ring(bm):
+    """The open boundary as one deterministically ordered BMVert cycle."""
+    bm.verts.index_update()
+    linked = {}
+    for edge in bm.edges:
+        if not edge.is_boundary:
+            continue
+        first, second = edge.verts
+        linked.setdefault(first, []).append(second)
+        linked.setdefault(second, []).append(first)
+    if not linked or any(len(pair) != 2 for pair in linked.values()):
+        return []
+    start = min(linked, key=lambda vertex: vertex.index)
+    ring = [start]
+    visited = {start}
+    previous, current = None, start
+    while True:
+        following = sorted(
+            (vertex for vertex in linked[current] if vertex != previous),
+            key=lambda vertex: vertex.index,
+        )
+        if not following or following[0] in visited:
+            break
+        ring.append(following[0])
+        visited.add(following[0])
+        previous, current = current, following[0]
+    return ring if len(ring) == len(linked) else []
+
+
+def _split_long_boundary_edges(bm, spacing):
+    """Halve boundary edges until none exceeds the target spacing.
+
+    Subdivision points lie exactly on the cut surface, so this phase cannot
+    move the trimline at all.
+    """
+    for _pass in range(16):
+        long_edges = [
+            edge
+            for edge in bm.edges
+            if edge.is_boundary
+            and edge.calc_length() > spacing * _RIM_SPLIT_TRIGGER
+        ]
+        if not long_edges:
+            return
+        # use_single_edge is essential: without it a face whose edge is
+        # subdivided is NOT split - it silently becomes an n-gon carrying
+        # collinear midpoints, and triangulating that n-gon later emits the
+        # zero-area triangles the final validator rejects (measured: 3 such
+        # n-gons, one with an exactly-zero corner triple).
+        bmesh.ops.subdivide_edges(
+            bm, edges=long_edges, cuts=1, use_single_edge=True
+        )
+
+
+def _boundary_corner_anchors(ring, window):
+    """Vertices where the trimline genuinely turns, measured over a window.
+
+    Per-edge angles are noise inside the dense Exact-cut clusters, so the
+    entering and leaving directions are taken across a fixed arc length
+    instead. Anchors are pinned through collapse and relaxation: a clinical
+    corner must survive resampling in place, not be averaged away.
+    """
+    count = len(ring)
+    if count < 8:
+        return set()
+    coordinates = [vertex.co.copy() for vertex in ring]
+
+    def reach(position, direction):
+        total = 0.0
+        step = position
+        for _ in range(count):
+            following = (step + direction) % count
+            total += (coordinates[following] - coordinates[step]).length
+            step = following
+            if total >= window:
+                break
+        return coordinates[step]
+
+    anchors = set()
+    for position, vertex in enumerate(ring):
+        entering = coordinates[position] - reach(position, -1)
+        leaving = reach(position, 1) - coordinates[position]
+        if min(entering.length, leaving.length) <= 1.0e-12:
+            continue
+        if entering.angle(leaving) > _RIM_CORNER_TURN_RAD:
+            anchors.add(vertex)
+    return anchors
+
+
+def _collapse_short_boundary_edges(bm, spacing, anchors):
+    """Weld sub-spacing boundary edges without moving a pinned corner."""
+    floor = spacing * _RIM_COLLAPSE_TRIGGER
+    for _pass in range(64):
+        bm.verts.index_update()
+        short = sorted(
+            (
+                edge
+                for edge in bm.edges
+                if edge.is_boundary and edge.calc_length() < floor
+            ),
+            key=lambda edge: (
+                edge.calc_length(),
+                min(vertex.index for vertex in edge.verts),
+            ),
+        )
+        if not short:
+            return
+        used = set()
+        targetmap = {}
+        for edge in short:
+            first, second = sorted(
+                edge.verts, key=lambda vertex: vertex.index
+            )
+            if first in used or second in used:
+                continue
+            if first in anchors and second in anchors:
+                continue
+            if second in anchors:
+                first, second = second, first
+            elif first not in anchors:
+                first.co = (first.co + second.co) * 0.5
+            targetmap[second] = first
+            used.update((first, second))
+        if not targetmap:
+            return
+        bmesh.ops.weld_verts(bm, targetmap=targetmap)
+
+
+def _relax_boundary_spacing(bm, ring, anchors, source_surface):
+    """Equalise boundary spacing by sliding vertices along the trimline.
+
+    Movement is restricted to the local chord direction (so the curve is not
+    Laplacian-shrunk), capped per pass below the shortest incident edge (so no
+    adjacent face can invert), and every new position is re-projected onto the
+    pre-cut offset mold, which keeps the boundary on the original surface by
+    construction.
+    """
+    count = len(ring)
+    originals = {vertex: vertex.co.copy() for vertex in ring}
+    if count < 4:
+        return originals
+    for _pass in range(_RIM_RELAX_PASSES):
+        snapshot = [vertex.co.copy() for vertex in ring]
+        caps = [
+            _RIM_RELAX_CAP
+            * min(
+                (edge.calc_length() for edge in vertex.link_edges),
+                default=0.0,
+            )
+            for vertex in ring
+        ]
+        moved = []
+        for position, vertex in enumerate(ring):
+            if vertex in anchors or caps[position] <= 0.0:
+                moved.append(None)
+                continue
+            before = snapshot[position - 1]
+            after = snapshot[(position + 1) % count]
+            entering = snapshot[position] - before
+            leaving = after - snapshot[position]
+            if min(entering.length, leaving.length) <= 1.0e-12:
+                moved.append(None)
+                continue
+            # At a hairpin the chord cuts across the throat, so sliding along
+            # it drags the apex into the opposite side (measured: 5 of the 8
+            # post-relax surface self-crossings). A sharply turning vertex
+            # keeps its position.
+            if entering.angle(leaving) > _RIM_RELAX_MAX_TURN_RAD:
+                moved.append(None)
+                continue
+            chord = after - before
+            if chord.length_squared <= 1.0e-24:
+                moved.append(None)
+                continue
+            tangent = chord.normalized()
+            slide = _RIM_RELAX_STEP * (
+                ((before + after) * 0.5 - snapshot[position]).dot(tangent)
+            )
+            slide = max(-caps[position], min(caps[position], slide))
+            candidate = snapshot[position] + tangent * slide
+            # The legitimate chord-to-surface correction is micrometres; a
+            # larger snap means find_nearest picked the WRONG SHEET across a
+            # concave pocket, which folds the boundary onto itself.
+            hit = source_surface.bvh.find_nearest(candidate)
+            if (
+                hit[0] is not None
+                and (hit[0] - candidate).length <= _RIM_REPROJECT_MAX_M
+            ):
+                moved.append(hit[0].copy())
+            else:
+                moved.append(candidate)
+        for vertex, position in zip(ring, moved):
+            if position is not None:
+                vertex.co = position
+    return originals
+
+
+def _surface_triangle_crossings(bm):
+    bm.verts.index_update()
+    coordinates = [tuple(vertex.co) for vertex in bm.verts]
+    triangles = []
+    owners = []
+    for face in bm.faces:
+        corners = list(face.verts)
+        for step in range(1, len(corners) - 1):
+            triangles.append(
+                (
+                    corners[0].index,
+                    corners[step].index,
+                    corners[step + 1].index,
+                )
+            )
+            owners.append(face)
+    pairs = design_ops.triangle_intersection_pairs(coordinates, triangles)
+    return pairs, owners
+
+
+def _revert_folding_relaxation(bm, originals):
+    """Undo the spacing relaxation exactly where it folded the surface.
+
+    One region of the reference mold nearly self-touches; there, any
+    tangential slide can push a boundary fan through the neighbouring sheet,
+    and no amount of collapsing repairs it without new damage (measured:
+    repair reduced 11 crossings to a stubborn 2 that moved with every
+    collapse). Uniform spacing is a preference; a non-self-intersecting
+    surface is a requirement - so the vertices involved in a crossing simply
+    return to their pre-relaxation positions, giving up uniformity only
+    there.
+    """
+    for _round in range(_RIM_CROSSING_REPAIR_PASSES):
+        pairs, owners = _surface_triangle_crossings(bm)
+        if not pairs:
+            return
+        reverted = 0
+        for first, second in pairs:
+            for face in (owners[first], owners[second]):
+                if not face.is_valid:
+                    continue
+                for vertex in face.verts:
+                    original = originals.get(vertex)
+                    if original is not None and vertex.co != original:
+                        vertex.co = original
+                        reverted += 1
+        if not reverted:
+            return
+
+
+def _boundary_vertex_set(bm):
+    return {
+        vertex
+        for edge in bm.edges
+        if edge.is_boundary
+        for vertex in edge.verts
+    }
+
+
+def _collapse_boundary_band_slivers(bm, spacing):
+    """Remove the Exact cut's interior sliver fans behind the boundary.
+
+    The cut scatters 0.2-0.4 mm interior edges immediately behind the
+    trimline. Sliding the boundary above them folds those slivers over their
+    neighbours (measured: every post-relax surface self-crossing involved
+    one). Only interior-interior edges are collapsed: merging two interior
+    vertices can neither pinch the boundary loop nor seal a boundary edge,
+    which both happen when an interior vertex is welded INTO the boundary.
+    """
+    floor = spacing * _RIM_BAND_SLIVER_TRIGGER
+    for _pass in range(16):
+        boundary_vertices = _boundary_vertex_set(bm)
+        band_faces = {
+            face
+            for vertex in boundary_vertices
+            for face in vertex.link_faces
+        }
+        bm.verts.index_update()
+        used = set()
+        targets = []
+        for edge in sorted(
+            (
+                edge
+                for face in band_faces
+                for edge in face.edges
+                if edge.calc_length() < floor
+                and not any(
+                    vertex in boundary_vertices for vertex in edge.verts
+                )
+            ),
+            key=lambda edge: (
+                edge.calc_length(),
+                min(vertex.index for vertex in edge.verts),
+            ),
+        ):
+            start, end = edge.verts
+            if start in used or end in used:
+                continue
+            targets.append(edge)
+            used.update((start, end))
+        if not targets:
+            return
+        bmesh.ops.collapse(bm, edges=targets)
+
+
+def _repair_boundary_sliver_crossings(bm, spacing):
+    """Collapse the sliver edges of locally crossing surface triangles.
+
+    The Exact cut leaves grazing contacts whose triangles share a vertex, so
+    the intersection test treats them as adjacent and ignores them; splitting
+    the boundary separates the sharing and they surface as genuine crossings
+    (measured: 3 on the reference brace, sliver edges 0.26-0.51 mm). Only two
+    kinds of edge may be collapsed: a genuine boundary edge between
+    ring-adjacent vertices, or a short interior-interior edge. Welding an
+    interior vertex into a boundary vertex seals the adjacent boundary edge,
+    and welding two non-adjacent boundary vertices pinches the loop into a
+    figure-8 - both were measured to corrupt the boundary valence.
+    """
+    ceiling = spacing * _RIM_REPAIR_MAX_EDGE
+    for _pass in range(_RIM_CROSSING_REPAIR_PASSES):
+        pairs, owners = _surface_triangle_crossings(bm)
+        if not pairs:
+            return
+        boundary_vertices = _boundary_vertex_set(bm)
+        ring = _bm_boundary_ring(bm)
+        positions = {vertex: index for index, vertex in enumerate(ring)}
+        count = len(ring)
+        used = set()
+        targets = []
+        for first, second in sorted(pairs):
+            for face in (owners[first], owners[second]):
+                if not face.is_valid:
+                    continue
+                for edge in sorted(
+                    face.edges,
+                    key=lambda candidate: (
+                        candidate.calc_length(),
+                        min(vertex.index for vertex in candidate.verts),
+                    ),
+                ):
+                    start, end = edge.verts
+                    if start in used or end in used:
+                        continue
+                    interior = (
+                        start not in boundary_vertices
+                        and end not in boundary_vertices
+                    )
+                    if interior:
+                        if edge.calc_length() >= ceiling:
+                            continue
+                    elif edge.is_boundary:
+                        first_ring = positions.get(start)
+                        second_ring = positions.get(end)
+                        if first_ring is None or second_ring is None:
+                            continue
+                        gap = min(
+                            (first_ring - second_ring) % count,
+                            (second_ring - first_ring) % count,
+                        )
+                        if gap != 1:
+                            continue
+                    else:
+                        continue
+                    targets.append(edge)
+                    used.update((start, end))
+                    break
+        if not targets:
+            return
+        bmesh.ops.collapse(bm, edges=targets)
+
+
+def _fan_triangulate_face(bm, face, root):
+    while face.is_valid and len(face.verts) > 3:
+        corners = list(face.verts)
+        here = corners.index(root)
+        target = corners[(here + 2) % len(corners)]
+        try:
+            new_face, _loop = bmesh.utils.face_split(face, root, target)
+        except ValueError:
+            return
+        pieces = [
+            piece
+            for piece in (face, new_face)
+            if piece.is_valid and root in set(piece.verts)
+        ]
+        if not pieces:
+            return
+        face = max(pieces, key=lambda piece: len(piece.verts))
+
+
+def _triangulate_boundary_ngons(bm):
+    """Take n-gon triangulation out of Blender's hands near the boundary.
+
+    Faces with five or more corners exist only where the resample phases
+    merged or split geometry. Leaving them to downstream ear-clipping emitted
+    both zero-area triangles (collinear corners that are NOT consecutive, so
+    the quad-corner splitter cannot see them) and boundary-shortcut
+    diagonals. Fanning from an interior corner is deterministic and can
+    produce neither; an all-boundary n-gon fans from its kink middle, the
+    same corner the ear splitter would choose.
+    """
+    boundary_vertices = _boundary_vertex_set(bm)
+    ring = _bm_boundary_ring(bm)
+    positions = {vertex: index for index, vertex in enumerate(ring)}
+    count = max(1, len(ring))
+    bm.verts.index_update()
+    ngons = sorted(
+        (face for face in bm.faces if len(face.verts) > 4),
+        key=lambda face: min(vertex.index for vertex in face.verts),
+    )
+    for face in ngons:
+        if not face.is_valid:
+            continue
+        corners = list(face.verts)
+        interior = sorted(
+            (vertex for vertex in corners if vertex not in boundary_vertices),
+            key=lambda vertex: vertex.index,
+        )
+        if interior:
+            root = interior[0]
+        else:
+            members = set(corners)
+            middles = sorted(
+                (
+                    vertex
+                    for vertex in corners
+                    if positions.get(vertex) is not None
+                    and ring[positions[vertex] - 1] in members
+                    and ring[(positions[vertex] + 1) % count] in members
+                ),
+                key=lambda vertex: vertex.index,
+            )
+            root = middles[0] if middles else min(
+                corners, key=lambda vertex: vertex.index
+            )
+        _fan_triangulate_face(bm, face, root)
+
+
+def _rotate_zero_area_triangles(bm):
+    """Resolve collinear triangles by flipping their base diagonal.
+
+    A collinear triangle cannot be dissolved (its edges are full length) and
+    collapsing it would move or seal boundary geometry. Rotating its longest
+    interior edge re-pairs it with the neighbouring face's off-line corner:
+    no vertex moves, boundary valence is untouched, and both resulting
+    triangles have area.
+    """
+    for _pass in range(4):
+        bm.verts.index_update()
+        rotten = sorted(
+            (
+                face
+                for face in bm.faces
+                if len(face.verts) == 3 and face.calc_area() <= 1.0e-11
+            ),
+            key=lambda face: min(vertex.index for vertex in face.verts),
+        )
+        if not rotten:
+            return
+        used = set()
+        targets = []
+        for face in rotten:
+            longest = max(
+                face.edges,
+                key=lambda edge: (
+                    edge.calc_length(),
+                    -min(vertex.index for vertex in edge.verts),
+                ),
+            )
+            if (
+                longest.is_boundary
+                or longest in used
+                or len(longest.link_faces) != 2
+            ):
+                continue
+            targets.append(longest)
+            used.add(longest)
+        if not targets:
+            return
+        bmesh.ops.rotate_edges(bm, edges=targets, use_ccw=False)
+
+
+def _split_collinear_quad_corners(bm):
+    """Pre-empt the zero-area triangle hiding inside a healthy-looking quad.
+
+    A collapse can leave a quad with three collinear corners (measured: one,
+    its middle corner the exact midpoint of a 2.55 mm chord). The quad has
+    area, so dissolve_degenerate ignores it - but downstream triangulation
+    emits a zero-area triangle from those three corners, which the final
+    validator rejects. Splitting through the collinear corner decides the
+    triangulation here, where both halves are known to have area.
+    """
+    targets = []
+    for face in bm.faces:
+        corners = list(face.verts)
+        count = len(corners)
+        if count < 4:
+            continue
+        for position in range(count):
+            previous = corners[position - 1].co
+            middle = corners[position].co
+            following = corners[(position + 1) % count].co
+            cross = (middle - previous).cross(following - previous)
+            if 0.5 * cross.length <= 1.0e-11:
+                targets.append(
+                    (
+                        face,
+                        corners[position],
+                        corners[(position + count // 2) % count],
+                    )
+                )
+                break
+    for face, middle, opposite in targets:
+        if face.is_valid:
+            bmesh.ops.connect_verts(bm, verts=[middle, opposite])
+
+
+def _split_boundary_ear_quads(bm):
+    """Force ear-prone faces to triangulate through the kink vertex.
+
+    A face with three consecutive boundary-ring corners (B1, B2, B3) can be
+    triangulated along its B1-B3 diagonal, which shortcuts the kink at B2 and
+    protrudes past the trimline - the rim strip at B2 then cuts through it
+    (measured: 15 of the 16 remaining wall-vs-rim penetrations sat on such
+    quad diagonals; the diagonal never exists as a mesh edge, so no
+    edge-based repair can see it). Connecting B2 to a non-boundary corner
+    decides the triangulation here, on the safe side of the trimline.
+    """
+    ring = _bm_boundary_ring(bm)
+    if not ring:
+        return
+    positions = {vertex: index for index, vertex in enumerate(ring)}
+    count = len(ring)
+    bm.verts.index_update()
+    targets = []
+    for face in bm.faces:
+        corners = list(face.verts)
+        if len(corners) < 4:
+            continue
+        members = set(corners)
+        for vertex in corners:
+            position = positions.get(vertex)
+            if position is None:
+                continue
+            previous = ring[position - 1]
+            following = ring[(position + 1) % count]
+            if previous not in members or following not in members:
+                continue
+            here = corners.index(vertex)
+            # Prefer an interior corner: connecting the kink to another
+            # BOUNDARY corner creates a fresh shortcut chord, which the
+            # chord dissolve then removes again - a livelock that left the
+            # all-boundary quads at one site untriangulated (measured as
+            # "4 local rim overlaps" at 2 mm wall / 6 segment settings).
+            candidates = sorted(
+                (
+                    (positions.get(corner) is not None, corner.index, corner)
+                    for offset, corner in enumerate(corners)
+                    if corner not in (vertex, previous, following)
+                    and abs(offset - here) not in (1, len(corners) - 1)
+                ),
+            )
+            if candidates:
+                targets.append((face, vertex, candidates[0][2]))
+            break
+    for face, middle, opposite in targets:
+        if face.is_valid:
+            bmesh.ops.connect_verts(bm, verts=[middle, opposite])
+
+
+def _dissolve_shortcut_chords(bm):
+    """Remove wall geometry that shortcuts across a trimline kink.
+
+    Collapsing the boundary can leave "ears": faces whose corners are
+    consecutive boundary vertices, held by an interior chord edge joining
+    boundary vertices 2-4 ring steps apart. The chord's triangles protrude
+    past the boundary polyline and the rim strip cuts through them (measured:
+    every one of the 16 wall-vs-rim penetrations sat on such a chord, most as
+    the invisible DIAGONAL of a quad). Dissolving the chord merges the ear
+    into its neighbour face, and `_split_boundary_ear_quads` then picks the
+    safe diagonal through the kink vertex. Iterated, because resolving a
+    gap-3 chord exposes a gap-2 one.
+    """
+    for _pass in range(6):
+        ring = _bm_boundary_ring(bm)
+        if not ring:
+            return
+        positions = {vertex: index for index, vertex in enumerate(ring)}
+        count = len(ring)
+        bm.verts.index_update()
+        chords = []
+        for edge in sorted(
+            bm.edges,
+            key=lambda edge: min(vertex.index for vertex in edge.verts),
+        ):
+            if edge.is_boundary:
+                continue
+            first = positions.get(edge.verts[0])
+            second = positions.get(edge.verts[1])
+            if first is None or second is None:
+                continue
+            gap = min(
+                (first - second) % count, (second - first) % count
+            )
+            if 2 <= gap <= 4:
+                chords.append(edge)
+        if not chords:
+            return
+        bmesh.ops.dissolve_edges(bm, edges=chords, use_verts=False)
+        _split_boundary_ear_quads(bm)
+
+
+def _boundary_spacing_stats(bm):
+    lengths = sorted(
+        edge.calc_length() for edge in bm.edges if edge.is_boundary
+    )
+    if not lengths:
+        return 0.0, 0.0, 0.0
+    return lengths[0], lengths[len(lengths) // 2], lengths[-1]
+
+
+def _resample_cut_boundary(surface, settings, source_surface):
+    """Uniform arc-length boundary before the rim exists to consume it.
+
+    The Exact intersect scatters boundary vertices wherever cutter quads cross
+    surface edges; measured spacing on the reference brace varied 51x
+    (0.10-5.10 mm). Because the rim ceiling is 0.35 x local spacing, the
+    fillet amplitude then swung 8.6x vertex to vertex, which is the serrated,
+    rippled rim. Post-processing the radius field was measured twice to make
+    it worse; the spacing itself is the defect, so it is fixed here, upstream
+    of everything that reads the boundary.
+    """
+    spacing = _rim_target_spacing_m(settings)
+    bm = bmesh.new()
+    bm.from_mesh(surface.data)
+    before = _boundary_spacing_stats(bm)
+    _collapse_boundary_band_slivers(bm, spacing)
+    _split_long_boundary_edges(bm, spacing)
+    ring = _bm_boundary_ring(bm)
+    if not ring:
+        bm.free()
+        raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
+    anchors = _boundary_corner_anchors(
+        ring, spacing * _RIM_CORNER_WINDOW
+    )
+    _collapse_short_boundary_edges(bm, spacing, anchors)
+    ring = _bm_boundary_ring(bm)
+    if not ring:
+        bm.free()
+        raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
+    originals = _relax_boundary_spacing(bm, ring, anchors, source_surface)
+    _revert_folding_relaxation(bm, originals)
+    _repair_boundary_sliver_crossings(bm, spacing)
+    _split_boundary_ear_quads(bm)
+    _dissolve_shortcut_chords(bm)
+    # A midpoint collapse can leave a vertex exactly on a neighbouring edge -
+    # a collinear, zero-area triangle the final validator rejects outright
+    # (measured: 1 on the reference brace). One micrometre catches it without
+    # perceptibly moving anything.
+    bmesh.ops.dissolve_degenerate(bm, edges=list(bm.edges), dist=1.0e-6)
+    _triangulate_boundary_ngons(bm)
+    _split_collinear_quad_corners(bm)
+    _rotate_zero_area_triangles(bm)
+    loose = [vertex for vertex in bm.verts if not vertex.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    after = _boundary_spacing_stats(bm)
+    bm.to_mesh(surface.data)
+    bm.free()
+    surface.data.update()
+    surface["rigo_rim_spacing_target_mm"] = spacing * 1000.0
+    surface["rigo_rim_spacing_before_mm"] = [
+        value * 1000.0 for value in before
+    ]
+    surface["rigo_rim_spacing_after_mm"] = [value * 1000.0 for value in after]
+    surface["rigo_rim_corner_anchors"] = len(anchors)
+
+
+def _cut_surface(context, surface, projected, retained_region, settings):
     source_surface = design_ops._source_surface(surface.data)
     cutter = None
     try:
@@ -383,6 +1101,9 @@ def _cut_surface(context, surface, projected, retained_region):
             design_ops._remove_object_and_orphan_mesh(cutter)
     _keep_curve_interior(surface, retained_region)
     _weld_exact_cut_tolerance(surface)
+    if _boundary_loop_count(surface.data) != 1:
+        raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
+    _resample_cut_boundary(surface, settings, source_surface)
     if _boundary_loop_count(surface.data) != 1:
         raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
     design_ops._store_full_surface_normals(surface.data, source_surface)
@@ -520,18 +1241,40 @@ def _safe_rim_radii(coordinates, boundary, requested):
         turn = _local_turn_radius(coordinates, ring, position)
         if turn < math.inf:
             ceilings[index] = min(ceilings[index], 0.5 * turn)
-    # NOTE: post-processing this radius field cannot fix the serrated rim, and
-    # two attempts measurably made it worse. A running minimum over the
-    # neighbourhood smoothed the field but dragged the median radius 0.138 ->
-    # 0.060 mm, sharpening the very edge the fillet exists to round. Clamped
-    # averaging kept the size (0.124 mm) but pushed abrupt neighbour-to-
-    # neighbour changes UP (366 -> 1024 jumps over 25 %), because each vertex's
-    # ceiling still tracks the boundary's 51x spacing variation.
-    # The ceiling is 0.35 x local spacing by construction, so while the cut
-    # boundary is non-uniform the fillet must be non-uniform too. The fix
-    # belongs upstream - resample the boundary uniformly by arc length before
-    # the rim is built - not here.
+    # NOTE: post-processing this radius field cannot fix a serrated rim, and
+    # two attempts measurably made it worse (running minimum: median radius
+    # 0.138 -> 0.060 mm; clamped averaging: 366 -> 1024 abrupt jumps). The
+    # ceiling is 0.35 x local spacing by construction, so radius uniformity is
+    # delivered upstream instead, by `_resample_cut_boundary` making the
+    # spacing itself uniform before the rim is built.
     return ceilings
+
+
+def _corner_spike_limits(directions, radii, boundary):
+    """Shrink the fillet where the outward frame genuinely turns hard.
+
+    At a pinned clinical corner the adjacent outward directions can differ by
+    more than 90 degrees (measured dot -0.42 on the reference brace). The two
+    rim quads there fold across each other with the full fillet amplitude,
+    which is the vertex spike. The frames are correct - the trimline really
+    turns - so the amplitude, not the orientation, is reduced: linearly below
+    a neighbour dot of 0.5, to zero at a full reversal.
+    """
+    ring = _ordered_boundary_ring(boundary)
+    count = len(ring)
+    for position, index in enumerate(ring):
+        current = directions.get(index)
+        if current is None or index not in radii:
+            continue
+        worst = 1.0
+        for other in (ring[position - 1], ring[(position + 1) % count]):
+            neighbour = directions.get(other)
+            if neighbour is not None:
+                worst = min(worst, current.dot(neighbour))
+        if worst < _RIM_FRAME_DOT_SAFE:
+            radii[index] *= max(
+                0.0, (1.0 + worst) / (1.0 + _RIM_FRAME_DOT_SAFE)
+            )
 
 
 def _rim_profiles(coordinates, topology, radius):
@@ -542,6 +1285,7 @@ def _rim_profiles(coordinates, topology, radius):
         topology.vertex_count,
     )
     radii = _safe_rim_radii(coordinates, topology.boundary, radius)
+    _corner_spike_limits(directions, radii, topology.boundary)
     if directions.keys() != radii.keys():
         raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
     profiles = {
@@ -692,6 +1436,28 @@ def _store_shell_properties(corset, settings, boundary, radii):
     corset["rigo_trim_fillet_segments"] = int(settings.trim_fillet_segments)
 
 
+def _distance_to_polyline_m(point, samples, nearest_index):
+    """Distance to the sampled trimline POLYLINE, not to its samples.
+
+    Nearest-sample distance over-reports by up to half the ~0.6 mm sample
+    spacing for a vertex that merely sits BETWEEN samples - exactly what
+    boundary resampling produces by sliding vertices along the trimline.
+    Projecting onto the two segments around the nearest sample measures the
+    real deviation.
+    """
+    best = (point - samples[nearest_index]).length
+    count = len(samples)
+    for start in (nearest_index - 1, nearest_index):
+        first = samples[start % count]
+        second = samples[(start + 1) % count]
+        if (second - first).length_squared <= 1.0e-24:
+            continue
+        location, fraction = intersect_point_line(point, first, second)
+        if 0.0 <= fraction <= 1.0:
+            best = min(best, (point - location).length)
+    return best
+
+
 def _curve_boundary_errors_mm(surface, projected):
     tree = KDTree(len(projected.coordinates))
     for index, coordinate in enumerate(projected.coordinates):
@@ -700,7 +1466,10 @@ def _curve_boundary_errors_mm(surface, projected):
     bm = bmesh.new()
     bm.from_mesh(surface.data)
     errors = sorted(
-        tree.find(vertex.co)[2] * 1000.0
+        _distance_to_polyline_m(
+            vertex.co, projected.coordinates, tree.find(vertex.co)[1]
+        )
+        * 1000.0
         for vertex in bm.verts
         if any(edge.is_boundary for edge in vertex.link_edges)
     )
@@ -727,7 +1496,7 @@ def _build_curve_corset(context, settings, base, perimeter):
     try:
         projected = _projected_perimeter(corset, perimeter)
         retained_region = _retained_region(settings, perimeter, projected)
-        _cut_surface(context, corset, projected, retained_region)
+        _cut_surface(context, corset, projected, retained_region, settings)
         maximum, p95 = _curve_boundary_errors_mm(corset, projected)
         _build_strict_shell(corset, settings)
         design_ops._validate_finished_rim(corset)

@@ -288,3 +288,54 @@ proposed resolution for both is a mesh-native flood fill from the painted seed,
 replacing the parameterization in the containment step only.
 
 ---
+
+### #27 — Serrated / pinched / spiky rim → FIXED
+Root cause measured, not assumed: cut-boundary spacing varied 51x, and the per-vertex
+fillet ceiling (0.35 x spacing) dragged the rim amplitude with it — 8.6x radius spread,
+1455 adjacent jumps >25 %, 2 genuine frame reversals, aspect p99 7.95. Fixed upstream by
+uniform arc-length resampling of the cut boundary before the rim is built
+(`_resample_cut_boundary`): desliver, split (`use_single_edge=True` — without it faces
+become n-gons with collinear midpoints that later triangulate to zero area), corner-
+anchored collapse, tangential relaxation with fold-revert, crossing repair, and ear
+removal (interior chords and quad DIAGONALS that shortcut a trimline kink — the
+diagonal never exists as an edge, so only face-level repair sees it).
+After: spacing ratio 3.6, radius 0.17-0.30 (uniform at request), 2 jumps, 0 reversals,
+0 self-intersections, aspect p99 3.40. Verified by `rimqualitydbg` and gated forever by
+`rimresampletest` (uneven reference cut + hostile crowded/notched trimline + thin-wall
+QA negative). Commit follows this entry.
+
+### #28 — Rim-exclusion export guard still blocks curve braces → OPEN (user decision)
+With the resampled rim, a 4 mm curve-built brace passes every substantive export check
+(min wall 3.46 mm vs 3.0 required, coverage 1.0, one component, manifold, zero
+self-intersections) but `thickness_excluded_fraction` = 29.7 % > 20 % (was 40.5 %
+before resampling). The guard was calibrated for the legacy bevel rim; the rounded rim
+is legitimately vertex-dense. Decision deliberately deferred to the user.
+
+### #29 — Deep or zero-radius trimline notches are refused upstream → OPEN (documented)
+Measured while building the hostile regression fixture: a 30 mm vector-cornered notch
+folds the Exact cutter (non-manifold boundary, pre-resample); at 20 mm the 4 mm outer
+wall cannot offset around a zero-radius corner (outer-wall repair refuses); a 30 mm
+fully-rounded notch still folds the cutter; 15 mm rounded + a 3-controls-in-10-mm
+cluster builds cleanly. All refusals are transactional with the previous brace
+retained — correct behaviour for unmanufacturable input, but the error text could
+name the notch. The auto trimline itself contains one hairpin (~1.8 mm across) that
+the cut cannot follow, producing a single 5.1 mm boundary-fidelity outlier (p95 is
+0.95 mm).
+
+### #27 addendum — default 1.0 mm fillet exposed a spacing ceiling
+The trio slotbracetest / referencetrimtest / thicknesstest run the DEFAULT 1.0 mm
+fillet, which drove the resample target to 2.5 mm spacing — too coarse to articulate
+the trimline's 1.8 mm hairpin nub, whose collapsed fold the rim strip then crossed
+(4 wall-vs-rim overlaps; every audit had accidentally overridden the radius to
+0.3 mm and missed this). Fixed by capping target spacing at 1.2 mm — the finest
+configuration proven clean — so delivered fillet radius is spacing-limited to
+~0.42 mm regardless of larger requests, reported in `rigo_trim_fillet_*` and
+consistent with the property's documented contract. Two supporting fixes landed with
+it: the ear splitter prefers INTERIOR corners (connecting kink to boundary corner
+re-created the chord it was removing — a livelock), and boundary fidelity is now
+measured against the trimline POLYLINE, not its ~0.6 mm-spaced samples (sliding
+along the curve is not deviation; measured honestly the reference p95 fell
+0.948 -> 0.026 mm and the hairpin max 5.085 -> 2.733 mm - the resample barely
+moves the trimline at all).
+After all three: slotbracetest PASS; referencetrimtest and thicknesstest build
+perfect geometry (median walls 2.000/3.999/5.998 mm) and fail ONLY on the #28 guard.

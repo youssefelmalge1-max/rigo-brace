@@ -652,3 +652,56 @@ Confidence: high for the filter; the density ceiling is unresolved.
 Next action: rework the rim fillet so control density can rise, then add a
 `trim_min_radius_mm` curvature clamp (a wavelength cutoff does NOT bound turn radius:
 a 15 mm / 5 mm sinusoid still has R_min = 1.14 mm).
+
+## Lesson ID: LM-0031
+Date: 2026-07-25
+Source: rim-artifact directive (serrated/pinched/spiky rim) and its fix by uniform
+arc-length boundary resampling in `curve_build_ops._resample_cut_boundary`.
+Observation: the Exact intersect scatters cut-boundary vertices wherever cutter quads
+cross surface edges — measured spacing varied 51x (0.10-5.10 mm). Because the rim
+ceiling is 0.35 x local spacing, the fillet amplitude swung 8.6x vertex to vertex
+(1455 adjacent jumps >25 %), which IS the serration; two attempts to smooth the radius
+field post hoc both measurably made it worse. Resampling the boundary itself
+(desliver -> split -> anchor-pinned collapse -> tangential relax with fold revert ->
+crossing repair -> ear removal) delivered spacing ratio 3.6, radius ratio 1.8, 2 jumps,
+0 frame reversals, 0 self-intersections, aspect p99 7.95 -> 3.40.
+Underlying principle: when a downstream quantity is defined per-vertex from local
+mesh density, no amount of downstream filtering can beat fixing the density itself.
+Blender API gotchas paid for in blood this session:
+- `bmesh.ops.subdivide_edges` WITHOUT `use_single_edge=True` does not split the
+  adjacent face — it silently turns it into an n-gon carrying collinear midpoints,
+  and `calc_loop_triangles` later emits zero-area triangles from them.
+- A quad/n-gon whose corners are consecutive boundary vertices triangulates along an
+  invisible DIAGONAL that shortcuts the trimline kink; no edge-based repair can see
+  it. Force the diagonal (`connect_verts` through the kink) or fan from an interior
+  corner.
+- `BVHTree.find_nearest` during boundary relaxation can snap to the wrong sheet of a
+  nearly-self-touching surface; cap the accepted correction (~0.15 mm) and keep the
+  chord point otherwise.
+- Repair collapses must never weld an interior vertex INTO a boundary vertex (seals
+  the adjacent boundary edge) nor two non-ring-adjacent boundary vertices (pinches
+  the loop into a figure-8); both were measured as valence corruption.
+Clinical implication: the rim is now uniformly rounded at the requested radius
+(mean 0.296 of 0.300 mm) with measured trimline fidelity p95 0.026 mm / max 2.73 mm
+(the max sits at a hairpin the trimline itself cannot physically follow). Fidelity
+must be measured against the trimline POLYLINE - nearest-SAMPLE distance charged
+along-curve sliding as error and over-reported p95 36x (0.948 vs 0.026 mm).
+Target spacing is capped at 1.2 mm: the 2.5 mm target implied by the default
+1.0 mm radius could not articulate the 1.8 mm hairpin nub (4 wall-vs-rim
+overlaps), so delivered radius is spacing-limited to ~0.42 mm and reported.
+When splitting ear faces, connect the kink to an INTERIOR corner - connecting to a
+boundary corner re-creates the chord being removed (measured livelock).
+Known limits, all with correct refusals rather than bad braces: vector-handle
+(zero-radius) trimline corners fold the Exact cutter or the 4 mm outer-wall offset;
+a 30 mm rounded notch still folds the cutter; export remains blocked by the
+`thickness_excluded_fraction` 20 % guard (measured 29.7 %, down from 40.5 %) —
+guard recalibration is the user's open decision.
+Reusable feature: `_resample_cut_boundary` and its phase functions; `rimqualitydbg`
+(8-item audit), `rimstagedbg` (phase attribution), `rimresampletest` (regression).
+Test case needed: done — `rimresampletest` gates spacing, radius uniformity,
+reversal spikes, apex bound, aspect, fidelity, and thin-wall QA still failing.
+Risk: low for the reference path (validator gates everything); medium for hostile
+hand-drawn trimlines (fidelity gate 1.5 mm).
+Confidence: high — every claim above is a measurement from this session.
+Next action: user decision on the 20 % exclusion guard; optionally harden the Exact
+cutter against deep-notch trimlines.

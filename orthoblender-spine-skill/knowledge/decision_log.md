@@ -791,3 +791,38 @@ change; an unsafe 12 mm request cancels with the valid 6 mm shell/base retained.
 The final QA negative fixture samples full coverage and records its 2.00 mm
 measured/3.00 mm required result; export confirms QA reran before writing the isolated
 canonical brace, and emboss confirms a real mesh change with temporary text removed.
+
+## Decision ID: DEC-0036
+Date: 2026-07-25
+Decision: Fix the serrated/spiky rim by uniform arc-length resampling of the cut
+boundary inside the curve generator (`_resample_cut_boundary`, called from
+`_cut_surface` before normals are baked), keeping the ordered-ring frames and the
+curvature clamp, and adding an explicit corner spike guard. Do NOT recalibrate the
+20 % rim-exclusion export guard yet; measure and report it instead (29.7 %, down
+from 40.5 %).
+Reason: measured causal chain — 51x boundary spacing spread x (0.35 x spacing rim
+ceiling) = 8.6x fillet amplitude swing = the visible serration; two radius-field
+smoothing attempts measurably worsened the rim, proving the fix belongs upstream.
+Alternatives: keep post-processing the radius field; raise fillet segments; shading
+tricks (all explicitly forbidden by the user and/or measured worse). Ray-cast wall
+clearance clamp was implemented, measured ineffective (rays coplanar with the
+offending geometry), and removed the same session.
+Why rejected: they treat the symptom while the per-vertex ceiling still tracks a
+51x-uneven boundary.
+Clinical risk: boundary vertices move along the trimline during resampling; fidelity
+is measured after against the trimline polyline (p95 0.026 mm, max 2.73 mm at a
+hairpin the trimline itself cannot follow) and gated in `rimresampletest`
+(1.0 mm reference / 1.5 mm hostile). Target spacing is capped at 1.2 mm, so
+delivered fillet radius is limited to ~0.42 mm regardless of larger requests.
+Technical risk: the resample phases can create geometry defects of their own; every
+one found was measured and closed (fold revert, valence-safe repair collapses,
+ear-chord dissolve, forced n-gon fan triangulation, zero-area edge rotation), and the
+pre-existing transactional validator remains the final gate.
+Rollback plan: remove the `_resample_cut_boundary` call from `_cut_surface`; the
+generator returns to the serrated-but-buildable state of commit eec0bec.
+Files affected: `rigo_brace/operators/curve_build_ops.py` (resample pipeline, corner
+guard, `_corner_spike_limits`); `tools/rimresampletest.py`, `rimqualitydbg.py`,
+`rimstagedbg.py`, `rimresampledbg.py` (new diagnostics/regression).
+Tests required: `rimresampletest`, `curvebuildtest` 4/4 determinism,
+`customtrimseamtest`, `curvefinishtest`, `selftest`, `importtest`, `thicknesstest`,
+`trimqualitytest`, `slotbracetest`, `referencetrimtest`.
