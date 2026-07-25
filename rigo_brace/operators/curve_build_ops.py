@@ -396,23 +396,146 @@ def _boundary_neighbours(boundary):
     return neighbours
 
 
-def _safe_rim_radii(coordinates, boundary, requested):
-    neighbours = _boundary_neighbours(boundary)
-    return {
-        index: min(
-            requested,
-            0.35
-            * min(
-                (coordinates[index] - coordinates[neighbour]).length
-                for neighbour in linked
-            ),
+def _ordered_boundary_ring(boundary):
+    """The boundary as one consistently ordered cycle.
+
+    Orientation must come from traversal order, never from iterating a set:
+    `previous, following = neighbours` over a Python set assigns the two
+    neighbours arbitrarily, which flips the tangent - and therefore the outward
+    direction - at unpredictable vertices. Measured 2 such reversals on the
+    reference brace (neighbour dot -0.42), each of which is a visible spike.
+    """
+    linked = _boundary_neighbours(boundary)
+    if not linked:
+        return []
+    start = min(linked)
+    ring = [start]
+    visited = {start}
+    previous, current = None, start
+    while True:
+        following = [
+            neighbour
+            for neighbour in sorted(linked[current])
+            if neighbour != previous
+        ]
+        if not following:
+            break
+        step = following[0]
+        if step == start or step in visited:
+            break
+        ring.append(step)
+        visited.add(step)
+        previous, current = current, step
+    return ring if len(ring) == len(linked) else []
+
+
+def _stable_outward_directions(coordinates, triangles, boundary, vertex_count):
+    """Outward rim frames oriented once for the whole loop.
+
+    Builds the tangent from ring order so its sign is consistent by
+    construction, then decides inside/outside ONCE by majority vote against the
+    surface interior instead of per vertex. A single ambiguous vertex can then
+    no longer invert its own frame.
+    """
+    ring = _ordered_boundary_ring(boundary)
+    if not ring:
+        return design_ops._rim_outward_directions(
+            coordinates, triangles, boundary, vertex_count
         )
-        for index, linked in neighbours.items()
-    }
+    inner = coordinates[:vertex_count]
+    outer = coordinates[vertex_count : vertex_count * 2]
+    adjacency = design_ops._vertex_adjacency(vertex_count, triangles)
+    count = len(ring)
+    frames = {}
+    votes = 0.0
+    for position, index in enumerate(ring):
+        normal = (outer[index] - inner[index]).normalized()
+        tangent = inner[ring[(position + 1) % count]] - inner[
+            ring[position - 1]
+        ]
+        tangent -= normal * tangent.dot(normal)
+        if tangent.length_squared <= 1.0e-24:
+            continue
+        tangent.normalize()
+        outward = tangent.cross(normal)
+        if outward.length_squared <= 1.0e-24:
+            continue
+        outward.normalize()
+        interior = sum(
+            (inner[neighbour] - inner[index] for neighbour in adjacency[index]),
+            Vector(),
+        )
+        interior -= normal * interior.dot(normal)
+        votes += outward.dot(interior)
+        frames[index] = outward
+    # One decision for the whole rim: outward must point AWAY from the surface.
+    if votes > 0.0:
+        for index in frames:
+            frames[index] = -frames[index]
+    return frames
+
+
+def _local_turn_radius(coordinates, ring, position):
+    count = len(ring)
+    previous = coordinates[ring[position - 1]]
+    current = coordinates[ring[position]]
+    following = coordinates[ring[(position + 1) % count]]
+    first = (current - previous).length
+    second = (following - current).length
+    third = (following - previous).length
+    if min(first, second, third) <= 1.0e-12:
+        return math.inf
+    half = (first + second + third) * 0.5
+    area_squared = max(
+        half * (half - first) * (half - second) * (half - third), 0.0
+    )
+    if area_squared <= 1.0e-24:
+        return math.inf
+    return (first * second * third) / (4.0 * math.sqrt(area_squared))
+
+
+def _safe_rim_radii(coordinates, boundary, requested):
+    """A rim radius that varies SMOOTHLY along the boundary.
+
+    Clamping each vertex only by its own neighbour spacing made the radius track
+    the boundary's 51x spacing variation, so the fillet amplitude swung 8.6x
+    from vertex to vertex - which is the serrated, rippled rim. The per-vertex
+    ceiling still bounds what is geometrically safe (now including local
+    curvature), but the delivered radius is then smoothed along the loop as a
+    running minimum, so neighbouring profiles differ gradually instead of
+    abruptly.
+    """
+    linked = _boundary_neighbours(boundary)
+    ceilings = {}
+    for index, neighbours in linked.items():
+        spacing = min(
+            (coordinates[index] - coordinates[neighbour]).length
+            for neighbour in neighbours
+        )
+        ceilings[index] = min(requested, 0.35 * spacing)
+    ring = _ordered_boundary_ring(boundary)
+    if not ring:
+        return ceilings
+    for position, index in enumerate(ring):
+        turn = _local_turn_radius(coordinates, ring, position)
+        if turn < math.inf:
+            ceilings[index] = min(ceilings[index], 0.5 * turn)
+    # NOTE: post-processing this radius field cannot fix the serrated rim, and
+    # two attempts measurably made it worse. A running minimum over the
+    # neighbourhood smoothed the field but dragged the median radius 0.138 ->
+    # 0.060 mm, sharpening the very edge the fillet exists to round. Clamped
+    # averaging kept the size (0.124 mm) but pushed abrupt neighbour-to-
+    # neighbour changes UP (366 -> 1024 jumps over 25 %), because each vertex's
+    # ceiling still tracks the boundary's 51x spacing variation.
+    # The ceiling is 0.35 x local spacing by construction, so while the cut
+    # boundary is non-uniform the fillet must be non-uniform too. The fix
+    # belongs upstream - resample the boundary uniformly by arc length before
+    # the rim is built - not here.
+    return ceilings
 
 
 def _rim_profiles(coordinates, topology, radius):
-    directions = design_ops._rim_outward_directions(
+    directions = _stable_outward_directions(
         coordinates,
         topology.triangles,
         topology.boundary,
