@@ -339,3 +339,23 @@ along the curve is not deviation; measured honestly the reference p95 fell
 moves the trimline at all).
 After all three: slotbracetest PASS; referencetrimtest and thicknesstest build
 perfect geometry (median walls 2.000/3.999/5.998 mm) and fail ONLY on the #28 guard.
+
+### #30 — Visible shading seam where the rim strip meets the shell → DIAGNOSED, fix scoped
+User-visible tonal break along the trimline (screenshots 2026-07-26). Measured with
+`tools/rimseamdbg.py`: it is GEOMETRIC, not shading and not mesh density — the rim
+strip meets both wall faces at a 75.2/75.1-degree median dihedral along the whole
+trimline (2245 edges each side), producing a 35.7-degree median vertex-normal jump at
+ring 0; wall rings 1-6 measure 0.9-1.2 degrees (smooth), so the density transition
+theory (external review) is refuted. Root cause: the curve generator's sine-bulge
+profile never cuts the wall back, so the corner the fillet should remove still stands.
+SIX profile-level cut-back constructions were implemented and measured (tangent
+arc-flat-arc: 568 overlaps from wall-fan folds; two depth-clamp variants: 10/12;
+fan-edge slide: 58 from ring zigzag; translation + both-wall clamp: 12; +20-degree
+junction margin: 15). The residuals are tens-of-micrometre grazes of the arc against
+wall FACETS — fillet radius (~0.35 mm), facet size (~1 mm) and fan depth (~0.5-1 mm)
+have no separation of scales, so per-vertex heuristics cannot win against the exact
+(0.1 um) intersection validator. All attempts REVERTED; the shipped rim is the green
+sine-profile build. The scoped fix is `bmesh.ops.bevel` (clamp_overlap) applied to the
+two junction edge loops after the shell is built, with rim/band vertex groups remapped
+from the bevel output — pending user approval. Measurement tooling kept:
+`rimseamdbg.py` and a report-only junction-dihedral line in `rimresampletest`.

@@ -201,12 +201,16 @@ def _run():
                         math.dist(pts[i], pts[(i + 1) % 3]) * 1000.0
                         for i in range(3)
                     ]
+                    centre = [
+                        sum(p[axis] for p in pts) / 3.0 for axis in range(3)
+                    ]
                     lines.append(
                         f"  pair{pair_index} {label}: idx={tri} class="
                         f"{_classify(tri, vertex_count)} "
                         f"roles=({','.join(_role(i) for i in tri)}) "
                         f"edge_gaps={_gaps(tri)} "
-                        f"edges_mm=({edges[0]:.4f},{edges[1]:.4f},{edges[2]:.4f})"
+                        f"edges_mm=({edges[0]:.4f},{edges[1]:.4f},{edges[2]:.4f}) "
+                        f"centre=({centre[0]:.4f},{centre[1]:.4f},{centre[2]:.4f})"
                     )
     except Exception as error:  # noqa: BLE001
         lines.append(f"ERROR={error!r}\n{traceback.format_exc()}")

@@ -705,3 +705,28 @@ hand-drawn trimlines (fidelity gate 1.5 mm).
 Confidence: high — every claim above is a measurement from this session.
 Next action: user decision on the 20 % exclusion guard; optionally harden the Exact
 cutter against deep-notch trimlines.
+
+## Lesson ID: LM-0032
+Date: 2026-07-26
+Source: the trimline shading-seam investigation (issues.md #30) and six failed
+profile-level fixes for it.
+Observation: the visible seam is a real 75-degree crease where the rim strip meets
+the wall faces (measured, not assumed: rimseamdbg dihedral audit; the external
+review's density-transition theory measured 0.9-1.2 degrees on the rings it blamed).
+Every attempt to remove the crease by cutting the wall back inside the profile
+builder failed differently: translation cut-back folds shallow wall fans (568),
+room estimates cannot be made reliable (10 -> 12 -> 15), fan-edge slides zigzag the
+ring (58), and a 20-degree tangency margin still grazes facets, because fillet
+radius, facet size and fan depth all live at the same 0.3-1 mm scale.
+Underlying principle: when a construction requires threading new geometry between
+faceted surfaces with no separation of scales, per-vertex heuristics reshape the
+failure set instead of shrinking it; after two failed variants, stop and reach for
+the engine's native tool (bmesh.ops.bevel with clamp_overlap) or re-scope.
+Clinical implication: the shipped rim is unchanged and green; the seam is cosmetic
+in shading and does not affect trimline position, wall thickness or QA.
+Reusable feature: rimseamdbg.py (junction/ring dihedral + normal-jump + grading
+audit); report-only junction line in rimresampletest.
+Test case needed: junction-dihedral gate to be enabled when the bevel rework lands.
+Risk: low - everything reverted; two revert cycles verified green.
+Confidence: high on the diagnosis; the bevel fix is scoped but unbuilt.
+Next action: user decision on the bevel-based junction rounding rework.
