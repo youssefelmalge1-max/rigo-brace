@@ -1,0 +1,31 @@
+# Template for a Rigo pressure/expansion correction entry.
+# Copy into knowledge/pressure_expansion_library.yaml and fill in.
+# status MUST stay draft_requires_clinical_validation until orthotist sign-off.
+
+- id: RC_<NAME>
+  name: <human name>
+  status: draft_requires_clinical_validation
+  required_inputs: [patient_age, curve_pattern, cobb_angles, apex_level,
+                    pelvic_alignment, sagittal_profile, scan_quality, xray_reference]
+  landmarks: []                       # which LANDMARKS this uses
+  pressure_zones:
+    - id: <zone_id>
+      purpose: <derotation / translation / stabilize / apex_correction>
+      side: <left/right/center>
+      direction: <e.g. posterior_lateral_to_anterior_medial>
+      strength: adjustable
+      safety_notes: <e.g. avoid rib compression; pair with expansion>
+  expansion_rooms:
+    - id: <room_id>
+      purpose: <breathing / derotation_room / relief>
+      side: <left/right/center>
+      depth: adjustable
+  shell:
+    default_thickness_mm: 4
+    reinforced_zones: []
+    thin_zones: []
+  trimlines: {axilla_clearance: adjustable, pelvic_trimline: adjustable,
+              abdominal_cutout: optional}
+  qa: {check_min_thickness: true, check_sharp_edges: true, check_non_manifold: true,
+       check_export_units_mm: true, check_breathing_room: true}
+  clinical_warning: [requires_orthotist_review, not_auto_prescription]

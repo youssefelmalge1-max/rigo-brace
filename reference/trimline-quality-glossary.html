@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trimline Quality Glossary</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body><main>
+  <h1>Trimline quality glossary</h1>
+  <p class="lead">Use these words when reporting a defect so we change the correct layer.</p>
+  <table>
+    <tr><th>Term</th><th>Meaning</th><th>What you see</th></tr>
+    <tr><td>Control curve</td><td>The editable cyclic Bezier path before cutting the shell.</td><td>Orange line and blue control points.</td></tr>
+    <tr><td>Surface fitting</td><td>Projection of curve points to the corrected body plus a small offset.</td><td>The line follows body curvature instead of floating or intersecting.</td></tr>
+    <tr><td>Tessellation</td><td>The triangles/edges used to approximate the surface.</td><td>Faceted silhouette or irregular short triangles.</td></tr>
+    <tr><td>G0 continuity</td><td>Segments meet at the same point only.</td><td>A connected path may still have a corner.</td></tr>
+    <tr><td>G1 continuity</td><td>Segments share a tangent direction.</td><td>No visible kink at the join.</td></tr>
+    <tr><td>G2 continuity</td><td>Curvature also changes continuously.</td><td>A softer, CAD-like transition with no abrupt curvature change.</td></tr>
+    <tr><td>Constant-radius fillet</td><td>One radius is applied along the full selected edge chain.</td><td>The rounded rim has the same cross-section everywhere.</td></tr>
+    <tr><td>Smooth shading</td><td>Interpolated display normals; geometry is unchanged.</td><td>Faces look softer, but the silhouette can remain polygonal.</td></tr>
+    <tr><td>Edge-band smoothing</td><td>Geometry relaxation over a band next to the rim.</td><td>Local bumps reduce, but radius is not guaranteed.</td></tr>
+  </table>
+  <footer>Companion to <a href="../lessons/0001-trimline-vector-to-fillet.html">Lesson 0001</a>.</footer>
+</main></body>
+</html>

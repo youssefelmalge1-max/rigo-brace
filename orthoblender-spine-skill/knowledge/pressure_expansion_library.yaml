@@ -1,0 +1,80 @@
+# Pressure / Expansion clinical template library (reference data).
+# status: every entry is draft_requires_clinical_validation until an orthotist
+# signs off for a specific patient. Not an auto-prescription.
+# Pairs with the runtime pad-shape library (rigo_brace/core/pad_library.py); these
+# describe the CLINICAL intent, the json file stores the editable geometry.
+
+schema_version: 1
+
+rigo_cheneau_templates:
+  - id: RC_RIGHT_THORACIC_MAIN
+    name: Right Thoracic Main Curve
+    status: draft_requires_clinical_validation
+    required_inputs: [patient_age, curve_pattern, cobb_angles, apex_level,
+                      pelvic_alignment, sagittal_profile, scan_quality, xray_reference]
+    landmarks: [C7, thoracic_apex, lumbar_apex, ASIS_left, ASIS_right,
+                PSIS_left, PSIS_right, waist_level, axilla_level]
+    pressure_zones:
+      - id: dorsal_thoracic_pressure
+        purpose: derotation_and_translation
+        direction: posterior_lateral_to_anterior_medial
+        side: right
+        strength: adjustable
+        safety_notes: avoid excessive rib compression; pair with expansion
+      - id: lumbar_pressure
+        purpose: lumbar_curve_correction
+        side: left
+        strength: adjustable
+      - id: pelvic_anchor_pressure
+        purpose: stabilize_pelvis
+        direction: controlled_counterforce
+        strength: adjustable
+        safety_notes: check ASIS and iliac crest pressure
+    expansion_rooms:
+      - id: anterior_thoracic_expansion
+        purpose: breathing_and_tissue_migration
+        depth: adjustable
+      - id: left_thoracic_expansion
+        purpose: derotation_room
+        side: left
+        depth: adjustable
+      - id: right_lumbar_expansion
+        purpose: lumbar_relief
+        side: right
+        depth: adjustable
+    shell:
+      default_thickness_mm: 4
+      reinforced_zones: [pelvic_anchor, dorsal_thoracic_pressure]
+      thin_zones: [anterior_thoracic_expansion]
+    trimlines:
+      axilla_clearance: adjustable
+      pelvic_trimline: adjustable
+      abdominal_cutout: optional
+    qa:
+      check_min_thickness: true
+      check_sharp_edges: true
+      check_non_manifold: true
+      check_export_units_mm: true
+      check_breathing_room: true
+    clinical_warning: [requires_orthotist_review, not_auto_prescription]
+
+  - id: RC_THORACOLUMBAR
+    name: Thoracolumbar Curve
+    status: draft_requires_clinical_validation
+    pressure_zones:
+      - {id: tl_apex_pressure, purpose: apex_correction, strength: adjustable}
+      - {id: pelvic_anchor_pressure, purpose: stabilize_pelvis, strength: adjustable}
+    expansion_rooms:
+      - {id: contralateral_expansion, purpose: derotation_room, depth: adjustable}
+    clinical_warning: [requires_orthotist_review, not_auto_prescription]
+
+  - id: RC_DOUBLE_MAJOR
+    name: Double Major Curve
+    status: draft_requires_clinical_validation
+    pressure_zones:
+      - {id: thoracic_pressure, side: right, strength: adjustable}
+      - {id: lumbar_pressure, side: left, strength: adjustable}
+    expansion_rooms:
+      - {id: thoracic_expansion, side: left, depth: adjustable}
+      - {id: lumbar_expansion, side: right, depth: adjustable}
+    clinical_warning: [requires_orthotist_review, not_auto_prescription]

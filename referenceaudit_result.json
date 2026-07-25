@@ -1,0 +1,238 @@
+{
+  "units": "GLB metres; dimensions reported in millimetres",
+  "fixtures": [
+    {
+      "file": "spinaltech_base1.glb",
+      "object_count": 8,
+      "mesh_count": 4,
+      "meshes": [
+        {
+          "name": "Mesh_0_2",
+          "mesh": "Mesh_2",
+          "vertices": 5702,
+          "edges": 16937,
+          "polygons": 11264,
+          "components": 26,
+          "boundary_edges": 82,
+          "non_manifold_edges": 82,
+          "dimensions_mm": [
+            5156.226,
+            1632.393,
+            4706.262
+          ],
+          "bounds_min_m": [
+            -3.01333,
+            -3.839752,
+            -1.420868
+          ],
+          "bounds_max_m": [
+            2.142895,
+            -2.20736,
+            3.285394
+          ],
+          "materials": [
+            "Tipe"
+          ]
+        },
+        {
+          "name": "Mesh_0",
+          "mesh": "Mesh_0",
+          "vertices": 20982,
+          "edges": 26292,
+          "polygons": 10534,
+          "components": 5224,
+          "boundary_edges": 20982,
+          "non_manifold_edges": 20982,
+          "dimensions_mm": [
+            8117.135,
+            6341.573,
+            14298.413
+          ],
+          "bounds_min_m": [
+            -4.448528,
+            -3.736902,
+            -7.300095
+          ],
+          "bounds_max_m": [
+            3.668607,
+            2.60467,
+            6.998318
+          ],
+          "materials": [
+            "inside"
+          ]
+        },
+        {
+          "name": "Mesh_0_1",
+          "mesh": "Mesh_1",
+          "vertices": 5094,
+          "edges": 14979,
+          "polygons": 9886,
+          "components": 1,
+          "boundary_edges": 300,
+          "non_manifold_edges": 300,
+          "dimensions_mm": [
+            8136.267,
+            6341.573,
+            14266.52
+          ],
+          "bounds_min_m": [
+            -4.448528,
+            -3.736902,
+            -7.281647
+          ],
+          "bounds_max_m": [
+            3.687738,
+            2.60467,
+            6.984872
+          ],
+          "materials": [
+            "outside"
+          ]
+        },
+        {
+          "name": "Mesh_0_3",
+          "mesh": "Mesh_3",
+          "vertices": 2202,
+          "edges": 6180,
+          "polygons": 3984,
+          "components": 6,
+          "boundary_edges": 408,
+          "non_manifold_edges": 408,
+          "dimensions_mm": [
+            4615.731,
+            915.434,
+            4190.898
+          ],
+          "bounds_min_m": [
+            -2.558152,
+            -3.459249,
+            -1.067518
+          ],
+          "bounds_max_m": [
+            2.057579,
+            -2.543815,
+            3.12338
+          ],
+          "materials": [
+            "Metal"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "spinaltech_base2.glb",
+      "object_count": 1,
+      "mesh_count": 1,
+      "meshes": [
+        {
+          "name": "Mesh_0",
+          "mesh": "Bivalve Front and Back.008",
+          "vertices": 52906,
+          "edges": 154162,
+          "polygons": 101309,
+          "components": 47,
+          "boundary_edges": 4397,
+          "non_manifold_edges": 4397,
+          "dimensions_mm": [
+            5110.406,
+            3691.74,
+            8866.252
+          ],
+          "bounds_min_m": [
+            -2.573083,
+            -1.769618,
+            -4.784301
+          ],
+          "bounds_max_m": [
+            2.537323,
+            1.922122,
+            4.081951
+          ],
+          "materials": [
+            "inside.001",
+            "outside.001",
+            "Metal.001",
+            "Tipe.001"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "spinaltech_base3.glb",
+      "object_count": 1,
+      "mesh_count": 1,
+      "meshes": [
+        {
+          "name": "Mesh_2",
+          "mesh": "bos-1 Catheren Andrade",
+          "vertices": 20856,
+          "edges": 57731,
+          "polygons": 36914,
+          "components": 40,
+          "boundary_edges": 4720,
+          "non_manifold_edges": 4720,
+          "dimensions_mm": [
+            7360.258,
+            5519.936,
+            12344.644
+          ],
+          "bounds_min_m": [
+            -3.885148,
+            -2.759079,
+            -5.276542
+          ],
+          "bounds_max_m": [
+            3.47511,
+            2.760856,
+            7.068102
+          ],
+          "materials": [
+            "inside.002",
+            "outside.002",
+            "Tipe.002",
+            "Metal.002"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "spinaltech_base4.glb",
+      "object_count": 1,
+      "mesh_count": 1,
+      "meshes": [
+        {
+          "name": "chen-1 Catheren Andrade",
+          "mesh": "chen-1 Catheren Andrade",
+          "vertices": 19613,
+          "edges": 54856,
+          "polygons": 35256,
+          "components": 17,
+          "boundary_edges": 3944,
+          "non_manifold_edges": 3944,
+          "dimensions_mm": [
+            7383.223,
+            5816.569,
+            11807.111
+          ],
+          "bounds_min_m": [
+            -3.454723,
+            -2.399794,
+            -5.622568
+          ],
+          "bounds_max_m": [
+            3.9285,
+            3.416775,
+            6.184545
+          ],
+          "materials": [
+            "inside.003",
+            "outside.003",
+            "Tipe.003",
+            "Metal.003"
+          ]
+        }
+      ]
+    }
+  ]
+}

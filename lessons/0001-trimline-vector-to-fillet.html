@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>From Trimline Vector to Fusion-Style Fillet</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body><main>
+  <p class="good">LESSON 0001 · 8 MINUTES</p>
+  <h1>From trimline vector to physical fillet</h1>
+  <p class="lead">The current add-on solves path placement and body attachment. Your screenshots expose a different defect: the physical mesh edge and its tiny bevel are still faceted.</p>
+
+  <div class="callout"><strong>The key diagnostic:</strong> a smooth orange curve does not guarantee a smooth brace rim. The curve, mesh cut, fillet, and shading are four separate layers.</div>
+
+  <h2>1. How the add-on defines direction</h2>
+  <div class="grid">
+    <section class="card"><h3>Vertical axis</h3><p><code>Z</code> is superior/inferior. Bottom, waist, and top landmark heights normalize the template to this patient.</p></section>
+    <section class="card"><h3>Body centre</h3><p>The horizontal axis point comes from pelvic landmarks; the scan-box centre is only a fallback.</p></section>
+    <section class="card"><h3>Front vector</h3><p>The ASIS midpoint points from the body centre toward anterior. Without ASIS, the fallback is global <code>-Y</code>.</p></section>
+  </div>
+  <p class="formula">d(θ) = rotate(front, θ)</p>
+  <p>For each angular station, a ray starts outside the torso and travels radially inward. The hit is moved 1.5 mm along the surface normal. This is why the line can follow the body instead of living on a flat front/back plane.</p>
+
+  <h2>2. How one perimeter is assembled</h2>
+  <div class="flow">18 upper-arc points
+→ 3 points down one opening side
+→ 18 lower-arc points in reverse
+→ 3 points up the other opening side
+→ cyclic close</div>
+  <p>The path is one cyclic Bezier spline. Most handles are <code>AUTO</code>, which produces smooth tangents. Ten opening/transition controls are changed to <code>VECTOR</code>, which intentionally creates straight segments and sharp joins. Blender documents this exact distinction between automatic and Vector handles.</p>
+
+  <h2>3. Where the screenshot defect is introduced</h2>
+  <table>
+    <tr><th>Layer</th><th>Current method</th><th>Consequence</th></tr>
+    <tr><td>Curve</td><td>42 Bezier controls, sampled 12 times per segment</td><td>Usually visually smooth before generation.</td></tr>
+    <tr><td>Cut</td><td>Every existing scan triangle is clipped against the sampled perimeter</td><td>The final silhouette inherits irregular triangle intersections.</td></tr>
+    <tr><td>Shell</td><td>Inner and outer surfaces are paired and connected at the cut</td><td>One closed object, but boundary spacing remains irregular.</td></tr>
+    <tr><td>Fillet</td><td>Maximum 0.4 mm bevel, only 2 segments</td><td>Too small and coarse to read like a CAD fillet.</td></tr>
+    <tr><td>Shading</td><td>Faces are marked smooth</td><td>Normals look softer; silhouette geometry does not change.</td></tr>
+  </table>
+  <p>Blender’s own shading documentation warns that smooth shading does not modify geometry and leaves a faceted outline. Fusion’s constant-radius fillet, by contrast, applies one radius along the full edge and lets you request Tangent (G1) or Curvature (G2) continuity.</p>
+
+  <h2>4. The correct target pipeline</h2>
+  <div class="flow">one cyclic surface curve
+→ uniform arc-length resampling
+→ tangent/curvature smoothing on the body
+→ reproject every iteration to the body
+→ conforming edge-band remesh
+→ one tagged continuous rim loop
+→ constant-radius multi-segment fillet
+→ normals/shading cleanup
+→ manifold + thickness + intersection QA</div>
+  <p>This is more than pressing “Auto Smooth.” Geometry must be rebuilt before shading. A good first specification is: one perimeter, uniform 1–2 mm edge spacing, no unintended kinks, a user-selected fillet radius in mm, at least G1 continuity, and radius/chord-error checks around the complete loop.</p>
+
+  <h2>5. Your feedback exercise</h2>
+  <p>When you test, rotate to a silhouette view and classify each problem:</p>
+  <ol>
+    <li>Does the orange line kink before generation? Report a <strong>control-curve/tangent</strong> defect.</li>
+    <li>Is the orange line smooth but the generated outline polygonal? Report a <strong>cut topology/tessellation</strong> defect.</li>
+    <li>Is the outline smooth but roundness changes around it? Report a <strong>fillet radius/continuity</strong> defect.</li>
+    <li>Does only the highlight look patchy while the outline is smooth? Report a <strong>normal/shading</strong> defect.</li>
+  </ol>
+  <details><summary>Retrieval check: why can Auto Smooth not fix your first screenshot?</summary><p>Because Auto Smooth changes displayed normals, not the polygon positions forming the visible silhouette. The cut boundary and fillet geometry must be rebuilt.</p></details>
+  <details><summary>Retrieval check: what does the front vector control?</summary><p>It defines θ = 0 around the torso, so the template’s anterior, lateral, and posterior trim heights map to the correct patient direction.</p></details>
+
+  <h2>Primary references</h2>
+  <ul>
+    <li><a href="https://help.autodesk.com/view/fusion360/ENU/?contextId=SLD-REF-FILLET">Autodesk Fusion Fillet Reference</a> — constant radius and G1/G2 terminology.</li>
+    <li><a href="https://docs.blender.org/manual/en/latest/modeling/modifiers/generate/bevel.html">Blender Bevel Modifier</a> — segments, profile, overlap, and normals.</li>
+    <li><a href="https://docs.blender.org/manual/en/3.2/modeling/curves/editing/control_points.html">Blender Curve Control Points</a> — Auto and Vector handle behavior.</li>
+  </ul>
+
+  <footer>Next: test the current build and send one close silhouette image plus the desired fillet radius in millimetres. Ask follow-up questions whenever a layer is unclear. See the <a href="../reference/trimline-quality-glossary.html">trimline quality glossary</a>.</footer>
+</main></body>
+</html>

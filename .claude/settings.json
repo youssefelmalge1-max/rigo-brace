@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -iE '\\\\.\\(blend|stl|obj|ply|3mf|dcm\\)$')",
+      "Bash(xargs -0 grep -ilE 'api[_-]?key|secret|password|token|BEGIN \\(RSA|OPENSSH|PRIVATE\\)')",
+      "Bash(awk '{printf \"%.1f MB\\\\n\", $1/1048576}')"
+    ]
+  }
+}

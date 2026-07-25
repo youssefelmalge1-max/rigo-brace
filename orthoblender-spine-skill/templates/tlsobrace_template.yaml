@@ -1,0 +1,21 @@
+# Template for a TLSO base shell entry.
+# Copy into knowledge/tlsobrace_templates.yaml and fill in.
+
+- id: <STYLE_ID>
+  name: <human name>
+  status: requires_orthotist_review
+  style: <cheneau / boston>
+  opening: <anterior / posterior>
+  shell:
+    thickness_mm: 4
+    liner_offset_mm: 3
+    reinforced_zones: []
+    thin_zones: []
+  trimlines:
+    top: {axilla_clearance: adjustable, scapula_clearance: adjustable}
+    bottom: {pelvic: adjustable, abdominal_cutout: optional}
+  straps: {symmetrical: false, closure: <anterior/posterior>}
+  ventilation: {enabled: optional, pattern: hole_grid, hole_d_mm: 8, spacing_mm: 18}
+  correction_couples_ref: pressure_expansion_library.yaml
+  qa_ref: qa_test_protocol.md
+  clinical_warning: [requires_orthotist_review, not_auto_prescription]

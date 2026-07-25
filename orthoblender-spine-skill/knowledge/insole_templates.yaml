@@ -1,0 +1,14 @@
+# Insole / foot-orthosis templates (FUTURE — placeholder).
+# Spinal braces are the priority (MVP). Foot orthoses are a later expansion of the
+# platform; this file reserves the schema so the template system is uniform.
+# status: not_started.
+
+schema_version: 1
+status: not_started
+note: >
+  Populate when the platform expands to foot orthoses (custom insoles, UCBL, SMO).
+  Expected fields mirror the brace templates: required_inputs, landmarks (e.g.
+  calcaneus, met heads, navicular, arch apex), posting (rearfoot/forefoot),
+  shell/thickness, trimlines, qa, clinical_warning.
+
+insole_templates: []   # to be defined

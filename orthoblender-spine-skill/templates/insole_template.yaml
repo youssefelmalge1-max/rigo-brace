@@ -1,0 +1,14 @@
+# Template for a foot-orthosis / insole entry (FUTURE).
+# Copy into knowledge/insole_templates.yaml when the platform expands to feet.
+
+- id: <INSOLE_ID>
+  name: <human name>
+  status: requires_clinician_review
+  device: <insole / UCBL / SMO>
+  required_inputs: [foot_scan, weightbearing_state, deformity, posting_prescription]
+  landmarks: [calcaneus, navicular, arch_apex, met_head_1, met_head_5]
+  posting: {rearfoot_deg: 0, forefoot_deg: 0}
+  shell: {thickness_mm: 3, reinforced_zones: [], thin_zones: []}
+  trimlines: {medial: adjustable, lateral: adjustable, heel_cup_height_mm: adjustable}
+  qa_ref: qa_test_protocol.md
+  clinical_warning: [requires_clinician_review, not_auto_prescription]

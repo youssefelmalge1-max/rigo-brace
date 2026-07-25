@@ -1,0 +1,654 @@
+# Learned Memory
+
+Lessons captured from development sessions. Newest at bottom.
+
+## Lesson ID: LM-0001
+Date: 2026-06-13
+Source: scan_ops apply-units bug (user report: "model disappears")
+Observation: An mm/cm scan imports ~hundreds of BU tall; scaling ×0.001 shrinks it correctly, but the viewport stayed zoomed for the giant size, so the correct-size model was sub-pixel and looked deleted.
+Underlying principle: Object scale changes do not move the camera; large unit conversions need an explicit re-frame.
+Clinical implication: Orthotist must trust units are applied; a vanished model erodes confidence.
+Blender / geometry implication: After bulk rescale, call view3d.view_selected per VIEW_3D region; guard double-apply (refuse if already body-sized < 3 m).
+Reusable feature: `_frame_object`, dimension-based "already scaled" guard.
+Template update needed: no.
+Test case needed: yes — tools/applyunitstest.py.
+Risk: low.
+Confidence: high.
+Next action: done.
+
+## Lesson ID: LM-0002
+Date: 2026-06-13
+Source: select_ops paint-select persistence + circle-select mode
+Observation: (a) Paint Area deselected everything each press; (b) Blender circle-select defaults to "Set" mode, replacing the selection on every new drag.
+Underlying principle: Only wipe the whole-mesh state (post-import all-selected); force the circle tool to ADD so strokes accumulate.
+Clinical implication: Painting a pressure region in multiple strokes must accumulate, not reset.
+Blender / geometry implication: Detect "all faces selected" before deselect; `tool.operator_properties("view3d.select_circle").mode = "ADD"`.
+Reusable feature: accumulate-region paint pattern (basis for the P0 area-select feature).
+Template update needed: no.
+Test case needed: yes — paintkeeptest.py, painttooltest.py.
+Risk: low.
+Confidence: high.
+Next action: reuse for area-select → contour-line carve.
+
+## Lesson ID: LM-0003
+Date: 2026-06-13
+Source: deform_ops Bend destroying the torso
+Observation: Simple Deform BEND wraps the mesh AROUND deform_axis. With axis Z the bend angle spread across shoulder width (X) → torso rolled up. Empirically (tools/bendexp.py) axis Y tips the top sideways in the coronal plane with the base fixed.
+Underlying principle: BEND axis = the bar the mesh wraps around; gradient runs along Z for axis X/Y. For a standing torso, coronal bend = axis Y, sagittal = axis X. No 90° empty-rotation needed (that trick is pre-2.79 folklore).
+Clinical implication: Coronal side-bend is the scoliosis correction; must pivot from the pelvis.
+Blender / geometry implication: deform_axis = "Y" for BEND, "Z" for TWIST/STRETCH.
+Reusable feature: empirical axis table in bendexp.py.
+Template update needed: no.
+Test case needed: yes — bendtest.py.
+Risk: medium (clinical correctness of direction) — exposed via slider, orthotist judges.
+Confidence: high (source-code-table confirmed + empirical).
+Next action: done; consider Left/Right toggle + sagittal option later.
+
+## Lesson ID: LM-0004
+Date: 2026-06-13
+Source: deform_ops Stretch tapering the body
+Observation: Simple Deform STRETCH along Z also tapers X/Y (girth shrinks) unless locked.
+Underlying principle: lock_x/lock_y confine STRETCH to pure lengthening.
+Clinical implication: Elongation must not silently reduce girth.
+Blender / geometry implication: set mod.lock_x = mod.lock_y = True for STRETCH.
+Reusable feature: —.
+Template update needed: no.
+Test case needed: yes — stretchtest.py (Z-only, base planted).
+Risk: low.
+Confidence: high.
+Next action: done.
+
+## Lesson ID: LM-0005
+Date: 2026-06-13
+Source: deform range planes (LeoSpinal white/blue lines)
+Observation: Numeric From/To fields were not the LeoSpinal feel; user wants visible, draggable planes on the model. Thin curve rings were unclickable; the 2500 mm field cap clamped planes to the feet on unscaled scans.
+Underlying principle: Represent each plane as a filled semi-transparent disc (big click target) whose world-Z drives the modifier limits + origin via drivers; freeze ring-driven values before modifier_apply to avoid "Invalid driver" warnings.
+Clinical implication: Direct manipulation of correction zone boundaries matches clinical software.
+Blender / geometry implication: `_make_plane_disc`, `_drive_range` (SCRIPTED drivers, min/max so drag order is swap-safe), `_show_object_colors`; warn when model > 3 m across (unscaled).
+Reusable feature: draggable-handle + driver mechanism — directly reusable for P0 contour lines.
+Template update needed: no.
+Test case needed: yes — planestest.py.
+Risk: low.
+Confidence: high.
+Next action: reuse driver/handle pattern for area-select contour control points.
+
+## Lesson ID: LM-0006
+Date: 2026-06-13
+Source: pad shape library (pad_ops.py, pad_library.py)
+Observation: Bezier AUTO handle positions are (0,0,0) on the raw datablock — only computed during depsgraph evaluation. Sampling the raw curve bent every segment toward the object origin. Draping rays that graze the silhouette land far down the torso.
+Underlying principle: Read the EVALUATED curve (`obj.evaluated_get(depsgraph)`) for handle-accurate boundary sampling; bound drape-ray travel (max_jump) and fall back to closest_point_on_mesh.
+Clinical implication: Pads must drape on the surface and apply where drawn.
+Blender / geometry implication: evaluated-curve sampling; KDTree distance-to-boundary + smoothstep feather; reject opposite hollow-shell wall via vertex-normal·plane-normal > 0.
+Reusable feature: `_drape_point`, `_sample_pad_boundary`, `_inside_2d`, feather + back-wall filter — the apply core for P0 carve/add.
+Template update needed: no.
+Test case needed: yes — padtest.py, padshapetest.py.
+Risk: low–medium (curvature > ~90° wrap unsupported; clinical range OK).
+Confidence: high.
+Next action: reuse apply core for area-select carve.
+
+## Lesson ID: LM-0007
+Date: 2026-06-13
+Source: dynamic EnumProperty for the pad library
+Observation: Returning a freshly built items list each call corrupts strings (Blender stores enum item strings by reference; they must outlive the call).
+Underlying principle: Cache the items list at module level; rebuild only on a version bump; enums are stored by index in .blend → keep ordering append-only.
+Clinical implication: Library drop-down must be stable across saves.
+Blender / geometry implication: `_ENUM_CACHE` + `_ENUM_CACHE_VERSION` in pad_library.py; no file IO at register().
+Reusable feature: the cached-enum pattern for any future library (templates, components).
+Template update needed: no.
+Test case needed: covered by padshapetest.py (record→reselect).
+Risk: low.
+Confidence: high.
+Next action: apply same pattern to future template/component libraries.
+
+## Lesson ID: LM-0008
+Date: 2026-06-13
+Source: Audit of uFit (D:\ufit-blender-master, GPL-3.0, Ugani) and WASP-Med (D:\WASP-Med-master, GPL-2+-, WASP) — both GPL-compatible with rigo_brace.
+Observation: Both independently implement the orthotics primitives we are building, via proven, reusable methods:
+  - uFit: paint a region (vertex-color attribute) → move verts along normals → grow+smooth boundary; a CIRCULAR variant uses proportional editing from the center vertex (radius = distance to furthest vert, NORMAL orient) for a smooth dome. Plus live circumference remeasure + custom thickness over the painted region.
+  - WASP: rotate_sections rotates lattice w-layers progressively (multi-section DEROTATION along the spine); weight_thickness builds VARIABLE wall thickness from a weight-paint via 24 iso-contour cuts; check_differences shows a before/after deviation map.
+Underlying principle: region-paint→normal-displace with grow+smooth feather is the standard "area sculpt by selection" technique; lattice-per-layer rotation is standard derotation; weight/vertex paint drives gradient thickness.
+Clinical implication: derotation should be multi-section, not single-axis; reinforcement = gradient thickness; a deviation map is valuable QA.
+Blender / geometry implication: our select_ops (Edit-mode face select + shrink_fatten + smooth) is the equivalent of uFit's region push/pull — we are on the right track; adopt the circular proportional-edit dome and grow-then-smooth feather; port WASP rotate_sections (update 2.91→5.0 transform calls) and weight_thickness for MVP4.
+Reusable feature: area-carve (P0), multi-section derotation (MVP2), variable thickness (MVP4), deviation-map QA (MVP5), measurements module.
+Template update needed: no.
+Test case needed: yes — areatest.py (P0), later derotationtest, thicknesstest.
+Risk: license discipline — any PORTED unit needs a provenance entry + preserved GPL header (PROV-0004/0005 are audit-only).
+Confidence: high.
+Next action: implement P0 area-carve reusing our select_ops + uFit's grow+smooth/circular-dome technique; defer WASP ports to their MVP stages.
+
+## Lesson ID: LM-0009
+Date: 2026-06-13
+Source: User walkthrough of uFit 2.2.2 screens — explicit feature adoption list (10 items).
+Observation: User wants the brace add-on to follow uFit's full workflow UX: persistent shell (View/View-Modes, Checkpoints+Rollback, Assistance image+text, Progress, Annotation + top tools), and steps import → clean(select Shift+RightClick to add) → verify-clean → quad-view align → circumferences(at spine levels) → measurable highlight push/pull sculpt → manual trim line (edit point: RightClick,G,RightClick; X-ray; flared width) → part-selection → scale → unified thickness → flare %.
+Underlying principle: a guided, checkpointed, beginner-assisted workflow lowers the skill floor for orthotists; "highlight a region then push/pull by mm" is the central shaping metaphor (matches our select_ops + uFit push_pull_region).
+Clinical implication: checkpoints map to anatomical reference stages; circumferences at GT/waist/below-chest/nipple/armpit levels are the clinical girth measures; flared trim edge = patient safety.
+Blender / geometry implication: build a workflow shell (panel sections + step state + assistance images) over existing operators; spine circumferences keyed to LANDMARKS; trimline X-ray + flared width extend the existing outline tool.
+Reusable feature: the whole Requirements v1 set (knowledge/requirements_v1.md).
+Template update needed: requirements_v1.md created; feature_backlog + roadmap + DEC-0008 updated.
+Test case needed: per-module tests as each is built.
+Risk: scope — large UI restructure; phase it (P0 sculpt first, then shell). License: port uFit/WASP units only with provenance + GPL header.
+Confidence: high (explicit user spec).
+Next action: confirm UI scope (replace vs layer), then build P0 measurable push/pull sculpt.
+
+## Lesson ID: LM-0010
+Date: 2026-06-17
+Source: Patch 2 — Workflow shell + design history (history_ops.py), porting WASP wm_next/wm_back.
+Observation: WASP's design history = each major step is a frozen object version named NN_<patient>_<stage> in a per-patient collection; Next duplicates the current work into a new version and hides the old, Back/Rollback reveal saved versions. The visible/active version is the editable one. This is the in-outliner history the user prefers over uFit's cloud storage.
+Underlying principle: non-destructive stage snapshots via object duplication + visibility, tracked by custom props (rigo_patient, rigo_stage) — simpler and more transparent than modifier stacks or saved .blend states.
+Clinical implication: orthotist can roll back to any stage; history is visible/auditable.
+Blender / geometry implication: obj.copy()+data.copy(); collection link/unlink; hide_set/select_set; drop forward versions on re-Next to rebuild history; keep scan_object pointer following the active version. Built additively — existing wizard (RIGO_PT_main) untouched, so selftest stays green.
+Reusable feature: the stage/version model is the backbone for all later stages (Clean/Shape/Trim/Shell snapshots).
+Template update needed: requirements_v1 + roadmap + DEC-0011 + PROV-0006 updated.
+Test case needed: done — tools/historytest.py (next/back/rollback/rebuild).
+Risk: mesh-copy memory at many stages — mitigated by major-stage granularity; license — WASP port logged PROV-0006, attribution in docstring.
+Confidence: high.
+Next action: Patch 3 (Clean: center + auto-remesh + verify-clean), snapshotting via this shell.
+
+## Lesson ID: LM-0011
+Date: 2026-06-17
+Source: Patch 3 Clean stage (clean_ops.py) + the noise-removal pass that preceded it.
+Observation: The "Brace Sample.stl" is already watertight (boundary edges = 0) — so a
+verify/fill test on the raw sample can't exercise hole-detection; you must poke a hole
+(bmesh remove a face) to test it. Auto-Remesh already existed as `rigo.remesh` (voxel) —
+the WASP "Auto-Remesh" ask was really about exposing a Detail control, not new code.
+Underlying principle: before adding an operator, check if the capability already exists
+and just needs better surfacing (avoids the redundancy the user dislikes). Verify-clean =
+bmesh manifold/boundary/loose counts + select_non_manifold; stash counts as custom props so
+the panel + tests can read them.
+Clinical implication: the "verify before closing the mesh" gate catches holes/non-manifold
+that would break printing.
+Blender / geometry implication: voxel REMESH yields a watertight manifold (boundary 0) —
+good as the canonical "auto-remesh"; center via origin_set BOUNDS + location 0 (distinct
+from drop-to-floor). Tests that need a defect must create it deterministically.
+Reusable feature: verify_clean counts/props feed the future Export QA gate (Patch 8).
+Template update needed: roadmap + DEC-0013 + PROV-0007 updated.
+Test case needed: done — tools/cleantest.py (center→poke hole→detect→fill→remesh watertight).
+Risk: low. Confidence: high.
+Next action: Patch 4 — combined Guided(mm)+Free sculpt (the core shaping tool).
+
+## Lesson ID: LM-0012
+Date: 2026-07-03
+Source: Issue-fix wave (DEC-0015) after the first full 70-operator live MCP audit.
+Observation: The audit found "12 issues"; code + live re-verify reduced that to 3 real
+ones (remold 5.0 API crash, history ignoring brace_patient, black captures). The rest
+were artifacts of HOW the audit measured (see ERR-0009): scripts can't see self.report,
+applied modifiers are invisible to live-modifier checks, one count ran after a clear op,
+dynamic enums introspect empty. The black captures stopped reproducing once the remold
+crash was fixed — an operator raising mid-execute can corrupt UI/GPU state, so fix
+crashes before chasing downstream weirdness.
+Underlying principle: verify-before-fixing is as important as verify-after-fixing; an
+audit finding is a hypothesis, and the cheapest disproof is reading the source.
+Blender / geometry implication: Blender 5.0 moved unified_paint_settings to
+tool_settings.sculpt (per-mode Paint); ts.sculpt exists only after first Sculpt entry —
+enter the mode before touching its settings.
+Clinical implication: design history is now keyed to the orthotist's typed patient name
+(versions `NN_<patient>_<STAGE>`), matching how records are actually filed.
+Reusable feature: remoldtest.py numeric-gate pattern (exact slider==setting equality);
+capture-brightness sanity check documented in docs/blender_mcp_setup.md.
+Template update needed: issues.md rewritten as the living status board; DEC-0015,
+ERR-0008/0009 logged.
+Test case needed: done — remoldtest.py PASS, historytest.py (patient + fallback) PASS.
+Risk: low. Confidence: high.
+Next action: Patch 4 — combined Guided(mm)+Free sculpt on the CorrectionRegion model.
+
+## Lesson ID: LM-0013
+Date: 2026-07-03
+Source: Patch 4a — CorrectionRegion Guided Sculpt (region_ops.py, DEC-0017).
+Observation: Making the correction a DATA OBJECT (weights baked into a vertex group at
+Add time) made the mm gate trivially exact: apply is just co += dir * mm * weight, so the
+test measured 0.0000 mm error and 10.000 mm max displacement. The feather is topological
+(BFS rings from the selection boundary, mm converted via mean selected edge length,
+normalized so the core always reaches weight 1.0) — resolution-independent and exact at
+any mesh density. Quad-remeshed surface (DEC-0016) applies in 0.01 s.
+Underlying principle: bake the falloff once into a mask, keep apply linear — determinism,
+undoability and testability all follow from that separation.
+Blender / geometry implication: vertex groups are the right persistence for region masks
+(survive edits, copy with the object into history versions); KDTree nearest-vertex is a
+good-enough mirror map on symmetric anatomy, degrades gracefully on asymmetric.
+Clinical implication: every region carries requires_review=True; pressure/expansion
+coupling is explicit (opposing_region), matching the Rigo 3-point principle.
+Reusable feature: the ring-feather weight baker can serve the future parametric
+ventilation (Patch 7) and trim-flare regions.
+Template update needed: DEC-0017, roadmap. Test case: tools/regiontest.py PASS.
+Risk: low. Confidence: high.
+Next action: Patch 4b — circular quick-region, X-ray overlay transforms, fold remold.
+
+## Lesson ID: LM-0014
+Date: 2026-07-11
+Source: repository-wide workflow and test-evidence audit.
+Observation: the visible five-tab tool workflow (`active_tab`) and nine-stage design
+history (`brace_stage`) are independent state machines with separate Next/Back
+operators. History snapshots only the preferred `scan_object`, so a passing mesh-copy
+test does not prove restoration of the multi-object brace design. The repository has
+91 operators, while 34 have no direct functional-test reference; some are modal/UI
+operations and need an explicit GUI evidence category rather than registration alone.
+Underlying principle: one user workflow needs one canonical state model; checkpoint
+scope must match the full project aggregate, and test claims must state their evidence
+level.
+Clinical implication: an apparently successful rollback can omit clinically relevant
+trimlines, pads, shell, landmarks, or reference state unless they are owned and restored
+as part of the same patient project.
+Blender / geometry implication: copying one mesh object is not a scene/project snapshot;
+related objects and references need explicit ownership metadata plus save/reopen tests.
+Reusable feature: the existing preview-icon loader can support an icon-led UI after the
+canonical stages are chosen.
+Template update needed: none yet; decision map created at project root.
+Test case needed: complete-project checkpoint round trip, including `.blend` reopen.
+Risk: high for workflow reliability; no production code changed during this audit.
+Confidence: high.
+Next action: resolve ticket #1 in `PROJECT_AUDIT_DECISION_MAP.md`.
+
+## Lesson ID: LM-0015
+Date: 2026-07-11
+Source: DEC-0026 canonical workflow implementation and live Blender verification.
+Observation: deriving compatibility stage metadata from the canonical five tool stages
+eliminates list drift while allowing the legacy snapshot module to remain hidden during
+migration. Blender scripted operator calls raise `RuntimeError` when an operator reports
+`ERROR`, even when its implementation returns `CANCELLED`; regression tests must verify
+the reported failure without misclassifying that API behavior as a product crash.
+Underlying principle: one observable workflow has one state owner; remove unreliable UI
+promises before rebuilding their persistence model.
+Clinical implication: users cannot mistake a scan-only rollback for restoration of the
+complete clinical design.
+Blender / geometry implication: no geometry changed; fresh install plus real GUI tests
+are required because the app template runs the installed extension copy.
+Reusable feature: `workflowtest.py` verifies direct stage selection, Next/Back boundaries,
+invalid-stage rejection and absence of duplicate state.
+Template update needed: none.
+Test case needed: done — workflowtest PASS, selftest ALL_PASS, legacy historytest PASS.
+Risk: low. Confidence: high.
+Next action: decision-map ticket #2, icon-led interface prototype.
+
+## Lesson ID: LM-0016
+Date: 2026-07-11
+Source: pressure/expansion feature research, code audit, user screenshot, and current
+pad-library JSON.
+Observation: all clinical-named built-ins are identical circles; the user's saved
+`ILIAC_CREST_PRESSURE_L` can even carry `kind=EXPANSION` because favourites may change
+the effect independently of the label. Curve handles are not persisted, Size does not
+resize a placed outline, and repeated Apply compounds the mesh deformation.
+Underlying principle: a clinical label must not imply validated geometry; reusable
+templates preserve exact authored shape, while patient placement remains separate data.
+Clinical implication: Rigo contact and expansion regions are curve-pattern-specific in
+level, boundary, orientation and counterforce relationship; orthotist review is required.
+Blender / geometry implication: editable curves need points plus handles, and preview
+must rebuild from an immutable baseline before an explicit commit.
+Reusable feature: existing raycast/drape, curve editing and JSON library code can be
+migrated rather than discarded.
+Template update needed: pressure/expansion feature spec created in docs.
+Test case needed: schema migration, curve fidelity, idempotent preview, commit/undo and
+save/reopen.
+Risk: high if clinical-named circle presets remain. Confidence: high.
+Next action: obtain approval decisions in the feature spec, then implement sequence 1.
+
+## Lesson ID: LM-0017
+Date: 2026-07-11
+Source: DEC-0027 pressure-library schema-v2 migration.
+Observation: a migration can preserve the orthotist's exact v1 JSON while removing false
+clinical authority: back up first, retain actual values, attach provenance/fidelity flags,
+and introduce neutral primitives under new stable ids. Existing geometry tests needed one
+behavioral correction because a valid closed rounded rectangle uses eight points, not the
+old circle's arbitrary twelve.
+Underlying principle: migrations preserve data and disclose uncertainty; tests assert
+geometric behavior rather than the previous implementation's point count.
+Clinical implication: old named circles are accessible but cannot be mistaken for
+validated iliac/trochanteric designs.
+Blender / geometry implication: v1 AUTO-handle shapes remain reproducible at their old
+fidelity, while v2 reserves exact handles for the approved authoring step.
+Reusable feature: isolated real-filesystem migration fixture with backup-hash and repeat
+load gates.
+Template update needed: pressure feature spec and decision map updated.
+Test case needed: done — padlibrarytest plus full pad regressions.
+Risk: low after backup. Confidence: high.
+Next action: implement click-to-draw closed Boundary and exact point/handle persistence.
+
+## Lesson ID: LM-0018
+Date: 2026-07-11
+Source: user rejection of the Pressure/Expansion handoff and live visual reproduction.
+Observation: migration tests and legacy one-time deformation tests were green, but the
+approved end-user workflow did not exist. The visual test still produced a generic oval;
+there was no Draw Boundary, exact handle save, deterministic preview, or explicit commit.
+Reporting the infrastructure step without a user-check guide made the result sound more
+complete than it was. The visual script also exposed a timer callback contract warning,
+which was fixed and rerun cleanly.
+Underlying principle: test evidence must match the user's workflow claim, not a lower
+implementation layer.
+Clinical implication: do not invite orthotist validation until the full intended sequence
+is operable; label partial infrastructure `NOT READY`.
+Blender / geometry implication: every feature requires a fresh-install UI sequence plus
+visual inspection in addition to numeric/unit tests.
+Reusable feature: mandatory user verification handoff added to qa_test_protocol.md.
+Template update needed: Pressure spec and decision map now state NOT READY.
+Test case needed: future boundary-authoring end-to-end test and user guide.
+Risk: communication/validation risk corrected. Confidence: high.
+Next action: implement and visually test Draw Closed Boundary before the next handoff.
+
+## Lesson ID: LM-0019
+Date: 2026-07-11
+Source: Pressure Boundary implementation, failed integration rerun, and corrected rerun.
+Observation: adding a viewport-only `poll()` blocked the scripted execution fallback and
+was caught only when the full suite was rerun after the guard pass. Moving the context
+check into `invoke()` preserved interactive safety while allowing deterministic execute
+tests. Exact evaluated handles can round-trip through normalized schema-v2 geometry with
+error below 7e-08.
+Underlying principle: interactive and scripted Blender operator paths share finalization
+but have different context contracts; both need independent gates.
+Clinical implication: the orthotist can now author and reuse boundaries, but must not use
+legacy Apply as if deterministic preview were complete.
+Blender / geometry implication: save evaluated AUTO handles, respawn them as FREE handles,
+and drape them with their control points to preserve editable curvature.
+Reusable feature: mandatory user-check guide linked to a concrete test result.
+Template update needed: user_check_pressure_boundary.md created.
+Test case needed: done for author/save/regenerate; Preview/Cancel/Commit remains.
+Risk: medium until manual click workflow is confirmed. Confidence: high in persistence.
+Next action: user check, then implement deterministic Preview/Cancel/Commit.
+
+## Lesson ID: LM-0020
+Date: 2026-07-12
+Source: committed CorrectionRegion style save/import implementation.
+Observation: portable selection styles cannot store vertex indices. Surface-local
+millimetre samples plus weights, an orientation frame and sampling tolerance reproduce
+the correction on a target with different topology while retaining Edit Selection.
+Underlying principle: persist geometric intent in a topology-independent local frame.
+Clinical implication: a clinic can reuse its authored form, but location and amount are
+reviewed on every patient.
+Blender / geometry implication: nearest 2D sample transfer is bounded by normal-distance
+and adapts its radius to target edge spacing; local-normal preview remains non-destructive.
+Reusable feature: per-PC atomic JSON library and cached dynamic enum pattern.
+Template update needed: pressure feature specification and user guide updated.
+Test case needed: done — regionstyletest, including pre-commit rejection, disk reload,
+different topology, edit/update, exact 8.000 mm preview/commit and deletion.
+Risk: large highly curved templates can distort. Confidence: high for local regions.
+Next action: manual orthotist UI check; later add interactive scale/rotation.
+
+## Lesson ID: LM-0021
+Date: 2026-07-12
+Source: LeoSpinal transcript research and three-ring deformation tests.
+Observation: three-loop control means selecting one adjacent interval, not applying two
+independent deformations. Simple Deform limits alone still carry geometry above the
+interval. When the user means world-fixed outside zones, Twist/Stretch also require a
+smooth live vertex mask; Bend can retain the approved rigid continuation.
+Underlying principle: modifier limits define where deformation accumulates, while a
+vertex mask defines which vertices may move at all.
+Clinical implication: the orthotist can modify lower or upper torso segments without
+distorting the other segment's shape.
+Blender / geometry implication: localized Twist/Stretch combine ring-driven limits with
+a 5% smooth mask rebuilt by a guarded depsgraph handler. Stretch gain is derived from the
+actual height/weight profile, so 40 mm input evaluates to 40.00 mm peak movement.
+Reusable feature: selectable pair among three driver-controlled section handles.
+Template update needed: deformation research and user guide created.
+Test case needed: done — segmentdeformtest plus planestest/bendtest/stretchtest.
+Risk: mask rebuilding on extremely dense meshes needs later performance profiling.
+Confidence: high for LeoSpinal-documented behavior; not enough public data to claim exact
+Rodin4D algorithm parity.
+Next action: technical work closed by user validation. Defer icons, names, and ring
+appearance to the interface-polish ticket; preserve all geometry regression gates.
+
+## Lesson ID: LM-0022
+Date: 2026-07-12
+Source: user-reported export, Full Screen and Box Erase failures plus installed-copy tests.
+Observation: three operators returned `FINISHED` while their user-visible contracts were
+still wrong: export targeted selection, fullscreen did not visibly change a one-area
+layout, and box selection stopped at the visible surface.
+Underlying principle: a functional gate must assert the artifact or state named by the
+user, not merely successful operator dispatch.
+Clinical implication: final brace export is separated from scan import and cannot
+silently include patient-scan/helper geometry; cleanup cuts now represent the complete
+view-direction volume chosen by the orthotist.
+Blender / geometry implication: STL export must isolate `Rigo Corset`; an application
+focused view should control individual regions so add-on UI remains usable; through-depth
+Edit selection requires X-ray and explicit mode-scoped delete/finish controls.
+Reusable feature: artifact re-import/dimension gate, exact region-visibility gate, and
+six-face select-and-delete fixture.
+Template update needed: Step 1 text is import-only; Step 5 ends with Final Export.
+Test case needed: done — exporttest, erasetest, strengthened viewtest plus workflow,
+design and registration regressions.
+Risk: the orthotist must visually verify the chosen box before clicking Delete.
+Confidence: high.
+Next action: user acceptance check using the supplied click guide.
+
+## Lesson ID: LM-0023
+Date: 2026-07-12
+Source: deep generator/trimline research, source audit and A-fixture baseline.
+Observation: the current generator's spikes are deterministic consequences of deleting
+whole triangles by face center and smoothing afterward. Auto trims also bypass the opening.
+A correct trim is one continuous perimeter, inserted into the surface before explicit
+inner/outer wall and rim construction. The A baseline differs from the clinic reference
+by 14.098 mm RMS and has a worst normalized triangle aspect of 21.79.
+Underlying principle: preserve clinical intent as geometric constraints; do not try to
+recover missing topology through smoothing.
+Clinical implication: surface landmarks establish anatomy and coordinates but cannot
+replace Rigo classification, radiographic curve data or an explicit force prescription.
+Blender / geometry implication: use exact contour insertion, local regularization,
+corresponding wall loops and a controlled rim strip; validate correction deviation after
+every finishing operation.
+Reusable feature: reference-pair baseline with numeric mesh metrics and rendered compare.
+Template update needed: generator research/specification and decision map created.
+Test case needed: next - unified A perimeter prototype and exact-cut comparison.
+Risk: high until the production generator is replaced; current Generate remains not
+clinically ready.
+Confidence: high in failure cause and target architecture; clinical template details need
+orthotist confirmation.
+Next action: resolve Decision Map ticket #2, then prototype ticket #3.
+
+## Lesson ID: LM-0024
+Date: 2026-07-12
+Source: unified-perimeter implementation and three installed A iterations.
+Observation: exact intersection alone removed visible saw teeth but initially created
+extreme sliver triangles (aspect p95 >1900). Local remove-doubles, sub-0.3 mm degenerate
+collapse, triangulation/beautification and targeted collapse of short edges on >20-aspect
+faces reduced p95 to 1.45 while preserving a manifold shell. A generic waist-gap metric
+does not equal opening width when the clinical inferior trim rises above waist.
+Underlying principle: visual smoothness, topology and element quality require independent
+gates; an anatomically shaped trim cannot be reduced to one angular measurement.
+Clinical implication: opening/coverage must be evaluated against approved anatomy and
+prescription, not a generic waist slice.
+Blender / geometry implication: evaluate the Bézier+Shrinkwrap result, split crossed
+triangles, then regularize only sub-tolerance fragments before Solidify/rim bevel.
+Reusable feature: simple cylindrical perimeter clipper with one-component/manifold and
+triangle-quality regression gates.
+Template update needed: decision map tickets 3-7 updated and user check created.
+Test case needed: done for A technical geometry; B visual, thickness, self-intersection and
+signed-deviation preservation remain.
+Risk: technical output is ready for orthotist visual review, not clinical fabrication.
+Confidence: high in spike/root-topology fix; clinical equivalence unvalidated.
+Next action: orthotist A user check, then B fixture and manufacturing QA gates.
+
+## Lesson ID: LM-0025
+Date: 2026-07-12
+Source: full button-contract audit and installed A manufacturing-QA regression.
+Observation: watertight/manifold and good triangle aspect did not detect three genuine
+rim intersections. All were created by a global angle bevel; changing its width did not
+remove them. Restricting bevel geometry to edges between the rim sidewall and shell walls
+removed all intersections while rounding 2,623 intended edges. Emboss also returned
+FINISHED while changing no geometry.
+Underlying principle: every geometry operator needs an observable postcondition specific
+to its purpose; generic topology and return status are insufficient.
+Clinical implication: a technically smooth-looking shell may still contain fabrication
+defects, and no automated geometric pass approves treatment intent.
+Blender / geometry implication: evaluate the final dependency-graph mesh, test triangle
+overlap and sampled opposing-wall distance, and scope bevel/boolean tools explicitly.
+Reusable feature: blocking manufacturing QA plus geometry-change contract for booleans.
+Template update needed: single perimeter before Generate; QA immediately before export.
+Test case needed: B fixture and signed correction-deviation preservation.
+Risk: sampled thickness can miss a very small local defect; report coverage and retain
+physical/manufacturing review.
+Confidence: high for detected defects and A technical fix.
+Next action: direct tests for slots, correction cage, painted ventilation and landmarks.
+
+## Lesson ID: LM-0026
+Date: 2026-07-12
+Source: new B-type installed geometry fixture and isolated open-surface probe.
+Observation: the B open perimeter-clipped surface has zero self-intersections, but 4 mm
+Solidify creates 60 pairs and collapses local wall thickness below 1 mm. Disabling even
+offset reduces the count to 24 but worsens minimum thickness; 15 fairing passes also
+worsen thickness. Both experiments were rejected.
+Underlying principle: a collision-prone offset cannot be repaired by weakening its
+thickness contract or globally smoothing prescribed geometry.
+Clinical implication: B remains blocked from export and needs orthotist-reviewed trim/
+surface intent before any local geometry repair is accepted.
+Blender / geometry implication: next prototype must construct/repair the outer wall
+independently while preserving the corrected inner wall and minimum thickness.
+Reusable feature: stage-isolation probe distinguishing clean trim from failed offset.
+Template update needed: none until B geometry/clinical review.
+Test case needed: at this lesson's date, `btrimlinetest.py` was the explicit failing
+gate. Superseded by LM-0028/DEC-0035: it now reports safe cancellation under
+`SAFETY_PASS`, while `READINESS_PASS` and overall `PASS` intentionally remain false
+until B generation and manufacturing QA succeed.
+Risk: high for B fabrication; safely contained by export QA.
+Confidence: high in failure stage.
+Next action: collision-aware outer-wall prototype plus signed inner-wall deviation gate.
+
+## Lesson ID: LM-0027
+Date: 2026-07-13
+Source: SpinalTech base4 internal reference audit, surface-edit regression and paired-wall
+iteration on the supplied A model.
+Observation: projecting only Bezier controls was insufficient evidence; sampled raw
+interpolation deviated up to 12 mm, while Blender's evaluated Shrinkwrap curve stayed
+exactly 1.50 mm from the body. Generate therefore must read evaluated geometry. Solidify
+created six boundary-normal intersections; thickness clamp removed them but collapsed
+the local wall to 0.03 mm. Barycentrically interpolated full-torso normals produced a
+closed paired wall with zero intersections and 3.582 mm sampled minimum thickness.
+Underlying principle: retain the reference surface field before a topological cut; never
+repair an offset collision by silently weakening thickness.
+Clinical implication: a commercial reference can define observable silhouette guardrails,
+but cannot be copied as a patient design or treated as a force prescription.
+Blender / geometry implication: raycast modal editing plus live Shrinkwrap is required for
+surface-bound control; paired walls and an explicit rim are more deterministic than a
+post-cut Solidify at concave boundaries.
+Reusable feature: millimetre opening conversion, full-curve distance gate, source-normal
+attribute, paired-shell builder and rim-aware QA sampling.
+Template update needed: Rigo-Cheneau Reference compact profile added; A/B retained.
+Test case needed: signed correction-deviation preservation and B-specific diagnosis remain.
+Risk: technical pass does not validate laterality, coverage or clinical correction intent.
+Confidence: high for surface attachment and A/reference manufacturing geometry.
+Next action: orthotist visual approval, then signed correction preservation before B work.
+
+## Lesson ID: LM-0028
+Date: 2026-07-13
+Source: back-side trim selection report, stale-thickness report, and installed
+`trimvisibilitytest`, `designviewtest`, `meshintersectiontest`, `thicknesstest` and
+`btrimlinetest` regressions, with installed import, outline, trim, reference, QA, export
+and emboss confirmation.
+Observation: a screen-distance-only trim picker could choose an occluded back control at
+the same pixel as a front control. Separately, changing thickness left the prior shell
+visible, which made the control appear ineffective and allowed finishing actions to
+target stale geometry. Orthographic drag rays also used a fixed 1000-Blender-unit range,
+which could end before reaching the body when the view origin was placed at the far clip.
+The registered modal now rejects an overlapping hidden control, drags the visible point,
+keeps it 1.499955 mm from the body, and restores the session on Esc. Its view-ray origin
+is clamped from the scan and current view for precision, then raycasts over the BVH's
+unbounded travel range. At 6 mm the
+paired outer wall initially contained 25 exact
+triangle collision pairs; local direction repair removed them while every constructed
+inner/outer pair stayed 6.000 mm apart; repair took seven passes and changed a direction
+by at most 18.287 degrees. Independent bidirectional-ray medians for 2/4/6 mm requests
+were 1.999/3.999/5.998 mm, while the add-on QA minima were 1.740/3.654/5.386 mm. A
+12 mm reference attempt could not be repaired and cancelled with the valid 6 mm
+shell/base retained. The 4 mm B fixture is also safely blocked, but its
+`READINESS_PASS` and overall `PASS` remain false.
+Underlying principle: picking must include visibility, generated artifacts need explicit
+source/parameter freshness, and a construction correspondence is not the same metric as
+an opposing-surface sample. Geometry repair must preserve the clinical
+inner surface and fail transactionally when its safety envelope is exhausted.
+Clinical implication: an orthotist edits only the surface being viewed and cannot
+unknowingly finish or export an obsolete shell. Automated collision containment and a
+passing cancellation test do not approve trim coverage, B-type intent or fabrication.
+Blender / geometry implication: reverse-ray occlusion filters the point candidate list;
+TRIM and BRACE are explicit visibility/selection states; geometry signatures detect
+native source edits; a scan/view-derived origin clamp plus unbounded BVH travel avoids
+orthographic far-clip precision and truncation failures; exact triangle narrow-phase
+results drive bounded outer-direction relaxation while paired spacing remains requested
+thickness.
+Reusable feature: visibility-aware modal picking with Ctrl+Z/Esc recovery; dirty-derived
+artifact state; transactional candidate replacement; exact-intersection repair audit.
+Template update needed: expose Edit Trimlines, Brace Preview and Update Brace state;
+already integrated.
+Test case needed: retain the registered-modal queued-window-event regression and add an
+orthotist four-view review before calling B clinically ready.
+Risk: exact technical geometry gates do not establish clinical prescription; independently
+sampled thickness remains an approximation rather than a formal global minimum proof.
+Confidence: high for the measured technical behavior on current fixtures; unresolved for
+B clinical readiness.
+Next action: signed inner-surface deviation report and orthotist review of B trim/surface
+intent.
+
+## Lesson ID: LM-0029
+Date: 2026-07-25
+Source: user report "shell does not create from the brace selection" + painted-trim
+seam investigation, cross-model adversarial review, and installed-copy regressions.
+Observation: the brace region is decided in a cylindrical (theta, z) plane whose seam
+sits at theta = 0 — the patient's FRONT. Every consumer stored `angle % tau`, so a
+painted region crossing the front was torn into two ends of the parameter domain and
+the odd-even containment test was garbage. Measured on the A fixture: the perimeter
+polygon agreed with the painted mask on **0.33 %** of vertices before the fix and
+**99.47 %** after. The bug was invisible for four months because the Rigo *template*
+puts its opening ON the seam, so every existing painted-trim test happened to paint a
+region that never crossed it (0/1512 misclassified for template vs 792/1512 = 52 % for
+a front-covering region). Two independent reproductions (mine and the reviewer's,
+66.7 % and 46 % on different fixtures) agree.
+Underlying principle: a periodic coordinate needs an explicit branch policy; `% tau`
+is not one. And a fixture that only exercises the symmetric/aligned case cannot
+falsify a symmetry-dependent bug — the template's opening sitting on the seam made
+the test suite structurally blind.
+Clinical implication: a custom-painted brace could silently keep the complement of
+what the orthotist painted, or fragment into detached ribbons that passed every
+manufacturing gate.
+Blender / geometry implication: unwrap the densely sampled boundary (|d theta| > pi
+between adjacent samples is provably a seam jump — the angle a chord subtends about
+an interior axis is <= pi, verified over 400 000 random chords, max 3.141585), then
+test every 2*pi replica of the query that falls in the polygon's span. Triangles must
+be unwrapped relative to their own first vertex before clipping. A winding != 0 loop
+encircles the axis and bounds no region in the unwrapped plane — reject it explicitly.
+Reusable feature: `_unwrap_uv_polygon`, `_inside_unwrapped_polygon`,
+`_clip_triangle_cylindrical` in design_ops; `_connected_component_count` +
+the `components != 1` gate in `_validate_finished_rim`.
+Template update needed: no.
+Test case needed: done — `tools/customtrimseamtest.py` paints a FRONT-COVERING band
+(opening at the back) and gates on before/after IoU, one mask loop, a closed manifold
+single-component shell, and the shell landing on the painted side. It asserts the
+fixture really crosses the seam, so it cannot silently degenerate into the old
+blind case.
+Risk: low for the fix; the reviewer's deeper findings (non-injective projection over
+arms/axilla, legacy generator ignoring the paint mask) remain OPEN.
+Confidence: high — before/after measured on real clinical geometry, five suites green.
+Next action: decide on the mesh-native flood-fill cut (removes the parameterization
+entirely) and the rim-density ceiling; both need approval.
+
+## Lesson ID: LM-0030
+Date: 2026-07-25
+Source: parametric trimline smoothing (user: "control boundary smooth with no
+iteration ... clean and parametric") and its adversarial review.
+Observation: the old control was `trim_mask_smooth` = number of neighbour-averaging
+passes over the vertex mask. Its transfer function is `0.35 + 0.65*cos(k*h)` per pass
+where h is the MESH EDGE LENGTH, so "8 passes" means a 12 mm feature cut on a 1 mm
+mesh and a 49 mm cut on a 4 mm mesh — and the pipeline remeshes between those states.
+The control's clinical meaning moved by 4x with a setting changed two stages earlier.
+Replaced by one Gaussian convolution along arc length on a fixed 1 mm resampling,
+parameterised in millimetres (`trim_smooth_mm`). Measured: bit-identical across runs,
+a 6 mm painted wobble falls to 0.83 mm at 8 mm smoothing, and a deliberate 60 mm-wide
+25 mm-deep clinical relief keeps 96.8 % of its depth.
+Underlying principle: a clinical control must be a physical quantity, not an
+iteration count — determinism and resolution-independence follow from parameterising
+by arc length rather than by topology.
+Clinical implication: the same millimetre value now gives the same trimline on any
+scan density, and the deviation from the painted line is reported rather than hidden.
+Blender / geometry implication: the DELIVERED curve is what matters. Measuring the
+deviation on the smoother's internal dense loop under-reported it (3.35 mm reported
+vs up to 7.0 mm actually delivered, per the reviewer's measurement) because
+`_resample_closed` then decimates to `_MAX_CUSTOM_CONTROLS`. Now measured after
+smoothing + decimation + surface refit, against the painted line carried onto the
+same offset surface.
+KNOWN LIMIT: raising `_MAX_CUSTOM_CONTROLS` from 84 to 168 or 240 makes the perimeter
+faithful but then `_validate_finished_rim` reports 5-8 local rim overlaps — the fillet
+profile self-intersects where a denser boundary turns tightly. The ceiling belongs to
+the RIM BUILDER, not the trimline. Reverted to 84 and documented in situ.
+Reusable feature: `_smooth_closed_parametric`, `_control_spacing_m`,
+`_delivered_deviation_m`.
+Test case needed: done — smoothing determinism/monotonicity gated inside
+`customtrimseamtest`.
+Risk: medium — below ~24 mm the request is limited by control spacing, not the filter.
+Confidence: high for the filter; the density ceiling is unresolved.
+Next action: rework the rim fillet so control density can rise, then add a
+`trim_min_radius_mm` curvature clamp (a wavelength cutoff does NOT bound turn radius:
+a 15 mm / 5 mm sinusoid still has R_min = 1.14 mm).

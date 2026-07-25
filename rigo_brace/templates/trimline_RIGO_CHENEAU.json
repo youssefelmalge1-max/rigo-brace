@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "type": "RIGO_CHENEAU",
+  "display_name": "Rigo-Cheneau Reference",
+  "description": "Low chest, one lateral axillary wing, smooth pelvic scallops",
+  "subtype": "Reference-oriented technical starting profile",
+  "requires_orthotist_review": true,
+  "source": "Independent parametric profile informed by clinical design rules and internal visual comparison; no reference mesh copied",
+  "theta_bins": 72,
+  "theta_zero": "anterior opening",
+  "theta_dir": "toward patient left (+X in front view)",
+  "profile_knots": [
+    [-180, 0.58, -0.72],
+    [-150, 0.55, -0.73],
+    [-120, 0.50, -0.75],
+    [-90, 0.45, -0.74],
+    [-60, 0.32, -0.68],
+    [-30, 0.26, -0.62],
+    [0, 0.25, -0.60],
+    [30, 0.28, -0.64],
+    [45, 0.60, -0.69],
+    [60, 0.92, -0.73],
+    [75, 1.00, -0.77],
+    [90, 0.97, -0.80],
+    [105, 0.90, -0.82],
+    [120, 0.78, -0.81],
+    [150, 0.68, -0.76],
+    [180, 0.58, -0.72]
+  ],
+  "clinical_intent": [
+    "anterior upper trim stays below the pectoral region",
+    "one tall lateral axillary extension; no symmetric corset prongs",
+    "pelvic edge remains hip-level with smooth sitting scallops",
+    "opening and all coverage require orthotist review"
+  ]
+}

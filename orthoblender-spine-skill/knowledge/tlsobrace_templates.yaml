@@ -1,0 +1,40 @@
+# TLSO brace base templates (reference). status: requires_orthotist_review.
+# Base shell parameters per brace style; clinical correction comes from the
+# pressure_expansion_library.yaml couples applied on top.
+
+schema_version: 1
+
+tlso_templates:
+  - id: CHENEAU_ASYMMETRIC
+    name: Rigo-Chêneau (asymmetric)
+    status: requires_orthotist_review
+    style: cheneau
+    opening: anterior            # closure gap at front (-Y)
+    shell:
+      thickness_mm: 4
+      liner_offset_mm: 3
+      reinforced_zones: [pelvic_anchor, primary_thoracic_pressure]
+    trimlines:
+      top: {axilla_clearance: adjustable, scapula_clearance: adjustable}
+      bottom: {pelvic: adjustable, abdominal_cutout: optional}
+    correction_couples_ref: pressure_expansion_library.yaml  # apply per curve pattern
+    ventilation: {enabled: optional, pattern: hole_grid, hole_d_mm: 8, spacing_mm: 18}
+    qa_ref: qa_test_protocol.md
+    clinical_warning: [requires_orthotist_review, not_auto_prescription]
+
+  - id: BOSTON_SYMMETRIC
+    name: Boston-style symmetric TLSO
+    status: requires_orthotist_review
+    style: boston
+    opening: posterior           # closure gap at back (+Y)
+    shell:
+      thickness_mm: 4
+      liner_offset_mm: 3
+      reinforced_zones: [pelvic_anchor]
+    trimlines:
+      top: {axilla_clearance: adjustable}
+      bottom: {pelvic: adjustable, abdominal_cutout: optional}
+    straps: {symmetrical: true, posterior_closure: true}
+    ventilation: {enabled: optional, pattern: hole_grid, hole_d_mm: 8, spacing_mm: 18}
+    qa_ref: qa_test_protocol.md
+    clinical_warning: [requires_orthotist_review, not_auto_prescription]
