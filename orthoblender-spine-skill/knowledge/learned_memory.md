@@ -730,3 +730,39 @@ Test case needed: junction-dihedral gate to be enabled when the bevel rework lan
 Risk: low - everything reverted; two revert cycles verified green.
 Confidence: high on the diagnosis; the bevel fix is scoped but unbuilt.
 Next action: user decision on the bevel-based junction rounding rework.
+
+## Lesson ID: LM-0033
+Date: 2026-07-26
+Source: replacing the rim-exclusion QA guard, and measuring/rejecting a bevel fix for
+the trimline seam (issues.md #28, #30).
+Observation (guard): a safety metric defined as "excluded vertices / all vertices"
+silently measured MESH DENSITY, because the excluded set was generated rim geometry
+whose vertex count is a modelling choice. Rounding the rim more made the brace look
+LESS safe (29.7 -> 47.1 %) while its wall stayed at 3.41 mm. Redefining it over the
+structural wall only - rim provenance removed from numerator AND denominator, and a
+wall vertex excluded only when every triangle carrying it touches rim - made it
+0.01 % and invariant to segment count (0.00pp across 4 -> 12 segments) while still
+firing at 41.5 % on a genuinely shadowed wall.
+Underlying principle: a ratio is only a safety measure if BOTH sides describe the
+thing being protected. If generated geometry can enter either side, the metric tracks
+the generator's settings rather than the patient's brace.
+Observation (bevel): bmesh.ops.bevel fixed the 75-degree junction crease with zero
+self-intersections - the first construction all session to survive the exact validator,
+because it only REMOVES material - but produced sliver triangles at every setting
+(aspect p99 3.4 -> 48.7/98.9/151.4 for 1/2/3 segments, and 47064:1 max on a hostile
+trimline). Mechanism: clamp_overlap achieves its safety by shrinking the offset toward
+zero in tight spots, and a zero-width offset IS a sliver.
+Underlying principle: "safe" and "well-shaped" are different guarantees. A tool that
+buys safety by degenerating geometry has not solved the problem, it has moved it into
+a metric you were not watching - so measure the new failure mode before accepting.
+Clinical implication: export is now unblocked by the guard fix (the real blocker); the
+seam is cosmetic and remains open.
+Blender API note: `vertex_groups.add()` cannot SHRINK a group - rebuilding a sparse
+tag needs remove + new, otherwise a test silently re-runs the dense case (this bug was
+in my own first fixture and would have faked a passing legacy check).
+Test case needed: done - tools/qaexclusiontest.py gates all five guard requirements.
+Risk: low - guard verified on five fixtures; bevel reverted.
+Confidence: high, all figures measured this session.
+Next action: seam needs a graded transition band around the trimline BEFORE any
+fillet rework - the rim is 10x smaller than the wall facets, so a tangent fillet has
+nowhere to live at current density.

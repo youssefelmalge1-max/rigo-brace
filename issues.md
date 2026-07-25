@@ -359,3 +359,42 @@ sine-profile build. The scoped fix is `bmesh.ops.bevel` (clamp_overlap) applied 
 two junction edge loops after the shell is built, with rim/band vertex groups remapped
 from the bevel output — pending user approval. Measurement tooling kept:
 `rimseamdbg.py` and a report-only junction-dihedral line in `rimresampletest`.
+
+### #28 UPDATE — Rim-exclusion guard replaced with a structural-wall metric → FIXED
+The old guard divided excluded vertices by EVERY shell vertex, so it measured rim
+tessellation density, not safety: a correctly built rounded rim reported 29.7 % (and
+rose to 41-47 % as rim detail increased) while the wall it protects measured 3.41 mm
+against a 3.0 mm requirement. Replaced in `qa_ops` by
+`structural_wall_exclusion_fraction`: rim-provenance vertices (ring, fillet profile,
+and any future bevel output - all carried in the semantic `RIGO_RIM_BOUNDARY` group,
+never index ranges) leave BOTH sides of the ratio, and a structural-wall vertex counts
+as excluded only when EVERY triangle carrying it also touches rim geometry, so no
+sampling stride could ever reach it. Measured: reference brace 0.01 % (4/47886) and
+QA now PASSES; fillet segments 4 -> 12 moved the rim fraction 34.0 -> 47.1 % while the
+guard moved 0.00pp; a diffusely shadowed wall still fires at 41.5 %; a 1.5 mm wall
+still fails on minimum thickness; ring-only and untagged (legacy) braces evaluate
+correctly. Diagnostics keep reporting all three percentages. Gated by
+`tools/qaexclusiontest.py`.
+
+### #30 UPDATE — Junction bevel measured and rejected; seam remains OPEN
+`bmesh.ops.bevel` on the two junction loops does remove the crease and, unlike the six
+profile-level constructions, produces NO self-intersections (it only cuts material
+away). But it trades the seam for sliver triangles, monotonically:
+
+    segments  aspect_p99  aspect_max  seam normal-jump  hostile trimline
+    none         3.40         41          37.5 deg      builds
+    3          151.35        218.55        6.9 deg      fails (14 overlaps)
+    2           98.87        144.19       10.0 deg      fails (6 overlaps)
+    1           48.74         75.15       18.7 deg      builds, but p99 4415 / max 47064
+
+Mechanism: `clamp_overlap` buys intersection-safety precisely BY collapsing the offset
+toward zero wherever geometry is tight, and a collapsed offset IS a sliver - so safety
+and mesh quality are in direct opposition, and no segment count escapes it. Skinny
+triangles near the trimline were item 3 of the original artifact report, so this is not
+an acceptable trade. REVERTED; shipped geometry is unchanged.
+Conclusion for the next attempt: the seam is not fixable by local surgery at this
+scale - the rim (0.3 mm) is an order of magnitude smaller than the wall facets
+(~3.7 mm). A tangent fillet needs room to exist, which means a finer, graded wall mesh
+in a band around the trimline FIRST. That is the one part of the external review's
+proposal the measurements support - not as the cause of the seam, but as the
+precondition for fixing it.

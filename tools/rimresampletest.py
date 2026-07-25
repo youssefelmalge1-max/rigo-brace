@@ -51,12 +51,9 @@ MAX_TRIM_ERROR_MM_HOSTILE = 1.5   # measured 1.067 on the hostile trimline
 ZERO_AREA_M2 = 1.0e-12         # the production validator's own threshold
 MAX_ASPECT_P99 = 12.0          # was 7.95 pre-resample on a bad boundary
 MAX_APEX_OVER_RADIUS = 1.05    # a spike is an apex beyond its own radius
-# Junction crease (rim-strip/wall dihedral) is REPORTED but not gated: the
-# current profile leaves ~75 deg by construction (the visible shading seam,
-# issues.md #30). Six profile-level cut-back attempts all left 10-60 exact
-# self-intersections against the faceted walls; the fix is a bevel-based
-# rework, not a gate.
-MAX_JUNCTION_MEDIAN_DEG = None
+# The junction crease is measured by `rimseamdbg.py`, which identifies the
+# rim by vertex GROUP and so stays valid after the junction bevel rewrites
+# the paired-index layout this file relies on.
 
 
 _orig_profiles = curve_build_ops._rim_profiles
@@ -171,40 +168,19 @@ def _shell_checks(lines, label, brace, error_limit_mm):
         for el in [[e.calc_length() for e in f.edges]]
         if min(el) > 1e-12
     )
-    # The junction crease between the rim strip and the wall faces IS the
-    # visible seam; the tangent arc-flat-arc profile keeps it below the
-    # arc discretisation step instead of the old 75-degree corner.
-    junction = sorted(
-        math.degrees(
-            edge.link_faces[0].normal.angle(edge.link_faces[1].normal)
-        )
-        for edge in bm.edges
-        if len(edge.link_faces) == 2
-        and vc > 0
-        and (
-            any(v.index >= 2 * vc for v in edge.link_faces[0].verts)
-            != any(v.index >= 2 * vc for v in edge.link_faces[1].verts)
-        )
-    )
     bm.free()
-    junction_median = junction[len(junction) // 2] if junction else 0.0
     p99 = aspects[int(0.99 * (len(aspects) - 1))]
     ok = (
         intersections == 0
         and near_zero == 0
         and p99 <= MAX_ASPECT_P99
         and error_p95_mm <= error_limit_mm
-        and (
-            MAX_JUNCTION_MEDIAN_DEG is None
-            or junction_median <= MAX_JUNCTION_MEDIAN_DEG
-        )
     )
     lines.append(
         f"[{label}] rim_intersections={intersections} near_zero_faces="
         f"{near_zero} aspect_p99={p99:.2f} aspect_max={aspects[-1]:.2f} "
         f"trim_error_p95_mm={error_p95_mm:.3f} "
-        f"trim_error_max_mm={error_mm:.3f} "
-        f"junction_median_deg={junction_median:.1f} ok={ok}"
+        f"trim_error_max_mm={error_mm:.3f} ok={ok}"
     )
     return ok
 
