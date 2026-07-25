@@ -597,6 +597,19 @@ class RigoBraceSettings(PropertyGroup):
         max=40.0,
         soft_max=25.0,
     )
+    trim_min_radius_mm: FloatProperty(
+        name="Minimum Trim Radius (mm)",
+        description=(
+            "Tightest corner the trimline is allowed to turn. Smoothing bounds "
+            "how BIG a wobble is removed; this bounds how SHARP a corner can "
+            "be, which is what causes a stress riser in the printed rim and a "
+            "pressure point on skin. 0 disables the limit"
+        ),
+        default=5.0,
+        min=0.0,
+        max=25.0,
+        soft_min=2.0,
+    )
     trim_custom_spacing: FloatProperty(
         name="Boundary Detail (mm)",
         description=(

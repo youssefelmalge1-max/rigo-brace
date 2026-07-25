@@ -36,19 +36,28 @@ _MASK_THRESHOLD = 0.5
 _MIN_BOUNDARY_LENGTH_M = 0.20
 _MIN_BOUNDARY_HEIGHT_M = 0.05
 _MIN_ANGULAR_COVERAGE = math.radians(180.0)
-# Ceiling imposed by the RIM BUILDER, not by the trimline: at 168 and 240
-# controls the perimeter is faithful but `_validate_finished_rim` then reports
-# 5-8 local rim overlaps, because the fillet profile self-intersects where the
-# denser boundary turns tightly. Raising this needs the rim fillet reworked
-# first; until then a 2 m perimeter carries ~24 mm control spacing, so a
-# smoothing request finer than that is limited by the curve, not the filter.
-# `rigo_trim_smoothing_deviation_mm` is measured on the DELIVERED curve so this
-# limit is visible to the orthotist rather than hidden.
+# Density ceiling. Raising it to 168/240 makes the perimeter more faithful but
+# `_validate_finished_rim` then cancels with 1/5 "local rim overlap(s)".
+# Measured (tools/rimoverlapdbg.py) - the overlaps are NOT in the rim fillet and
+# NOT in the outer wall (its collision repair reports zero at every density):
+# they are INNER wall against INNER wall, i.e. the patient-contact surface
+# folding into itself. A denser trimline follows the paint more closely and so
+# retains ~26 % more of the offset mold (16739 -> 21111 vertices), including
+# concave pockets where the offset surface already self-intersects. Neither the
+# rim-radius clamp nor the trimline curvature limit changes it (both measured,
+# both no-ops here). Fixing it means fixing the offset mold, which is a separate
+# defect from the trimline. Until then a ~2 m perimeter carries ~24 mm control
+# spacing, and `rigo_trim_smoothing_deviation_mm` is measured on the DELIVERED
+# curve so the limit is visible to the orthotist rather than hidden.
 _MAX_CUSTOM_CONTROLS = 84
 # Arc-length spacing of the dense loop the parametric smoother runs on. Fixed,
 # so the smoothing result depends only on the requested millimetres and never
 # on scan resolution or on how the orthotist painted.
 _SMOOTH_SAMPLE_M = 0.001
+# Bounded, fixed-step corner relaxation. These are internal convergence limits,
+# never user-facing knobs: the orthotist sets a radius in millimetres.
+_CURVATURE_PASSES = 400
+_CURVATURE_RELAX = 0.5
 
 
 class CustomTrimMaskError(RuntimeError):
@@ -63,6 +72,8 @@ class _MaskContour:
     smoothing_passes: int
     smoothing_mm: float = 0.0
     smoothing_deviation_mm: float = 0.0
+    requested_min_radius_mm: float = 0.0
+    achieved_min_radius_mm: float = 0.0
 
 
 def _ensure_mask(scan):
@@ -320,6 +331,78 @@ def _smooth_closed_parametric(coordinates, sigma_m, spacing_m):
     return smoothed
 
 
+def _turn_radius_m(previous, current, following):
+    """Circumradius of three consecutive samples: the local turn radius."""
+    first = (current - previous).length
+    second = (following - current).length
+    third = (following - previous).length
+    if min(first, second, third) <= 1.0e-12:
+        return math.inf
+    half = (first + second + third) * 0.5
+    area_squared = max(
+        half * (half - first) * (half - second) * (half - third), 0.0
+    )
+    if area_squared <= 1.0e-24:
+        return math.inf
+    return (first * second * third) / (4.0 * math.sqrt(area_squared))
+
+
+def _minimum_turn_radius_m(coordinates):
+    count = len(coordinates)
+    if count < 3:
+        return math.inf
+    return min(
+        _turn_radius_m(
+            coordinates[index - 1],
+            coordinates[index],
+            coordinates[(index + 1) % count],
+        )
+        for index in range(count)
+    )
+
+
+def _clamp_closed_curvature(coordinates, minimum_radius_m):
+    """Widen the corners that turn tighter than the requested radius.
+
+    Smoothing bounds feature SIZE, not turn RADIUS: an unsmoothed 15 mm wobble
+    5 mm deep leaves a 1.2 mm corner, which is a stress riser in the printed rim
+    and a pressure point on skin.
+
+    This is a BEST EFFORT, not a guarantee. Local relaxation reaches the target
+    when the deficit is mild (measured 7.99 -> 10.00 mm for a 10 mm request),
+    but on a deep narrow notch it improves without converging (0.43 -> 2.32 mm
+    for a 5 mm request) - genuinely honouring that would have to move the
+    trimline far enough to change the prescription. The achieved radius is
+    therefore measured and reported, and the caller warns when it falls short.
+
+    The relaxation is local, bounded and fixed-step, so the result depends only
+    on the requested millimetres - the orthotist never sees an iteration count.
+    """
+    count = len(coordinates)
+    if minimum_radius_m <= 0.0 or count < 8:
+        return list(coordinates), _minimum_turn_radius_m(coordinates)
+    points = list(coordinates)
+    for _pass in range(_CURVATURE_PASSES):
+        tight = [
+            index
+            for index in range(count)
+            if _turn_radius_m(
+                points[index - 1], points[index], points[(index + 1) % count]
+            )
+            < minimum_radius_m
+        ]
+        if not tight:
+            break
+        relaxed = list(points)
+        for index in tight:
+            midpoint = (
+                points[index - 1] + points[(index + 1) % count]
+            ) * 0.5
+            relaxed[index] = points[index].lerp(midpoint, _CURVATURE_RELAX)
+        points = relaxed
+    return points, _minimum_turn_radius_m(points)
+
+
 def _maximum_deviation_m(smoothed, reference, window):
     """Largest distance from the smoothed loop back to the painted boundary.
 
@@ -480,7 +563,9 @@ def _delivered_deviation_m(context, scan, fitted, dense):
     return max(tree.find(point)[2] for point in fitted)
 
 
-def _extract_custom_contour(context, scan, spacing_m, smoothing_m):
+def _extract_custom_contour(
+    context, scan, spacing_m, smoothing_m, minimum_radius_m
+):
     loop = _reviewed_mask_loop(scan)
     world_loop = [scan.matrix_world @ coordinate for coordinate in loop]
     length_m = _closed_length(world_loop)
@@ -492,11 +577,15 @@ def _extract_custom_contour(context, scan, spacing_m, smoothing_m):
     shaped, _internal = _smoothed_painted_boundary(
         world_loop, length_m, smoothing_m
     )
+    shaped, _dense_radius = _clamp_closed_curvature(shaped, minimum_radius_m)
     fitted = _fit_reviewed_boundary(
         context, scan, shaped, _control_spacing_m(spacing_m, smoothing_m)
     )
     coverage = _validate_custom_contour(context, scan, fitted)
     deviation_m = _delivered_deviation_m(context, scan, fitted, dense)
+    # Measured on the DELIVERED controls, so the reported radius is the one the
+    # shell is actually cut with.
+    achieved_radius_m = _minimum_turn_radius_m(fitted)
     return _MaskContour(
         tuple(fitted),
         length_m,
@@ -504,6 +593,8 @@ def _extract_custom_contour(context, scan, spacing_m, smoothing_m):
         0,
         smoothing_m * 1000.0,
         deviation_m * 1000.0,
+        minimum_radius_m * 1000.0,
+        achieved_radius_m * 1000.0,
     )
 
 
@@ -640,6 +731,7 @@ class RIGO_OT_custom_trim_from_paint(Operator):
                 scan,
                 settings.trim_custom_spacing * 0.001,
                 settings.trim_smooth_mm * 0.001,
+                settings.trim_min_radius_mm * 0.001,
             )
         except CustomTrimMaskError as error:
             self.report({"ERROR"}, str(error))
@@ -668,6 +760,10 @@ class RIGO_OT_custom_trim_from_paint(Operator):
         perimeter["rigo_trim_smoothing_deviation_mm"] = (
             contour.smoothing_deviation_mm
         )
+        perimeter["rigo_trim_min_radius_requested_mm"] = (
+            contour.requested_min_radius_mm
+        )
+        perimeter["rigo_trim_min_radius_mm"] = contour.achieved_min_radius_mm
         perimeter["requires_orthotist_review"] = True
         mark_brace_dirty(context, "Custom painted trim perimeter created")
         from .design_ops import _set_design_view
@@ -683,6 +779,19 @@ class RIGO_OT_custom_trim_from_paint(Operator):
             )
         else:
             detail = "painted line kept exactly (smoothing 0 mm)"
+        if contour.requested_min_radius_mm > 0.0:
+            detail += (
+                f"; tightest corner {contour.achieved_min_radius_mm:.1f} mm "
+                f"(limit {contour.requested_min_radius_mm:.1f} mm)"
+            )
+            if contour.achieved_min_radius_mm < contour.requested_min_radius_mm:
+                self.report(
+                    {"WARNING"},
+                    "Trimline still turns tighter than the requested minimum "
+                    f"radius: {contour.achieved_min_radius_mm:.1f} mm against "
+                    f"{contour.requested_min_radius_mm:.1f} mm. Raise Trimline "
+                    "Smoothing or repaint that corner wider.",
+                )
         self.report(
             {"INFO"},
             f"Custom trimline: {len(contour.coordinates)} controls, "

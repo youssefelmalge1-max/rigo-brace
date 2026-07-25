@@ -541,9 +541,11 @@ def _draw_design(layout, context):
         row.prop(settings, "trim_mask_smooth")
         box.separator()
         box.prop(settings, "trim_smooth_mm")
+        box.prop(settings, "trim_min_radius_mm")
         box.prop(settings, "trim_custom_spacing")
         box.label(
-            text="Smoothing is one pass in mm, not iterations", icon="INFO"
+            text="Smoothing removes wobble; radius limits sharp corners",
+            icon="INFO",
         )
         box.operator(
             "rigo.custom_trim_from_paint",

@@ -205,6 +205,7 @@ def _run():
 
         settings.trim_custom_spacing = 6.0
         settings.trim_smooth_mm = 8.0
+        settings.trim_min_radius_mm = 5.0
         trim_result = bpy.ops.rigo.custom_trim_from_paint()
         perimeter = bpy.data.objects.get("Rigo Trim Perimeter")
         controls = (
@@ -222,10 +223,24 @@ def _run():
             if perimeter is not None
             else -1.0
         )
+        requested_radius = (
+            float(perimeter.get("rigo_trim_min_radius_requested_mm", -1.0))
+            if perimeter is not None
+            else -1.0
+        )
+        achieved_radius = (
+            float(perimeter.get("rigo_trim_min_radius_mm", -1.0))
+            if perimeter is not None
+            else -1.0
+        )
         lines.append(
             f"trim_result={trim_result} controls={controls} "
             f"stamped_smoothing_mm={stamped:.3f} "
             f"stamped_deviation_mm={stamped_deviation:.4f}"
+        )
+        lines.append(
+            f"min_radius_requested_mm={requested_radius:.3f} "
+            f"min_radius_achieved_mm={achieved_radius:.3f}"
         )
 
         if perimeter is not None:
@@ -277,6 +292,11 @@ def _run():
             and painted > 500
             and abs(stamped - 8.0) < 1.0e-6
             and stamped_deviation >= 0.0
+            # The corner limit must be recorded and the ACHIEVED value measured
+            # on the delivered curve, so a shortfall is visible rather than
+            # implied to have succeeded.
+            and abs(requested_radius - 5.0) < 1.0e-6
+            and achieved_radius > 0.0
             and smoothing["deterministic"]
             and smoothing["monotonic"]
             and agreement >= 0.90
