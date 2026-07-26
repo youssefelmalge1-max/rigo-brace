@@ -827,3 +827,50 @@ Reusable feature: `_debur_projected_curve`, `tools/rimwavedbg.py` (six-stage aud
 Risk: low - battery 12/12, fidelity improved. Confidence: high.
 Next action: residual 3.90 vs 2.32 degrees is upstream - clinical Bezier continuity and
 mold fairness only. Do not add downstream smoothing without a new stage audit.
+
+## Lesson ID: LM-0036
+Date: 2026-07-27
+Source: the upstream template-trimline audit (user directive: fairness, duplication,
+projection and smooth-editing) - tools/trimgenaudit.py + rimwavedbg rerun at shipped
+settings; measurement only, no code changed. Full report:
+TRIMLINE_TEMPLATE_AUDIT_2026-07-27.md.
+Observation: the "doubled trimline" is not duplicate or stale geometry - lifecycle is
+clean (name-keyed replacement, zero .001/Candidate leftovers, deterministic rebuilds).
+It is the BRACE-view preview `Rigo Build Trim Perimeter`: a 1.2 mm-radius bevel tube
+shrinkwrapped 0.2 mm above the inner wall, whose centerline sits 0.015-0.41 mm from
+the shell - 1008/1008 samples closer than the tube radius, so the whole tube pierces
+the shell and its emerging half reads as a second edge plus intermittent marks.
+Separately: the displayed (shrinkwrap-evaluated) perimeter is NOT the curve Generate
+builds from (raw Bezier, then projected): gap p50 0.48 / p95 2.39 / max 11.77 mm.
+The clinical Bezier itself is FAIR (max 0.29 mm off its own 3 mm-smoothed self, 1.5 %
+sign flips, zero >10-degree turns) - but G2 breaks at controls: junction curvature
+jumps are ~10x the within-segment baseline (p95 54.5 vs 5.62 1/m), worst exactly at
+the opening corners and top-front transition; handle reach is 0.25-0.75 of the
+Catmull-Rom third-of-chord and control spacing spreads 5.4x (24.5-132.3 mm).
+Editor: drag falloff is +/-2 CONTROLS, not millimetres - an 8 mm drag moved geometry
+2.0 mm beyond 150 mm of arc; any point drag re-derives ALL handles, wiping a
+user-rotated handle a quarter-perimeter away (20.0 -> 0.0 degrees); Add Curve Detail
+radially re-fits every control and jumped the curve p95 3.7 / max 14.8 mm. Fit on an
+untouched curve is a no-op (0.1 um) and drags do not create kinks (handle
+re-derivation keeps G1) - the response is smooth but non-local and destructive of
+handle intent.
+Underlying principle: measure display, geometry and editing as separate contracts.
+A pipeline can be geometrically faithful (shell fidelity p95 0.029 mm) while the
+line the clinician SEES is neither the line being cut nor pierced-tube-free, and
+while the EDITOR is smooth per-stroke yet non-local across strokes. Also: a G1
+guarantee says nothing about curvature continuity - the 10x junction jump is the
+"segments, not one curve" perception.
+Clinical implication: the generated template is an anatomical draft guide; the
+downstream cut/rim path is already manufacturing-grade. Verdict recorded as a split
+classification, with a four-part limited prototype (P1 display truth, P2 stations +
+centripetal tangent reach, P3 mm-falloff drag + local handle refresh, P4 refine
+fits new midpoints only) awaiting user approval - all in trimline_ops.py plus one
+display constant; rim/projection/QA untouched.
+Reusable feature: tools/trimgenaudit.py (junction-continuity, handle-reach,
+drag-locality, refine-fidelity, lifecycle and tube-penetration measurements).
+Test case needed: trimgentest.py with the numeric gates in the report (junction
+ratio <=3x, displayed-vs-raw p95 <=1 mm, drag locality, handle preservation,
+refine <=1 mm, zero tube penetration).
+Risk: none yet (audit only). Confidence: high - every claim measured this session.
+Next action: user decision on P1-P4; adversarial cross-review when the codex CLI
+quota returns 2026-08-01.
