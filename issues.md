@@ -464,3 +464,33 @@ Reverted to 0.35, now a named constant carrying this evidence. The delivered rad
 therefore stays ~0.35 mm against a 1.0 mm request; closing that gap needs a
 thickness-aware ceiling (a function of wall thickness, not a constant), which is
 unbuilt. Do not raise it without sweeping wall thickness as well as trimline shape.
+
+### #33 — Residual corner faceting in the rim silhouette → IMPROVED
+Reported after the tangent-cap fix: a local faceted corner in the silhouette, distinct
+from the old rim-to-shell seam. Measured with `tools/rimcornerdbg.py`, which ranks the
+boundary ring by turn angle and names WHICH ceiling binds at each point.
+Cause: the trimline there turns with a local radius of 0.64 mm while its boundary
+samples sit 0.90 mm apart - a curve tighter than its own sampling - so consecutive
+boundary edges turned 110/97/93 degrees and the polyline cut the corner (silhouette
+deviation 0.84 mm against a 0.031 mm median).
+NOT the cap cross-section: chord allocation is 3 per quarter arc everywhere, giving a
+15-degree junction that is scale-invariant, and no rim point loses its flat.
+NOT fixable by subdivision: a new midpoint lies ON the existing chord, so splitting
+boundary edges leaves the polyline shape unchanged.
+Cause of the gap in coverage: `_relax_boundary_spacing` refuses to move any vertex
+turning more than 40 degrees, a fold guard that is correct in itself but which excluded
+exactly the corners that needed rounding.
+Fix: `_soften_boundary_cusps`, a bounded pass over vertices turning more than 30
+degrees. Each is drawn toward the midpoint of its neighbours (rounding the cusp rather
+than sliding along it), total displacement capped at 0.5 x local spacing (~0.35 mm
+here), every position re-projected onto the mold under the same wrong-sheet guard, and
+the whole pass fold-reverted like the relaxation.
+Measured: worst turn 110.7 -> 46.8 deg, silhouette deviation 0.843 -> 0.554 mm, local
+turn radius 0.64 -> 0.94 mm. Trimline fidelity IMPROVED (max error 2.733 -> 2.568 mm),
+because the cusp was itself a departure from the true trimline. No global effect: p95
+turn 5.63 -> 5.75 deg, median 1.02 unchanged, aspect p99 6.31 -> 6.32, min edge
+0.080 mm unchanged, self-intersections and collapsed faces 0. Battery 12/12.
+Residual: one 46.8-degree turn remains. At that corner's 0.94 mm radius and 0.61 mm
+spacing the geometric floor is ~38 degrees, so the remaining lever is opening the
+corner further - deliberately not taken, since that erodes a genuine clinical corner
+rather than a sampling artefact.

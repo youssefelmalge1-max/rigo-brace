@@ -41,6 +41,16 @@ _RIM_RELAX_PASSES = 30
 _RIM_RELAX_STEP = 0.5
 _RIM_RELAX_CAP = 0.33
 _RIM_RELAX_MAX_TURN_RAD = math.radians(40.0)
+_RIM_CUSP_TURN_RAD = math.radians(30.0)
+_RIM_CUSP_PASSES = 12
+_RIM_CUSP_STEP = 0.35
+# Displacement cap, as a fraction of local spacing (~0.7 mm at the worst
+# corner, so ~0.35 mm of travel). At 0.30 the pass took the corner from 111
+# to 58 degrees but was still clamped; the residual is close to what a
+# genuine 0.74 mm turn radius sampled at 0.66 mm must show, so the remaining
+# lever is letting the corner open slightly further - which is bounded local
+# softening of a sub-millimetre cusp, not a change to the clinical trimline.
+_RIM_CUSP_MAX_SHIFT = 0.50
 _RIM_REPROJECT_MAX_M = 0.00015
 _RIM_CROSSING_REPAIR_PASSES = 4
 _RIM_BAND_SLIVER_TRIGGER = 0.35
@@ -627,6 +637,65 @@ def _relax_boundary_spacing(bm, ring, anchors, source_surface):
     return originals
 
 
+def _soften_boundary_cusps(bm, ring, source_surface, spacing):
+    """Round the sub-millimetre cusps that spacing relaxation skips.
+
+    `_relax_boundary_spacing` refuses to move any vertex turning more than
+    `_RIM_RELAX_MAX_TURN_RAD`, because sliding along the chord at a hairpin
+    drags the apex through the opposite side. That guard is right, but it
+    leaves precisely the worst corners untouched: measured on the reference
+    brace, one corner turns 110/97/93 degrees between consecutive boundary
+    edges over a local turn radius of 0.64 mm, while the samples there sit
+    0.9 mm apart - a curve far tighter than its own sampling, which the
+    silhouette shows as a cut-off facet (0.84 mm from smooth, against a
+    0.031 mm median elsewhere).
+
+    Subdividing cannot fix this: a new midpoint lies ON the existing chord,
+    so the polyline keeps its shape. The vertices themselves have to move.
+    Each one is drawn toward the midpoint of its neighbours - which rounds
+    the cusp rather than sliding along it - with total displacement capped
+    at a fraction of the local spacing so a genuine clinical corner is
+    softened, never erased, and every new position re-projected onto the
+    mold under the same wrong-sheet guard the relaxation uses.
+    """
+    count = len(ring)
+    if count < 5:
+        return {}
+    originals = {vertex: vertex.co.copy() for vertex in ring}
+    limit = _RIM_CUSP_MAX_SHIFT * spacing
+    for _pass in range(_RIM_CUSP_PASSES):
+        snapshot = [vertex.co.copy() for vertex in ring]
+        moved = []
+        for position, vertex in enumerate(ring):
+            before = snapshot[position - 1]
+            here = snapshot[position]
+            after = snapshot[(position + 1) % count]
+            entering, leaving = here - before, after - here
+            if min(entering.length, leaving.length) <= 1.0e-12:
+                moved.append(None)
+                continue
+            if entering.angle(leaving) < _RIM_CUSP_TURN_RAD:
+                moved.append(None)
+                continue
+            candidate = here.lerp((before + after) * 0.5, _RIM_CUSP_STEP)
+            shift = candidate - originals[vertex]
+            if shift.length > limit:
+                candidate = originals[vertex] + shift.normalized() * limit
+            hit = source_surface.bvh.find_nearest(candidate)
+            if (
+                hit[0] is not None
+                and (hit[0] - candidate).length <= _RIM_REPROJECT_MAX_M
+            ):
+                candidate = hit[0].copy()
+            moved.append(candidate)
+        if not any(position is not None for position in moved):
+            break
+        for vertex, position in zip(ring, moved):
+            if position is not None:
+                vertex.co = position
+    return originals
+
+
 def _surface_triangle_crossings(bm):
     bm.verts.index_update()
     coordinates = [tuple(vertex.co) for vertex in bm.verts]
@@ -1079,6 +1148,10 @@ def _resample_cut_boundary(surface, settings, source_surface):
         raise design_ops.TrimRimQualityError(nonmanifold_edges=1)
     originals = _relax_boundary_spacing(bm, ring, anchors, source_surface)
     _revert_folding_relaxation(bm, originals)
+    ring = _bm_boundary_ring(bm)
+    if ring:
+        cusps = _soften_boundary_cusps(bm, ring, source_surface, spacing)
+        _revert_folding_relaxation(bm, cusps)
     _repair_boundary_sliver_crossings(bm, spacing)
     _split_boundary_ear_quads(bm)
     _dissolve_shortcut_chords(bm)
