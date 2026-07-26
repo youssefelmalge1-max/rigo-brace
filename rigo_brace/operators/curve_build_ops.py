@@ -1299,18 +1299,97 @@ def _rim_profiles(coordinates, topology, radius):
     return profiles, radii
 
 
+def _cap_chord_budget(segments, has_flat):
+    """Split the profile's chords between the two arcs and the closing run.
+
+    The junction dihedral this whole change exists to remove is exactly
+    45 degrees / (chords on the arc), so chords are worth far more on the
+    arcs than on the closing run - which is straight and needs only one.
+    Sampling the cap uniformly by arc length instead spends the budget on
+    the flat (3.3 mm against each arc's 0.55 mm on the reference brace),
+    leaves one chord per arc, and lands at 45 degrees. The split is kept
+    symmetric so the inner and outer transitions match.
+    """
+    if not has_flat:
+        first = segments // 2
+        return first, 0, segments - first
+    spare = segments - 3
+    if spare < 0:
+        return 0, segments, 0
+    each = spare // 2
+    return each + 1, segments - 2 * (each + 1), each + 1
+
+
+def _cap_offsets(thickness, radius, segments):
+    """(depth, bulge) for the profile's interior points, arcs resolved first.
+
+    depth runs along the inner->outer wall normal, bulge along `outward`.
+    """
+    flat = thickness - 2.0 * radius
+    has_flat = flat > 1.0e-9
+    first, middle, last = _cap_chord_budget(segments, has_flat)
+    quarter = 0.5 * math.pi
+    points = []
+    for step in range(1, first + 1):
+        angle = math.pi - quarter * step / first
+        points.append(
+            (radius + radius * math.cos(angle), radius * math.sin(angle))
+        )
+    for step in range(1, middle + 1):
+        points.append((radius + flat * step / middle, radius))
+    for step in range(1, last + 1):
+        angle = quarter * (1.0 - step / last)
+        points.append(
+            (
+                thickness - radius + radius * math.cos(angle),
+                radius * math.sin(angle),
+            )
+        )
+    return points[: segments - 1]
+
+
 def _rim_profile(coordinates, topology, vertex):
+    """Tangent bullnose cap: quarter arc, closing run, quarter arc.
+
+    The previous profile placed points at LINEAR fractions across the wall
+    with a sin(pi*f) outward bulge - substituting f = u/t that is a sine
+    arch, w(u) = r*sin(pi*u/t), whose slope where it meets the wall is
+    pi*r/t. It therefore left a crease of atan(t / (pi*r)) against BOTH
+    walls at every radius: 74.7 degrees predicted for this fixture's 4.0 mm
+    wall and 0.349 mm delivered radius, against 75.2/75.1 measured. Because
+    that slope is finite for any finite radius, a sine arch can never be
+    tangent - which is why density grading (0.03 degrees), three bevel
+    settings and six cut-back arcs all failed to remove the seam.
+
+    Each quarter arc now leaves its wall along +/- `outward`, which
+    `_stable_outward_directions` builds as tangent x normal and orients away
+    from the mesh interior, so it lies in that wall's tangent plane by
+    construction - the cap is tangent at both ends. Outward extent stays
+    exactly `radius`, the same envelope the sine arch occupied, though the
+    bullnose fills more of it (the flat sits at full radius rather than only
+    the apex), so concave overlap is left for the exact validator to judge.
+    """
     inner = coordinates[vertex.index]
     outer = coordinates[vertex.index + topology.vertex_count]
+    segments = topology.segments
+    across = outer - inner
+    thickness = across.length
     profile = [vertex.index]
-    for step in range(1, topology.segments):
-        fraction = step / topology.segments
+    # 2r > t has no room for two quarter arcs; r = t/2 is the semicircle,
+    # which is still exactly tangent and leaves a zero-length closing run.
+    radius = min(vertex.radius, 0.5 * thickness)
+    if radius <= 1.0e-9 or thickness <= 1.0e-12:
+        # No room to round at all: a straight closing run stays watertight
+        # and keeps the point count `_rounded_shell_faces` expects.
+        for step in range(1, segments):
+            profile.append(len(coordinates))
+            coordinates.append(inner.lerp(outer, step / segments))
+        profile.append(vertex.index + topology.vertex_count)
+        return profile
+    along = across / thickness
+    for depth, bulge in _cap_offsets(thickness, radius, segments):
         profile.append(len(coordinates))
-        center = inner.lerp(outer, fraction)
-        coordinates.append(
-            center
-            + vertex.outward * vertex.radius * math.sin(math.pi * fraction)
-        )
+        coordinates.append(inner + along * depth + vertex.outward * bulge)
     profile.append(vertex.index + topology.vertex_count)
     return profile
 
