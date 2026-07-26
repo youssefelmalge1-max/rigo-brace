@@ -15,7 +15,12 @@ from ..core import (
     BUILD_TRIM_PERIMETER_NAME,
 )
 from . import design_ops
-from .custom_trim_ops import CustomTrimMaskError, _mask_values
+from .custom_trim_ops import (
+    CustomTrimMaskError,
+    _mask_values,
+    _smooth_closed_parametric,
+    _turn_radius_m,
+)
 
 _BUILD_CURVE_CANDIDATE = "Rigo Build Trim Perimeter Candidate"
 _CUTTER_TAG_ATTRIBUTE = "rigo_curve_cutter_face"
@@ -41,6 +46,19 @@ _RIM_RELAX_PASSES = 30
 _RIM_RELAX_STEP = 0.5
 _RIM_RELAX_CAP = 0.33
 _RIM_RELAX_MAX_TURN_RAD = math.radians(40.0)
+# Stage-2 projection de-burring. Sigma is a physical millimetre feature size
+# (see `_smooth_closed_parametric`); the feature radius protects genuine
+# corners; the shift cap keeps any single correction well inside the
+# one-sided 0.2 mm band the constraint allows.
+_PROJECTION_SMOOTH_M = 0.0010
+_PROJECTION_FEATURE_TURN_M = 0.004
+# A safety stop only - it must NOT bind in normal use. Tightening it to
+# 0.15 mm to bound the correction made things worse, not better (the
+# reference brace went from clean to 7 rim overlaps): clipping each point's
+# shift to a fixed magnitude while its neighbours are clipped by different
+# amounts destroys exactly the smoothness the Gaussian just created.
+# Correction strength is controlled by sigma, which is continuous.
+_PROJECTION_MAX_SHIFT_M = 0.0004
 _RIM_CUSP_TURN_RAD = math.radians(30.0)
 _RIM_CUSP_PASSES = 12
 _RIM_CUSP_STEP = 0.35
@@ -154,10 +172,69 @@ def _projection_target(base):
     )
 
 
+def _debur_projected_curve(coordinates, source_surface):
+    """Take the mold's triangle noise back out of the projected trimline.
+
+    `find_nearest` lands every sample exactly on a mold facet, so a ~3.7 mm
+    triangulation is stamped into a curve later sampled at ~1 mm. Measured
+    over identical sample counts, that projection alone multiplies the
+    trimline's turn angle by 2.7x (p95 2.32 -> 6.19 degrees) and puts 28.8 %
+    of points into sign alternation - the repeated silhouette scalloping.
+    Every later stage tracks its input faithfully and none removes it, so it
+    is corrected here, at the injection point.
+
+    `design_ops._constrain_to_source_band` already documents this exact
+    failure on the legacy path ("re-projecting every fairing step exactly
+    onto a faceted scan copies its triangle noise into the trim silhouette")
+    and the one-sided band is reused rather than reinvented: the curve may
+    bridge facets outward by up to 0.2 mm, and can never sink into the mold.
+
+    Genuine corners are protected by the turn radius of the SMOOTHED curve,
+    not the raw one - facet noise looks like a tight turn on the raw curve
+    and would protect itself from correction. The weight ramps in over a
+    further feature radius so protected and corrected stretches meet
+    continuously.
+    """
+    count = len(coordinates)
+    if _PROJECTION_SMOOTH_M <= 0.0 or count < 16:
+        return list(coordinates)
+    spacing = (
+        sum(
+            (coordinates[(index + 1) % count] - coordinates[index]).length
+            for index in range(count)
+        )
+        / count
+    )
+    if spacing <= 1.0e-9:
+        return list(coordinates)
+    smoothed = _smooth_closed_parametric(
+        coordinates, _PROJECTION_SMOOTH_M, spacing
+    )
+    feature = _PROJECTION_FEATURE_TURN_M
+    corrected = []
+    for index, point in enumerate(coordinates):
+        turn = _turn_radius_m(
+            smoothed[index - 1], smoothed[index], smoothed[(index + 1) % count]
+        )
+        weight = 0.0 if feature <= 0.0 else min(
+            1.0, max(0.0, (turn - feature) / feature)
+        )
+        if weight <= 0.0:
+            corrected.append(point.copy())
+            continue
+        candidate = point.lerp(smoothed[index], weight)
+        shift = candidate - point
+        if shift.length > _PROJECTION_MAX_SHIFT_M:
+            candidate = point + shift.normalized() * _PROJECTION_MAX_SHIFT_M
+        corrected.append(
+            design_ops._constrain_to_source_band(source_surface, candidate)
+        )
+    return corrected
+
+
 def _projected_samples(base, perimeter):
     inverse, bvh, source_surface = _projection_target(base)
     coordinates = []
-    normals = []
     for world_coordinate in _curve_world_samples(perimeter):
         hit = bvh.find_nearest(inverse @ world_coordinate)
         if hit[0] is None:
@@ -165,7 +242,13 @@ def _projected_samples(base, perimeter):
                 "The trimline could not be projected onto the offset mold"
             )
         coordinates.append(hit[0].copy())
-        normals.append(design_ops._surface_normal_at(source_surface, hit[0]))
+    coordinates = _debur_projected_curve(coordinates, source_surface)
+    # Normals are taken at the CORRECTED positions, so the cutter ribbon is
+    # built on the curve that is actually used.
+    normals = [
+        design_ops._surface_normal_at(source_surface, coordinate)
+        for coordinate in coordinates
+    ]
     return tuple(coordinates), tuple(normals)
 
 

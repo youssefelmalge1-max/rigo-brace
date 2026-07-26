@@ -494,3 +494,40 @@ Residual: one 46.8-degree turn remains. At that corner's 0.94 mm radius and 0.61
 spacing the geometric floor is ~38 degrees, so the remaining lever is opening the
 corner further - deliberately not taken, since that erodes a genuine clinical corner
 rather than a sampling artefact.
+
+### #34 — Repeated silhouette scalloping → FIXED at the projection stage
+Six-stage audit (`tools/rimwavedbg.py`) measured the boundary against a continuous
+reference at every stage. The only apples-to-apples comparison in the pipeline - stages
+1 and 2 share sample count and spacing - is decisive: projecting the clinical Bezier
+onto the mold multiplies its turn angle by 2.7x (p95 2.32 -> 6.19 deg) and puts 28.8 %
+of points into sign alternation. Stages 3-6 track that input faithfully (4.9-5.8 deg)
+and none of them adds or removes waviness. Cause = D, projection onto the faceted
+surface, with C (the Bezier's own 2.32 deg) as a floor.
+`_projected_samples` snapped every sample onto a mold facet with `bvh.find_nearest`,
+stamping ~3.7 mm triangulation into a curve later sampled at ~1 mm. The legacy path
+already documented this exact failure in `design_ops._constrain_to_source_band`
+("re-projecting every fairing step exactly onto a faceted scan copies its triangle
+noise into the trim silhouette"); the curve path had reintroduced it.
+Fix (`_debur_projected_curve`): project as before, then one closed arc-length Gaussian
+via the existing `_smooth_closed_parametric`, corners protected by the turn radius of
+the SMOOTHED curve (raw-curve facet noise otherwise masquerades as a corner and shields
+itself), weight ramped so protected and corrected stretches meet continuously, and the
+result held in the existing one-sided 0.2 mm band instead of re-snapped.
+Sigma swept at 0/1.0/1.5/2.5/4.0 mm. 1.5 measured best in isolation but broke the
+hostile hairpin by one rim overlap; 2.5+ degraded clinical fidelity (0.069 -> 0.117 mm)
+without further smoothing gain. 1.0 mm is the shipped value.
+Measured at sigma 1.0 against sigma 0: stage-2 smooth-region turn p95 5.47 -> 3.90 deg,
+final 4.92 -> 3.82 deg, final smooth-region deviation 0.0292 -> 0.0157 mm, HF
+oscillation 0.0344 -> 0.0273 mm, stage-2 sign flips 28.8 -> 14.6 %, final 38.0 ->
+27.8 %. Clinical-curve fidelity IMPROVED (p95 0.0686 -> 0.0557 mm). Zero
+self-intersections and zero collapsed faces; the hostile fixture improved as well
+(aspect max 41.0 -> 32.3, spacing ratio 6.06 -> 4.90). Battery 12/12.
+NOT fully closed: stage-2 smooth-region turn is 3.90 deg against the Bezier's own
+2.32 deg baseline. The residual belongs to the clinical curve and to the mold facets
+the boundary must lie on, and more smoothing at this stage was measured to cost
+fidelity or robustness rather than close it.
+LESSON: the per-point displacement cap must never bind. Tightening it from 0.4 to
+0.15 mm to bound the correction took the reference brace from clean to 7 rim overlaps,
+because clipping each point's shift while its neighbours are clipped differently
+destroys the smoothness the Gaussian just created. Strength belongs to sigma, which is
+continuous; the cap is a safety stop only.
