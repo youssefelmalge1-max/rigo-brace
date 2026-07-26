@@ -428,3 +428,39 @@ QA are all unaffected, and the physical edge is hand-finished after thermoformin
 Any future attempt should change the architecture (build the rim as a swept solid
 unioned onto a trimmed-back wall, rather than a strip bridging two offset walls), not
 tune the current one.
+
+### #31 — Rim cap made tangent; the seam is FIXED
+The crease was the cross-section curve, not the architecture. `_rim_profile` placed its
+points at LINEAR fractions across the wall with a sin(pi*f) outward bulge; substituting
+f = u/t that is a sine arch w(u) = r*sin(pi*u/t), whose slope where it meets the wall is
+pi*r/t. It therefore left a crease of atan(t / (pi*r)) against BOTH walls at EVERY
+radius - 74.7 degrees predicted for t = 4.0 mm and r = 0.349 mm, against 75.2/75.1
+measured. Because that slope is finite for any finite radius, a sine arch can never be
+tangent, which explains all ten earlier failures at once: they were treating a symptom
+of a wrong curve.
+Replaced by a quarter arc leaving the inner wall along +outward, a straight closing run,
+and a quarter arc arriving at the outer wall along -outward (r clamped to t/2, where it
+degenerates to an exactly tangent semicircle). Chords are allocated to the arcs, not
+spread by arc length: junction dihedral is exactly 45 deg / (chords per arc), and
+uniform sampling spends the budget on the flat and leaves 45 degrees.
+Measured: seam normal jump 37.48 -> 7.58 deg median (40.07 -> 9.44 p95), cap dihedral
+p95 75.68 -> 30.01, self-intersections 0, zero-area 0, aspect p99 3.40 -> 7.99 (max
+41.0 unchanged), trimline p95/max 0.026/2.733 mm unchanged, vertex and face counts
+IDENTICAL. Hostile hairpin builds clean. Battery 12/12, determinism 4/4. Visually the
+hard black seam line is gone and the rim reads as a rounded edge (rimshot_*.png).
+Commit 8668f95.
+
+### #32 — The 0.35 x spacing radius ceiling is REAL, not conservative padding
+The architecture review argued this term was unmotivated, since spacing runs ALONG the
+boundary while the cap bulges PERPENDICULAR to it, and that overlap is governed by
+curvature alone. That argument is WRONG, and the sweep proves it:
+    4 mm wall, reference trimline : clean at 0.35/0.5/0.75/1.0/1.5/2.0
+    4 mm wall, hostile hairpin    : clean to 0.75, then 12/13/19 overlaps
+    6 mm wall, reference trimline : clean ONLY at 0.35; 0.5 already gives 2 overlaps
+Raising it to 0.75 on the strength of the 4 mm results alone broke the 6 mm wall in
+thicknesstest (10 overlaps). Thicker walls carry the cap further from the surface, so
+neighbouring profiles converge sooner - a limit the curvature clamp does not cover.
+Reverted to 0.35, now a named constant carrying this evidence. The delivered radius
+therefore stays ~0.35 mm against a 1.0 mm request; closing that gap needs a
+thickness-aware ceiling (a function of wall thickness, not a constant), which is
+unbuilt. Do not raise it without sweeping wall thickness as well as trimline shape.

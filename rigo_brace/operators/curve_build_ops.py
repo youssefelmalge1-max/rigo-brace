@@ -46,6 +46,22 @@ _RIM_CROSSING_REPAIR_PASSES = 4
 _RIM_BAND_SLIVER_TRIGGER = 0.35
 _RIM_REPAIR_MAX_EDGE = 0.75
 _RIM_FRAME_DOT_SAFE = 0.5
+# Ceiling on the rim radius as a multiple of local boundary spacing.
+# This looks over-conservative - it holds the delivered radius to ~0.35 mm
+# against a 1.0 mm request - and the argument that it is unmotivated is
+# tempting, because spacing runs ALONG the boundary while the cap bulges
+# PERPENDICULAR to it. Measurement says otherwise. Swept at 0.35/0.5/0.75/
+# 1.0/1.5/2.0 on three fixtures:
+#   4 mm wall, reference trimline : clean at every factor
+#   4 mm wall, hostile hairpin    : clean to 0.75, then 12/13/19 overlaps
+#   6 mm wall, reference trimline : clean ONLY at 0.35; 0.5 already gives 2
+# Thicker walls carry the cap further from the surface, so the profiles of
+# neighbouring boundary points converge sooner - a real limit that the
+# curvature clamp alone does not cover. 0.35 is the only value safe across
+# all three, and raising it to 0.75 did in fact break the 6 mm case in
+# thicknesstest. Do not raise this without re-running the sweep across wall
+# thicknesses as well as trimlines.
+_RIM_SPACING_RADIUS_CEILING = 0.35
 
 
 @dataclass(frozen=True)
@@ -1233,7 +1249,7 @@ def _safe_rim_radii(coordinates, boundary, requested):
             (coordinates[index] - coordinates[neighbour]).length
             for neighbour in neighbours
         )
-        ceilings[index] = min(requested, 0.35 * spacing)
+        ceilings[index] = min(requested, _RIM_SPACING_RADIUS_CEILING * spacing)
     ring = _ordered_boundary_ring(boundary)
     if not ring:
         return ceilings
