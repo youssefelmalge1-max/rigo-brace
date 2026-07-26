@@ -398,3 +398,33 @@ scale - the rim (0.3 mm) is an order of magnitude smaller than the wall facets
 in a band around the trimline FIRST. That is the one part of the external review's
 proposal the measurements support - not as the cause of the seam, but as the
 precondition for fixing it.
+
+### #30 UPDATE 2 — Graded transition band measured and rejected; seam CLOSED as not-fixable-here
+The external review's core proposal - widen the trimline band and grade edge length
+gradually outward - was implemented and measured. The grading itself worked exactly as
+specified: wall edge length now stepped 0.75 -> 0.83 -> 1.55 -> 2.83 -> 3.69 -> 3.76 mm
+outward from the trimline (ratios 1.11/1.87/1.83/1.30/1.02), the build stayed clean,
+and the cost was +24k faces (118k -> 142k).
+
+The seam did not move: JUNCTION vertex-normal jump 37.484 -> 37.518 degrees.
+
+Reason, which settles the argument: the wall is locally FLAT over its 3.7 mm faces, so
+every sub-face produced by subdivision inherits the same normal. Refining a flat region
+cannot change vertex normals at all - density only affects shading where the surface
+curves. The 75-degree crease is a genuine geometric corner and only geometry can soften
+it.
+
+Band + bevel together was then measured, on the theory that a finer wall would let the
+bevel cut cleanly: it did not. Aspect p99 went from 98.87 (coarse wall) to 196.84 (fine
+wall), and the hostile trimline failed with 19 collapsed faces. The finer mesh amplified
+the bevel's failure mode instead of relieving it.
+
+Ten distinct constructions have now been measured for this seam: six profile-level
+tangent arcs (all self-intersect), three bevel configurations (all produce slivers,
+monotonically trading seam against aspect), and the graded band (no effect). All
+reverted. CONCLUSION: the seam is not fixable within the present rim architecture. It is
+cosmetic only - trimline position, wall thickness, manifoldness, self-intersection and
+QA are all unaffected, and the physical edge is hand-finished after thermoforming.
+Any future attempt should change the architecture (build the rim as a swept solid
+unioned onto a trimmed-back wall, rather than a strip bridging two offset walls), not
+tune the current one.
