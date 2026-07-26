@@ -600,6 +600,11 @@ def _draw_design(layout, context):
                 depress=settings.design_view_mode == "BRACE",
             )
             brace_view.mode = "BRACE"
+            overlay_row = box.row()
+            overlay_row.enabled = settings.design_view_mode == "BRACE"
+            overlay_row.prop(
+                settings, "show_trim_overlay", icon="CURVE_DATA", toggle=True
+            )
     elif settings.trim_source_mode == "TEMPLATE":
         box.label(text="Needs landmarks (pelvis/waist/shoulder)", icon="INFO")
 

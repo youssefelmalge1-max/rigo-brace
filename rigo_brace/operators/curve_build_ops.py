@@ -23,6 +23,15 @@ from .custom_trim_ops import (
 )
 
 _BUILD_CURVE_CANDIDATE = "Rigo Build Trim Perimeter Candidate"
+# The BRACE-view overlay must never touch the shell. Its Shrinkwrap target is
+# the BASE - the shell's inner-wall surface - so any offset smaller than the
+# wall thickness leaves the line inside the wall material: the previous
+# 1.2 mm tube on a 0.2 mm offset had 100 % of its centerline closer to the
+# shell than the tube radius, and its emerging half read as a doubled trim
+# edge. The overlay therefore clears the OUTER wall: offset = requested wall
+# thickness + this clearance, with a thin tube well below the clearance.
+_PREVIEW_BEVEL_M = 0.0003
+_PREVIEW_CLEARANCE_M = 0.0015
 _CUTTER_TAG_ATTRIBUTE = "rigo_curve_cutter_face"
 _CUTTER_HALF_DEPTH_M = 0.0015
 _EXACT_CUT_WELD_M = 0.000005
@@ -1768,12 +1777,19 @@ def _preview_curve(context, perimeter, base):
     preview.data = perimeter.data.copy()
     preview.name = _BUILD_CURVE_CANDIDATE
     preview.data.name = _BUILD_CURVE_CANDIDATE
+    preview.data.bevel_depth = _PREVIEW_BEVEL_M
     preview.modifiers.clear()
     modifier = preview.modifiers.new(name="Follow Offset Mold", type="SHRINKWRAP")
     modifier.target = base
-    modifier.wrap_method = "TARGET_PROJECT"
-    modifier.wrap_mode = "ON_SURFACE"
-    modifier.offset = 0.0002
+    # ON_SURFACE keeps the offset on the side the point CAME from - the source
+    # perimeter sits below the base (body side), so the old preview was held
+    # 0.2 mm under the inner wall, buried in the wall material. ABOVE_SURFACE
+    # forces the positive-normal side, so the line floats above the outer wall.
+    modifier.wrap_method = "NEAREST_SURFACEPOINT"
+    modifier.wrap_mode = "ABOVE_SURFACE"
+    modifier.offset = (
+        context.scene.rigo_brace.corset_thickness * 0.001 + _PREVIEW_CLEARANCE_M
+    )
     context.scene.collection.objects.link(preview)
     return preview
 

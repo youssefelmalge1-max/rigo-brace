@@ -183,6 +183,15 @@ OUTLINE_CURVE_NAME = "Rigo Outline"
 BUILD_TRIM_PERIMETER_NAME = "Rigo Build Trim Perimeter"
 
 
+def _update_trim_overlay(self, context):
+    """Re-apply the brace preview so the overlay choice takes effect live."""
+    if self.design_view_mode != "BRACE":
+        return
+    from ..operators.design_ops import _set_design_view
+
+    _set_design_view(context, "BRACE")
+
+
 def _update_corset_opacity(self, context):
     """Live-drive the generated corset's display alpha."""
     corset = bpy.data.objects.get(CORSET_NAME)
@@ -1024,6 +1033,16 @@ class RigoBraceSettings(PropertyGroup):
         ),
         default="TRIM",
         options={"HIDDEN"},
+    )
+    show_trim_overlay: BoolProperty(
+        name="Trimline Overlay",
+        description=(
+            "Show the built trimline path as a thin line floating clearly "
+            "above the generated brace; off in normal use, the shell edge "
+            "itself is the trimline"
+        ),
+        default=False,
+        update=_update_trim_overlay,
     )
     trim_top: FloatProperty(
         name="Trim Top (mm)",

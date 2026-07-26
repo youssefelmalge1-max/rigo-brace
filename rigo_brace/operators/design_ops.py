@@ -386,7 +386,10 @@ def _set_design_view(context, mode):
     if mode == "BRACE":
         if brace is None:
             return False
-        show_build_curve = brace.get("rigo_build_method") == "CURVE_EXACT"
+        show_build_curve = (
+            brace.get("rigo_build_method") == "CURVE_EXACT"
+            and settings.show_trim_overlay
+        )
         visible = {brace}
         if show_build_curve and build_perimeter is not None:
             visible.add(build_perimeter)
