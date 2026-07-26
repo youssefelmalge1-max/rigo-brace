@@ -766,3 +766,64 @@ Confidence: high, all figures measured this session.
 Next action: seam needs a graded transition band around the trimline BEFORE any
 fillet rework - the rim is 10x smaller than the wall facets, so a tangent fillet has
 nowhere to live at current density.
+
+## Lesson ID: LM-0034
+Date: 2026-07-26
+Source: fixing the rim-to-shell seam after ten failed local repairs (issues.md #31).
+Observation: the crease was the cross-section CURVE, not the architecture. `_rim_profile`
+placed points at linear fractions across the wall with a sin(pi*f) outward bulge;
+substituting f = u/t that is a sine arch w(u) = r*sin(pi*u/t), whose slope where it
+meets the wall is pi*r/t, so it left a crease of atan(t / (pi*r)) at EVERY radius.
+Predicted 74.7 degrees for t = 4.0 mm and r = 0.349 mm against 75.2/75.1 measured.
+Because pi*r/t is finite for any finite radius, a sine arch can never be tangent.
+Underlying principle: when a defect resists ten different local repairs, stop repairing
+and derive the closed form. One page of algebra explained every previous failure at
+once - density grading moved the seam 0.03 degrees, bevels slivered, cut-back arcs
+self-intersected - because all of them were treating the symptom of a wrong curve.
+A model that PREDICTS the measured number to 0.5 degrees is worth more than any number
+of plausible mechanisms.
+Second insight, equally load-bearing: the junction dihedral of the replacement is
+exactly 45 degrees / (chords per arc). Sampling the cap uniformly by arc length spends
+the chord budget on the straight closing run (3.3 mm against each arc's 0.55 mm),
+leaves one chord per arc, and lands at 45 degrees. Chords must be ALLOCATED to the
+curved parts.
+Clinical implication: seam normal jump 37.48 -> 7.58 degrees with identical vertex and
+face counts, identical trimline fidelity, identical delivered radius - a pure shape
+change, so nothing downstream could regress.
+Reusable feature: `_cap_offsets`, `_cap_chord_budget`, `tools/rimseamdbg.py`.
+Risk: low. Confidence: high - analytic and measured agree.
+Next action: none for the seam; it is closed.
+
+## Lesson ID: LM-0035
+Date: 2026-07-26
+Source: the silhouette scalloping audit and its projection fix (issues.md #34).
+Observation: `bvh.find_nearest` projection snapped the clinical trimline onto mold
+facets, stamping a ~3.7 mm triangulation into a curve later sampled at ~1 mm. Measured
+over identical sample counts, projection alone multiplied turn angle 2.7x (2.32 ->
+6.19 degrees) and produced 28.8 % sign alternation. Every downstream stage tracked its
+input faithfully; none created or removed the waviness.
+Underlying principle: to attribute a defect to a pipeline stage, find the comparison
+where only ONE thing changes. Stages that resample change point density, which moves
+turn-angle statistics on its own; stages 1 and 2 shared spacing exactly, and that was
+the only clean measurement in the pipeline.
+Blender/geometry lesson: never re-snap a faired curve exactly onto a faceted surface.
+`design_ops._constrain_to_source_band` had already documented this on the legacy path
+and the curve path reintroduced it - check whether the codebase has already solved a
+problem before designing a fix.
+HARD-WON: a per-point displacement cap must never BIND. Tightening it from 0.4 to
+0.15 mm, intended to bound the correction, took the reference brace from clean to 7 rim
+overlaps: clipping each point's shift while neighbours are clipped by different amounts
+destroys the smoothness the Gaussian just created. Correction strength belongs to a
+continuous parameter (sigma); caps are safety stops.
+ALSO: the setting that measures best in isolation is not necessarily shippable. Sigma
+1.5 won every smoothness metric and broke the hostile hairpin by one rim overlap; 1.0
+shipped.
+DIAGNOSTIC TRAP, hit twice: a result that is INVARIANT across the swept variable is
+almost always a broken fixture, not a real negative. Both times (reading a regenerated
+brace through a stale pointer; crowding trimline points without re-deriving their
+handles) it produced an identical refusal at every setting and read convincingly like
+"this knob does nothing".
+Reusable feature: `_debur_projected_curve`, `tools/rimwavedbg.py` (six-stage audit).
+Risk: low - battery 12/12, fidelity improved. Confidence: high.
+Next action: residual 3.90 vs 2.32 degrees is upstream - clinical Bezier continuity and
+mold fairness only. Do not add downstream smoothing without a new stage audit.

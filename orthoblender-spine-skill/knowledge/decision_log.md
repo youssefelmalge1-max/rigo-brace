@@ -826,3 +826,36 @@ guard, `_corner_spike_limits`); `tools/rimresampletest.py`, `rimqualitydbg.py`,
 Tests required: `rimresampletest`, `curvebuildtest` 4/4 determinism,
 `customtrimseamtest`, `curvefinishtest`, `selftest`, `importtest`, `thicknesstest`,
 `trimqualitytest`, `slotbracetest`, `referencetrimtest`.
+
+## Decision ID: DEC-0037
+Date: 2026-07-26
+Decision: Fix the rim seam by correcting the cap cross-section in `_rim_profile`
+(tangent quarter-arc / closing run / quarter-arc), NOT by any of the four architectures
+proposed in the review - explicit swept solid with Boolean union, localized SDF smooth
+union, hybrid implicit patch, or an external geometry kernel.
+Reason: the closed form atan(t / (pi*r)) predicts the measured crease to 0.5 degrees and
+proves a sine arch cannot be tangent at any radius. The defect was a wrong curve, so no
+architecture change was warranted. The repository also already holds what a swept solid
+would have to rediscover: `design_ops._paired_coordinates` gives exact index
+correspondence between the inner and outer walls (i <-> i + vertex_count) and
+`_ordered_boundary_ring` gives the sweep path.
+Alternatives: A swept solid + Exact Boolean; B localized SDF; C hybrid patch; D external
+kernel. All rejected as high irreversible risk (Boolean instability at hairpins, lost
+provenance, voxel-resolution dependence, deployment constraints) against a problem that
+a correct cross-section removes for free.
+Clinical risk: none identified - vertex and face counts, trimline fidelity, delivered
+radius, wall thickness and rim provenance are all bit-identical; only the cap's shape
+changed. No shrinkage, no thickness loss, and no pre-compensation was needed, so the
+deformation budget the brief authorised went unused for the primary fix.
+Technical risk: the bullnose fills more of the same radius envelope than the sine arch
+did, so concave overlap was left to the exact validator rather than argued from the
+envelope; it reported zero on both the reference and hostile fixtures.
+Rollback plan: revert `_rim_profile` and its two helpers; the guard, resampling and
+projection commits are independent.
+Files affected: `rigo_brace/operators/curve_build_ops.py` (`_rim_profile`,
+`_cap_offsets`, `_cap_chord_budget`, `_soften_boundary_cusps`,
+`_debur_projected_curve`); `tools/rimseamdbg.py`, `rimcornerdbg.py`, `rimwavedbg.py`,
+`radiussweepdbg.py`, `rimshot.py`.
+Tests required: rimresampletest, curvebuildtest, qaexclusiontest, thicknesstest,
+referencetrimtest, qatest, selftest, importtest, customtrimseamtest, curvefinishtest,
+trimqualitytest, slotbracetest - all green.
