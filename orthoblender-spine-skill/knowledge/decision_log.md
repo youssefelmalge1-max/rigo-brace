@@ -913,3 +913,45 @@ Follow-up: P3 (editor locality) and P4 (exact De Casteljau refine) remain. The o
 self-intersection is scheduled as the next ARCHITECTURAL task (issues.md #37): it is the
 shared constraint behind this decision's rejected variants and three previously capped
 features, and trimline quality cannot rise further until it is fixed.
+
+## Decision ID: DEC-0039
+Date: 2026-07-27
+Decision: The authoritative clinical trimline is a curve constrained to the GENERATED
+BRACE INNER SURFACE, not to the patient body and not to a fixed mold assumption. Clearance
+belongs to brace generation, not to the trimline, and the inner brace surface becomes a
+persistent first-class authoring object rather than a transient artifact created inside
+Generate. Recorded as issues.md #42; implementation blocked behind #37.
+Reason: the trimline carried its own `SURFACE_OFFSET = 1.5 mm` standoff from the body,
+independent of the user's clearance setting. Measured against the generated inner surface,
+93.06 % of the evaluated curve is on the wrong side of it, 2060.1 mm of 2241 mm of
+continuous arc penetrates, worst -7.468 mm, maximum float-away +8.580 mm. The deviation
+has two independent components: a systematic -1.500 mm from the trimline's own offset
+(visible cleanly in the control points, all at exactly -1.500 mm) and +/-7-8 mm of
+inter-station sagitta on top.
+Explicit guard: removing `SURFACE_OFFSET` alone is FORBIDDEN as a standalone change. It
+corrects the constant bias only, leaves the sagitta failure intact, and would make every
+control station read ~0.000 mm - i.e. it would look fixed while the evaluated curve still
+cut through the surface. The two must land together.
+Alternatives rejected: constraining the trimline to the BODY (the previous framing - it
+makes the trimline define a clearance that is not the user's setting); keeping the inner
+surface transient and conforming only at Generate time (the orthotist would author against
+a surface that does not exist yet, and display, editing and cutting would again diverge);
+a band constraint against the body (prototyped and rejected, issues.md #41).
+Clinical risk: none from the decision itself, which changes no code. It removes a real
+risk - the authored line and the cut line currently follow different surfaces, and the
+trimline's standoff does not track the clearance the orthotist selected.
+Technical risk: promoting the inner surface to persistent gives it the transactional and
+staleness discipline the brace already has (requirements 10-12), touching
+`_capture_generation_snapshot` / `_commit_generation` / `_restore_failed_generation` and
+`core/signatures.py`. That is design work, not a rename.
+Rollback plan: none needed yet; nothing is implemented.
+Files affected (future): `trimline_ops.py` (remove SURFACE_OFFSET, conform to the inner
+surface), `design_ops.py` (persistent inner surface + transactions), `curve_build_ops.py`
+(consume the one authoritative path), `core/__init__.py` and `core/signatures.py`
+(clearance property, sync hashes), `ui/panels.py`, plus the gate battery.
+Tests required (future): the #42 acceptance gates, all measured against the generated
+inner brace surface, against the baseline above.
+Sequencing: blocked behind #37 (offset-mold self-intersection). The #41a opening policy -
+hard protection only at semantic landmarks and intentional features, outward-only
+correction between them - applies to this work, refined by requirement 9: protection pins
+features, it does not license penetration between them.

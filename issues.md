@@ -765,3 +765,62 @@ substantive work in this ticket, alongside removing `SURFACE_OFFSET`.
 **Sequencing.** Blocked behind #37 (offset-mold self-intersection), per the owner's
 instruction, and the #41a opening policy (hard protection only at semantic landmarks and
 intentional features, outward-only correction between them) applies to this work too.
+
+#### #42 — ACCEPTED DESIGN: persistent inner brace surface (recorded 2026-07-27)
+
+**DO NOT ship removal of `SURFACE_OFFSET` as a standalone fix.** It would remove only the
+systematic −1.500 mm bias and leave the larger failure — ±7–8 mm of inter-station sagitta,
+93.06% of the evaluated curve on the wrong side — untouched, while making the trimline
+*look* corrected because every control station would then read ~0.000 mm. The constant
+bias and the curve-on-surface conformance must land together.
+
+**Object model**
+
+| object | role | lifetime |
+|---|---|---|
+| corrected patient body | clinical source geometry | persistent |
+| **generated inner brace surface** | body offset by the user-selected clearance | **persistent, first-class** (today: transient, created inside Generate) |
+| authoritative clinical trimline | curve constrained to that inner surface | persistent |
+| display-only trimline overlay | visual lift; no geometric effect | derived |
+| transactional candidate shell | build/validate target | per-generation |
+| last validated generated brace | the shippable artifact | persistent |
+
+**Requirements**
+1. Inner brace surface generated from the corrected body using the user-selected clearance.
+2. Clearance configurable — ~0.1 / 0.5 / 1 / 2 / 3 mm or another value.
+3. Changing clearance regenerates or updates the persistent inner surface deterministically.
+4. The complete evaluated trimline follows that surface continuously between stations.
+5. Controls lying on the surface is NOT sufficient.
+6. No inter-station chord or sagitta cutting through convex regions.
+7. Display, editing, cutting and rim generation all consume the one authoritative
+   surface-following path.
+8. Display lift stays separate and visual only.
+9. Semantic landmarks and intentional features stay clinically constrained, but protected
+   arcs must not be permitted to penetrate the inner surface (refines #41a: protection
+   pins features, it does not license penetration between them).
+10. Transactional Generate is preserved: build and validate on a candidate copy, replace
+    the previous brace only on success.
+11. A failed regeneration leaves the previous valid inner surface, trimline state and
+    brace intact, or restores them atomically.
+12. Versions/hashes tracked so the system can detect when inner surface, clearance,
+    trimline and generated brace fall out of sync.
+
+Requirements 10–12 interact with the existing candidate model in `design_ops`
+(`_capture_generation_snapshot` / `_commit_generation` / `_restore_failed_generation`) and
+with `core/signatures.py`. Promoting the inner surface to persistent means it acquires the
+same transactional and staleness discipline the brace already has — that is design work,
+not a rename.
+
+**Acceptance gates, all measured against the generated INNER BRACE SURFACE**
+percentage and continuous arc length penetrating · signed p50/p95/p99/max · maximum
+float-away · landmark displacement · fairness and scalloping · self-crossing · cutter and
+offset validity · rim · wall thickness · QA · export · determinism.
+
+**Targets** — zero meaningful penetration; surface-adherence error near zero within a
+tolerance justified by mesh resolution; no material float-away; the trimline visibly and
+geometrically follows the inner-surface curvature.
+
+**Baseline to beat** (A reference, clearance 3.0 mm): 93.06% penetrating, 2060.1 of
+2241 mm of continuous arc, worst −7.468 mm, max float-away +8.580 mm.
+
+Blocked behind #37.
