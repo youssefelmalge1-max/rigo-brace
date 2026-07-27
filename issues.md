@@ -711,3 +711,57 @@ opening coverage. The band experiment is to be repeated on that basis — hard p
 feature points, soft influence around them, smooth outward-only correction between them,
 zero body penetration, preserved coverage and fairness — and **only after #37 is
 addressed**.
+
+### #42 OPEN, ARCHITECTURAL — the trimline must be a curve ON the generated inner brace surface
+**Policy correction from the project owner, 2026-07-27. Supersedes the offset framing used
+in #41/#41a.**
+
+The trimline does not define brace clearance and must not be constrained to the BODY.
+Clearance is a property of BRACE GENERATION: it is the gap between the corrected body and
+the generated inner brace surface (0.1 / 1.0 / 2.0 / 3.0 mm default / user value). The
+correct pipeline is: corrected body → generate inner surface at the requested clearance →
+the complete evaluated trimline follows THAT surface's curvature → the same
+surface-following path is used for display, editing, cutting and rim generation.
+
+**Definitions to keep distinct**
+- **BODY** — the corrected patient model.
+- **INNER BRACE SURFACE** — BODY offset by the user-selected clearance (currently
+  `Rigo Corset Base` = body + `corset_offset`, then faired).
+- **AUTHORITATIVE TRIMLINE** — a curve constrained to the inner brace surface.
+- **DISPLAY LIFT** — an optional tiny visual-only offset with no effect on brace geometry.
+
+**What this retracts.** Earlier notes (mine) described the trimline sitting ~1.5 mm inside
+the mold as "by design, not penetration". That correctly described the CURRENT
+architecture and is exactly the assumption being rejected. Measured against the correct
+reference, that gap is an adherence failure. `SURFACE_OFFSET = 1.5 mm` in `trimline_ops`
+is an independent trimline offset policy and must be removed, not preserved.
+
+**Baseline — authoritative raw Bézier vs the INNER BRACE SURFACE** (A reference, clearance
+3.0 mm, target for every figure is ~0.000 mm):
+
+| region | penetrating | \|dev\| p50 | p95 | p99 | max | worst penetration | max float-away |
+|---|---|---|---|---|---|---|---|
+| whole curve | **93.06%** | 1.552 | 4.370 | 6.495 | 8.580 | **−7.468 mm** | **+8.580 mm** |
+| protected opening zone | 97.92% | 1.640 | 4.058 | 5.048 | 5.390 | −5.390 mm | +0.182 mm |
+| everywhere else | 91.10% | 1.511 | 4.451 | 7.190 | 8.580 | −7.468 mm | +8.580 mm |
+| control points | all | — | — | — | — | −1.500 mm (the trimline's own offset) | — |
+
+Continuous arc penetrating: 2060.1 mm of 2241 mm. Two distinct components: a systematic
+−1.5 mm from the trimline's own offset, and ±7-8 mm of inter-station sagitta on top.
+
+**Required behaviour** — zero meaningful penetration of the inner surface; no material
+float-away; the whole evaluated curve follows surface curvature between landmarks; no
+inter-station chord cutting; no hard nearest-triangle snapping (LM-0035); landmarks and
+intentional features stay clinically controlled; display and cutter share the one
+authoritative path; changing clearance regenerates the inner surface and the trimline
+follows it without acquiring an offset of its own.
+
+**Known architectural obstacle.** The inner brace surface currently exists only as a
+TRANSIENT artifact created inside Generate (`_prepare_candidate_base`) and is discarded on
+failure. For the trimline to be constrained to it during authoring, it must become a
+persistent first-class object that is regenerated when clearance changes. That is the
+substantive work in this ticket, alongside removing `SURFACE_OFFSET`.
+
+**Sequencing.** Blocked behind #37 (offset-mold self-intersection), per the owner's
+instruction, and the #41a opening policy (hard protection only at semantic landmarks and
+intentional features, outward-only correction between them) applies to this work too.

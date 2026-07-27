@@ -17,10 +17,22 @@ Reference surfaces, stated exactly:
                        normal (liner) then Laplacian-faired. The cutter
                        projects onto THIS.
 
-Why the two cannot be compared: the trimline is authored 1.5 mm outside the
-BODY, and the mold is 3.0 mm outside the body, so a correctly placed trimline
-sits about 1.5 mm INSIDE the mold by construction. "Inside the mold" is
-therefore not a defect and must never be read as "inside the patient".
+POLICY CORRECTION 2026-07-27 (project owner): the trimline must NOT have an
+independent body offset. Clearance is a property of the brace - it is the gap
+between the corrected body and the generated INNER BRACE SURFACE - and the
+authoritative trimline must lie ON that generated inner surface, following its
+curvature along its whole evaluated length.
+
+So the current `SURFACE_OFFSET = 1.5 mm` standoff from the BODY is itself the
+defect, not a design choice. Earlier notes in this file described the
+resulting ~1.5 mm gap to the mold as "by design"; that described the old
+architecture and is retracted. Against the correct reference - the generated
+inner brace surface - that gap is a real adherence failure, and the numbers
+below are the baseline for fixing it.
+
+Distances against the BODY are still reported, but only to show that the
+control points are consistently placed; the BODY is no longer the surface the
+trimline should be constrained to.
 
 Writes trimreferencedbg_result.txt; quits Blender itself.
 """
@@ -81,11 +93,19 @@ def _stats(label, signed, points, lines, indent="    "):
         f"{indent}{label}: n={len(values)} inside={len(inside)} "
         f"({100.0*len(inside)/len(values):.2f}%) inside_arc={arc*1000:.1f}mm"
     )
+    # Signed percentiles as the acceptance audit specifies them: p50/p95/p99
+    # by MAGNITUDE of deviation from the surface, plus the two extremes.
+    magnitude = sorted(abs(value) for value in values)
     lines.append(
-        f"{indent}    worst_inward={values[0]*1000:+.3f}mm "
-        f"p1={_pct(values,0.01)*1000:+.3f} p5={_pct(values,0.05)*1000:+.3f} "
-        f"p50={_pct(values,0.50)*1000:+.3f} p95={_pct(values,0.95)*1000:+.3f} "
-        f"max_outward={values[-1]*1000:+.3f}mm"
+        f"{indent}    |deviation| p50={_pct(magnitude,0.50)*1000:.3f} "
+        f"p95={_pct(magnitude,0.95)*1000:.3f} "
+        f"p99={_pct(magnitude,0.99)*1000:.3f} "
+        f"max={magnitude[-1]*1000:.3f}mm"
+    )
+    lines.append(
+        f"{indent}    signed: worst_penetration={values[0]*1000:+.3f}mm "
+        f"max_float_away={values[-1]*1000:+.3f}mm "
+        f"p50={_pct(values,0.50)*1000:+.3f}mm"
     )
 
 
@@ -131,17 +151,19 @@ def _run():
             f"= scan +{settings.corset_offset:.1f}mm liner, then faired"
         )
         lines.append(
-            f"  authored standoff = {trimline_ops.SURFACE_OFFSET*1000:.1f}mm "
-            "outside the BODY, i.e. ~1.5mm INSIDE the offset mold by design"
+            f"  trimline's OWN offset = "
+            f"{trimline_ops.SURFACE_OFFSET*1000:.1f}mm outside the BODY - the "
+            "independent offset the corrected policy removes; the trimline "
+            "should instead lie ON the inner brace surface"
         )
         if base is not None:
             mold_gap = sorted(
                 value for value in _signed(controls, base) if value is not None
             )
             lines.append(
-                f"  measured control standoff vs offset mold: "
-                f"p50={_pct(mold_gap,0.5)*1000:+.3f}mm "
-                f"(confirms the by-design offset; NOT penetration)"
+                f"  measured control offset from the INNER BRACE SURFACE: "
+                f"p50={_pct(mold_gap,0.5)*1000:+.3f}mm - under the corrected "
+                "policy this should be ~0.000mm"
             )
         lines.append("")
 
@@ -158,8 +180,11 @@ def _run():
         lines.append("")
 
         for surface_label, surface in (
-            ("vs BODY (the clinical question)", scan),
-            ("vs OFFSET MOLD (cutter target; ~1.5mm inside is BY DESIGN)", base),
+            ("vs BODY (placement check only; NOT the constraint surface)", scan),
+            (
+                "vs INNER BRACE SURFACE (the correct reference; target ~0.000mm)",
+                base,
+            ),
         ):
             if surface is None:
                 continue
