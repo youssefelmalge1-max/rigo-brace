@@ -1828,25 +1828,25 @@ def _stale_handle_reason(perimeter):
     merge floor), so self-approach cannot be the reason reported here - it is
     genuinely the stale handles.
 
+    Detected by fingerprinting the control POSITIONS the handles were last
+    solved for, rather than by comparing the handles against a fresh global
+    solve. The comparison was right while every solve was global; P3 solves
+    only the edited arc and honours hand-authored tangents, so a perfectly
+    consistent curve no longer equals its own global solution and the old
+    check would have refused ordinary editor output.
+
     Refusing carries a specific, actionable cause instead of the generic rim
     failure the cut would otherwise raise several stages later.
     """
     from . import trimline_ops
 
-    model = str(perimeter.get("rigo_trim_handle_model", ""))
-    if model not in trimline_ops.SOLVED_HANDLE_MODELS:
-        return None
-    splines = perimeter.data.splines
-    if len(splines) != 1 or splines[0].type != "BEZIER":
-        return None
-    stale = trimline_ops.handle_staleness_m(splines[0], model)
-    if stale <= trimline_ops.STALE_HANDLE_LIMIT_M:
+    if not trimline_ops.handles_are_stale(perimeter):
         return None
     return (
-        "The trimline's curve handles no longer match its control points "
-        f"(out of step by {stale * 1000.0:.1f} mm), so its points were moved "
-        "outside the trimline tools. Run Fit Line to Body, or nudge a point "
-        "with Edit on Body, to re-solve the curve before generating."
+        "The trimline's curve handles no longer match its control points, so "
+        "its points were moved outside the trimline tools. Run Fit Line to "
+        "Body, or nudge a point with Edit on Body, to re-solve the curve "
+        "before generating."
     )
 
 

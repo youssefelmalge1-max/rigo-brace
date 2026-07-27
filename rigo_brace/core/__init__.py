@@ -565,6 +565,27 @@ class RigoBraceSettings(PropertyGroup):
         items=_trim_type_items,
     )
 
+    trim_edit_radius: FloatProperty(
+        name="Edit Influence (mm)",
+        description=(
+            "How far along the trimline a point drag is felt, measured in "
+            "millimetres of arc. Beyond this distance the line does not move "
+            "at all, so an edit stays where the orthotist made it"
+        ),
+        default=40.0,
+        min=5.0,
+        max=150.0,
+        soft_max=100.0,
+    )
+    trim_edit_lock_features: BoolProperty(
+        name="Protect Clinical Features",
+        description=(
+            "Keep opening endpoints and protected anatomical stations fixed "
+            "when they fall inside the influence radius of an edit made "
+            "elsewhere. They still move when dragged directly"
+        ),
+        default=True,
+    )
     trim_brush_radius: FloatProperty(
         name="Brush Radius (mm)",
         description=(

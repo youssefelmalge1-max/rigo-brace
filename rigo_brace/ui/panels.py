@@ -560,6 +560,8 @@ def _draw_design(layout, context):
             text="Edit 3-Point Tangents",
             icon="CURVE_BEZCURVE",
         )
+        box.prop(settings, "trim_edit_radius")
+        box.prop(settings, "trim_edit_lock_features")
         box.prop(settings, "trim_brush_radius")
         box.prop(settings, "trim_brush_strength")
         box.prop(settings, "trim_brush_lock_opening")

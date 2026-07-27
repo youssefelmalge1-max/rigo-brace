@@ -350,45 +350,215 @@ def _set_c2_tangent_handles(spline, guard=True):
     return True
 
 
-# Handle models whose handles are OURS to derive: their values are a pure
-# function of the control points, so any disagreement means the curve was
-# edited outside the add-on's tools. LINKED_TANGENTS is excluded on purpose -
-# there the orthotist set the handles deliberately and they are expected to
-# differ from the solved ones.
-SOLVED_HANDLE_MODELS = ("C2_PERIODIC", "C2_SELF_APPROACH_FALLBACK")
-# Well clear of the 0.000 mm a freshly solved curve measures and far below the
-# 21 mm a hand-mangled one does.
-STALE_HANDLE_LIMIT_M = 0.001
+def control_signature(spline):
+    """A fingerprint of the control POSITIONS the handles were solved for.
+
+    Replaces comparing the handles against a fresh global solve. That
+    comparison was correct while every solve was global, but P3 solves only
+    the edited arc and honours hand-authored handles, so a perfectly
+    consistent curve no longer equals its own global solution and would have
+    been refused.
+
+    Positions are the right thing to fingerprint: handles may legitimately be
+    global-C2, banded-C2, or hand-set, but if the POINTS moved since the last
+    time any of our handle code ran, the handles describe a shape the curve no
+    longer has - which is exactly the state that folds the Exact cutter.
+    """
+    return ";".join(
+        f"{point.co.x:.7f},{point.co.y:.7f},{point.co.z:.7f}"
+        for point in spline.bezier_points
+    )
 
 
-def handle_staleness_m(spline, model):
-    """How far the present handles sit from the ones `model` would produce.
+def mark_handles_solved(curve):
+    """Record that this curve's handles match its present control points."""
+    splines = curve.data.splines
+    if splines and splines[0].type == "BEZIER":
+        curve["rigo_trim_solved_signature"] = control_signature(splines[0])
 
-    Zero for any curve the add-on solved itself. Large when control points
-    were moved in Blender's native curve editor, which leaves the handles
-    describing the shape the curve used to have - the state that folds the
-    Exact cutter into a non-manifold cut.
 
-    The comparison is made by solving onto the real spline and restoring it,
-    so it always reflects the exact production code path rather than a
-    re-implementation of it that could drift.
+def handles_are_stale(curve):
+    """True when control points moved without any handle solve since.
+
+    Returns False when no signature is stored, so curves saved before this
+    field existed are not retroactively refused.
+    """
+    splines = curve.data.splines
+    if not splines or splines[0].type != "BEZIER":
+        return False
+    stored = curve.get("rigo_trim_solved_signature")
+    if not stored:
+        return False
+    return str(stored) != control_signature(splines[0])
+
+
+MANUAL_HANDLE_KEY = "rigo_trim_manual_handles"
+
+
+def manual_handle_indices(curve):
+    """Stations whose handles the orthotist set by hand.
+
+    These are hard constraints: a banded re-solve routes around them rather
+    than through them, so an edit elsewhere can never quietly undo a tangent
+    the clinician chose. Cleared only by an explicit Refit.
+    """
+    stored = curve.get(MANUAL_HANDLE_KEY)
+    return set(int(index) for index in stored) if stored else set()
+
+
+def add_manual_handle(curve, index):
+    indices = manual_handle_indices(curve)
+    indices.add(int(index))
+    curve[MANUAL_HANDLE_KEY] = sorted(indices)
+
+
+def clear_manual_handles(curve):
+    curve[MANUAL_HANDLE_KEY] = []
+
+
+def _cyclic_run(weights, center_index, count):
+    """The contiguous cyclic run of influenced stations around the centre.
+
+    Walking outward from the centre rather than taking min/max of the index
+    set is what makes an edit across the seam behave like any other: indices
+    {40, 41, 0, 1} are one run here, while min/max would call them a run from
+    0 to 41 and drag the entire perimeter.
+    """
+    run = [center_index]
+    for direction in (-1, 1):
+        step = center_index
+        for _ in range(count):
+            step = (step + direction) % count
+            if step == center_index or weights.get(step, 0.0) <= 0.0:
+                break
+            if direction < 0:
+                run.insert(0, step)
+            else:
+                run.append(step)
+    return run
+
+
+def edit_weights(points, center_index, radius_m):
+    """Cosine falloff over MILLIMETRES of arc along the control polygon.
+
+    The old weights were per-control (1.0/0.5/0.18 at 0/+-1/+-2), so their
+    physical reach was whatever the local spacing happened to be - up to
+    +-260 mm where stations sit 132 mm apart. A clinical control has to be a
+    distance, not an index count.
+    """
+    coordinates = [point.co.copy() for point in points]
+    distances = _cyclic_arc_distances(coordinates, center_index)
+    if radius_m <= 0.0:
+        return {center_index: 1.0}
+    weights = {}
+    for index, distance in enumerate(distances):
+        if distance >= radius_m:
+            continue
+        weights[index] = 0.5 * (1.0 + math.cos(math.pi * distance / radius_m))
+    weights[center_index] = 1.0
+    return weights
+
+
+def _band_tangent_from_handles(point, span_before, span_after, prefer_right):
+    """The derivative a station's untouched handle already implies."""
+    if prefer_right and span_after > 1.0e-12:
+        return (point.handle_right - point.co) * (3.0 / span_after)
+    if span_before > 1.0e-12:
+        return (point.co - point.handle_left) * (3.0 / span_before)
+    return Vector((0.0, 0.0, 0.0))
+
+
+def solve_band_c2(spline, band, manual=frozenset(), passes=C2_SOLVE_PASSES):
+    """Re-solve C2 across one arc, clamped to the curve either side of it.
+
+    `band` is a contiguous cyclic run of station indices. The tangents at its
+    two ends are taken from the handles OUTSIDE the band, which are never
+    written, so the join is exactly tangent-continuous and nothing beyond the
+    band changes by even a floating-point bit. Inside, the same second
+    derivative matching as the global solve applies, so an edited stretch is
+    as continuous as a freshly generated one.
+
+    Stations in `manual` keep their hand-set tangents and act as interior
+    clamps, which is what makes "preserve the clinician's handles" and
+    "re-solve the arc" compatible instead of contradictory.
     """
     points = spline.bezier_points
-    snapshot = _capture_point_states(points)
-    try:
-        if model == "C2_SELF_APPROACH_FALLBACK":
-            _set_clamped_tangent_handles(spline)
-        else:
-            _set_c2_tangent_handles(spline)
-        return max(
-            max(
-                (point.handle_left - state[1]).length,
-                (point.handle_right - state[2]).length,
+    count = len(points)
+    if count < 4 or len(band) < 3:
+        return
+    coordinates = [points[index].co.copy() for index in band]
+    spans = [
+        max((coordinates[k + 1] - coordinates[k]).length, 1.0e-9)
+        for k in range(len(band) - 1)
+    ]
+    outer_before = max(
+        (points[band[0]].co - points[(band[0] - 1) % count].co).length, 1.0e-9
+    )
+    outer_after = max(
+        (points[(band[-1] + 1) % count].co - points[band[-1]].co).length, 1.0e-9
+    )
+
+    tangents = [
+        (coordinates[min(k + 1, len(band) - 1)] - coordinates[max(k - 1, 0)])
+        for k in range(len(band))
+    ]
+    # Clamps: the derivative the untouched outside handles already imply.
+    tangents[0] = _band_tangent_from_handles(
+        points[band[0]], outer_before, spans[0], prefer_right=False
+    )
+    tangents[-1] = _band_tangent_from_handles(
+        points[band[-1]], spans[-1], outer_after, prefer_right=True
+    )
+    for position, index in enumerate(band):
+        if index in manual and 0 < position < len(band) - 1:
+            tangents[position] = _band_tangent_from_handles(
+                points[index], spans[position - 1], spans[position],
+                prefer_right=True,
             )
-            for point, state in zip(points, snapshot)
-        )
-    finally:
-        _restore_point_states(points, snapshot)
+
+    fixed = {0, len(band) - 1}
+    fixed.update(
+        position
+        for position, index in enumerate(band)
+        if index in manual
+    )
+    right_hand = {}
+    for position in range(1, len(band) - 1):
+        before, after = spans[position - 1], spans[position]
+        right_hand[position] = (
+            (coordinates[position] - coordinates[position - 1]) * (after / before)
+            + (coordinates[position + 1] - coordinates[position]) * (before / after)
+        ) * 3.0
+    for _pass in range(passes):
+        for position in range(1, len(band) - 1):
+            if position in fixed:
+                continue
+            before, after = spans[position - 1], spans[position]
+            tangents[position] = (
+                right_hand[position]
+                - tangents[position - 1] * after
+                - tangents[position + 1] * before
+            ) / (2.0 * (before + after))
+
+    # Write only the handles that belong to segments INSIDE the band: the
+    # first station's left handle and the last station's right handle face
+    # outward and stay exactly as they were.
+    for position, index in enumerate(band):
+        if index in manual:
+            continue
+        point = points[index]
+        if position < len(band) - 1:
+            point.handle_right_type = "FREE"
+            point.handle_right = (
+                coordinates[position]
+                + tangents[position] * (spans[position] / 3.0)
+            )
+        if position > 0:
+            point.handle_left_type = "FREE"
+            point.handle_left = (
+                coordinates[position]
+                - tangents[position] * (spans[position - 1] / 3.0)
+            )
 
 
 def _guard_samples(spline):
@@ -450,6 +620,8 @@ def _constrain_perimeter(perimeter, scan):
     perimeter["rigo_trim_handle_model"] = (
         "C2_PERIODIC" if curvature_continuous else "C2_SELF_APPROACH_FALLBACK"
     )
+    clear_manual_handles(perimeter)
+    mark_handles_solved(perimeter)
     modifier = perimeter.modifiers.new(name="Follow Corrected Mold", type="SHRINKWRAP")
     modifier.target = scan
     modifier.wrap_method = "NEAREST_SURFACEPOINT"
@@ -744,9 +916,20 @@ def _fit_curve_controls(context, curve, scan):
 
 
 def _fit_curve_points(context, curve, scan):
+    """Fit Line to Body IS the explicit Refit: it re-solves the whole curve.
+
+    This is the one operation the orthotist can invoke to say "discard my
+    hand-set tangents and fair the line again", so it is also the only place
+    the manual-handle record is cleared.
+    """
     fitted, moved = _fit_curve_controls(context, curve, scan)
     for spline in curve.data.splines:
-        _set_c2_tangent_handles(spline)
+        curvature_continuous = _set_c2_tangent_handles(spline)
+    clear_manual_handles(curve)
+    curve["rigo_trim_handle_model"] = (
+        "C2_PERIODIC" if curvature_continuous else "C2_SELF_APPROACH_FALLBACK"
+    )
+    mark_handles_solved(curve)
     curve.data.update_tag()
     return fitted, moved
 
@@ -905,6 +1088,7 @@ def _smooth_trim_controls_local(
     # stamp stays truthful and the pre-flight sees zero staleness.
     _set_c2_tangent_handles(spline)
     curve["rigo_trim_handle_model"] = "C2_PERIODIC"
+    mark_handles_solved(curve)
     curve.data.update_tag()
     final = [matrix @ point.co for point in points]
     maximum_movement = max(
@@ -1061,6 +1245,7 @@ class RIGO_OT_refine_trimline(Operator):
         refined_count = _replace_spline_with_refined_controls(curve)
         _fit_refined_controls(context, curve, scan)
         curve["rigo_trim_handle_model"] = "REFINED_SURFACE_FIT"
+        mark_handles_solved(curve)
         curve["rigo_trim_refined"] = True
         mark_brace_dirty(context, "Trimline edit resolution refined")
         from .design_ops import _set_design_view
@@ -1558,6 +1743,7 @@ class RIGO_OT_smooth_trimline_brush(Operator):
             return
         _restore_point_states(self._points, self._last_edit)
         self._curve["rigo_trim_handle_model"] = self._last_handle_model
+        mark_handles_solved(self._curve)
         self._curve.data.update_tag()
         self._last_edit = None
         self._last_handle_model = None
@@ -1579,6 +1765,7 @@ class RIGO_OT_smooth_trimline_brush(Operator):
         if cancelled:
             _restore_point_states(self._points, self._snapshot)
             self._curve["rigo_trim_handle_model"] = self._snapshot_handle_model
+            mark_handles_solved(self._curve)
             self._curve.data.update_tag()
         elif self._changed:
             mark_brace_dirty(context, "Trim perimeter locally smoothed")
@@ -1594,6 +1781,7 @@ class RIGO_OT_smooth_trimline_brush(Operator):
     def _fail(self, context, error):
         _restore_point_states(self._points, self._snapshot)
         self._curve["rigo_trim_handle_model"] = self._snapshot_handle_model
+        mark_handles_solved(self._curve)
         self._curve.data.update_tag()
         self._cleanup()
         self.report({"ERROR"}, f"Smooth Trimline Brush cancelled safely: {error}")
@@ -1706,6 +1894,7 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
             self._drag_handle_model = str(
                 self._curve.get("rigo_trim_handle_model", "CLAMPED_TANGENT")
             )
+            self._prepare_drag_band(context)
             bpy.ops.curve.select_all(action="DESELECT")
             point = self._points[self._drag_index]
             if self._drag_kind == "CONTROL":
@@ -1729,14 +1918,21 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
         inverse_curve = self._curve.matrix_world.inverted()
         target = inverse_curve @ world
         delta = target - self._drag_start[self._drag_index][0]
-        point_count = len(self._points)
-        affected = {}
-        for offset, weight in ((0, 1.0), (-1, 0.50), (1, 0.50), (-2, 0.18), (2, 0.18)):
-            index = (self._drag_index + offset) % point_count
-            affected[index] = max(weight, affected.get(index, 0.0))
-        for index, weight in affected.items():
-            if index != self._drag_index and not self._point_is_visible(index):
-                continue
+        spline = self._curve.data.splines[0]
+        settings = context.scene.rigo_brace
+        radius_m = settings.trim_edit_radius * 0.001
+        # Weights come from the ORIGINAL geometry captured at drag start, so
+        # the influence profile cannot creep outward as the drag proceeds.
+        weights = self._drag_weights
+        protected = self._protected_indices if settings.trim_edit_lock_features else set()
+        for index, weight in weights.items():
+            if index != self._drag_index:
+                # A protected station moves only when dragged directly, never
+                # as a side effect of an edit made somewhere else.
+                if index in protected:
+                    continue
+                if not self._point_is_visible(index):
+                    continue
             intended_local = self._drag_start[index][0] + delta * weight
             fitted_world = _nearest_surface_world(
                 self._scan,
@@ -1745,18 +1941,44 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
             )
             if fitted_world is not None:
                 self._points[index].co = inverse_curve @ fitted_world
-        # Must be the SAME model the generator used. Leaving the old local rule
-        # here meant the first drag re-derived every handle by a different
-        # rule than the curve was built with, so the whole perimeter changed
-        # shape at once - measured 19.2 mm even 60 mm away from the drag, more
-        # than the 8 mm drag itself, none of it propagation. Re-solving C2
-        # keeps one model end to end; that the solve is still global is P3's
-        # defect, and P3's banded solve fixes locality without reintroducing a
-        # second handle model.
-        for spline in self._curve.data.splines:
-            _set_c2_tangent_handles(spline, guard=False)
-        self._curve["rigo_trim_handle_model"] = "C2_PERIODIC"
+        # Re-solve ONLY the edited arc, clamped to the untouched curve either
+        # side. Everything outside the band keeps its exact coordinates,
+        # handles and handle types; hand-set handles inside it are honoured as
+        # interior clamps.
+        solve_band_c2(
+            spline,
+            self._drag_band,
+            manual=manual_handle_indices(self._curve),
+        )
+        self._curve["rigo_trim_handle_model"] = "C2_BANDED"
+        mark_handles_solved(self._curve)
         self._curve.data.update_tag()
+
+    def _prepare_drag_band(self, context):
+        """Freeze the influence profile and the solve band at drag start.
+
+        Recomputing either from the live curve would let the affected arc
+        creep outward as the points move, so an edit's reach would depend on
+        how far it was dragged rather than on the millimetre setting.
+        """
+        settings = context.scene.rigo_brace
+        radius_m = settings.trim_edit_radius * 0.001
+        count = len(self._points)
+        self._drag_weights = edit_weights(
+            self._points, self._drag_index, radius_m
+        )
+        run = _cyclic_run(self._drag_weights, self._drag_index, count)
+        # One station of untouched curve either side becomes the clamp, so the
+        # solve can match the tangent of geometry it is forbidden to alter.
+        self._drag_band = (
+            [(run[0] - 1) % count] + run + [(run[-1] + 1) % count]
+            if len(run) + 2 <= count
+            else list(range(count))
+        )
+        matrix = self._curve.matrix_world
+        self._protected_indices = _opening_locked_indices(
+            self._curve, [matrix @ point.co for point in self._points]
+        )
 
     def _point_is_visible(self, index):
         point_world = self._curve.matrix_world @ self._points[index].co
@@ -1811,6 +2033,11 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
             point.handle_right = dragged
             point.handle_left = opposite
         self._curve["rigo_trim_handle_model"] = "LINKED_TANGENTS"
+        # Register the station so later edits nearby treat this tangent as a
+        # constraint instead of solving straight over it. Only an explicit
+        # Refit clears the record.
+        add_manual_handle(self._curve, self._drag_index)
+        mark_handles_solved(self._curve)
         self._curve.data.update_tag()
 
     def _move_dragged_element(self, context, event):
@@ -1823,6 +2050,7 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
         if cancelled:
             _restore_point_states(self._points, self._snapshot)
             self._curve["rigo_trim_handle_model"] = self._snapshot_handle_model
+            mark_handles_solved(self._curve)
             self._curve.data.update_tag()
         elif _point_states_changed(self._points, self._snapshot):
             mark_brace_dirty(context, "Trim perimeter edited")
@@ -1846,13 +2074,12 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
 
     def _commit_drag(self):
         if self._drag_index is not None and self._drag_start is not None:
-            # The per-move solve skips the quadratic self-approach sweep; run
-            # it once here so a released drag can never leave the perimeter in
-            # a state the cutter would refuse.
-            if self._drag_kind == "CONTROL":
-                for spline in self._curve.data.splines:
-                    _set_c2_tangent_handles(spline)
-                self._curve.data.update_tag()
+            # NOT a global re-solve. Doing that here would undo the whole point
+            # of the banded solve - it would rewrite handles outside the edited
+            # arc and overwrite hand-set tangents on release, so locality would
+            # hold during the drag and evaporate the moment the mouse came up.
+            # The band was already solved on every move and the signature
+            # stamped, so the curve is consistent and buildable as it stands.
             if _point_states_changed(self._points, self._drag_start):
                 self._last_edit = self._drag_start
                 self._last_handle_model = self._drag_handle_model
@@ -1868,6 +2095,10 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
             return
         _restore_point_states(self._points, self._last_edit)
         self._curve["rigo_trim_handle_model"] = self._last_handle_model
+        # The restore put the control points back too, so the handles match
+        # them again: re-stamp, or the next Generate would refuse a curve that
+        # is in fact perfectly consistent.
+        mark_handles_solved(self._curve)
         self._curve.data.update_tag()
         self._last_edit = None
         self._last_handle_model = None

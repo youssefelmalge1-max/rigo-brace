@@ -32,15 +32,13 @@ TRIES = {"n": 0}
 def _state(perimeter, label, lines):
     model = str(perimeter.get("rigo_trim_handle_model", ""))
     spline = perimeter.data.splines[0]
-    stale = trimline_ops.handle_staleness_m(spline, model) * 1000.0
+    stale = trimline_ops.handles_are_stale(perimeter)
     kinds = {}
     for point in spline.bezier_points:
         for kind in (point.handle_left_type, point.handle_right_type):
             kinds[kind] = kinds.get(kind, 0) + 1
     reason = curve_build_ops._stale_handle_reason(perimeter)
-    lines.append(
-        f"{label}: stamp={model!r} staleness={stale:.3f}mm handles={kinds}"
-    )
+    lines.append(f"{label}: stamp={model!r} stale={stale} handles={kinds}")
     lines.append(f"    pre-flight verdict={reason!r}")
 
 

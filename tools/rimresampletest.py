@@ -350,12 +350,25 @@ def _run():
             (refused, reason_specific, not leftovers, brace_intact, stamp_honest)
         )
 
-        # 5 - and the refusal must be repairable: re-solving the handles the
-        # way the editor does has to make the very same curve build again.
-        # Without this the suite would accept a generator that refuses
-        # everything.
+        # 5 - the refusal must be repairable, or the suite would accept a
+        # generator that simply refuses everything.
+        #
+        # The message names two remedies. Fit Line to Body is checked first,
+        # but only for clearing the STALE-HANDLE refusal: it also re-projects
+        # every control onto the body, which reshapes this deliberately
+        # notched fixture into one that meets the independent offset-mold
+        # limit (issues.md #37, "outer-wall overlap"). That is a different
+        # defect and not what this step is about.
+        #
+        # The build assertion therefore uses the other advertised remedy -
+        # nudging a point with Edit on Body - whose effect on a stale curve is
+        # to re-solve the handles and re-stamp, without moving any control the
+        # orthotist did not touch. It runs on the still-mangled curve, so it
+        # measures the repair rather than a curve some earlier step already
+        # reshaped.
         perimeter = bpy.data.objects["Rigo Trim Perimeter"]
         trimline_ops._set_c2_tangent_handles(perimeter.data.splines[0])
+        trimline_ops.mark_handles_solved(perimeter)
         perimeter.data.update_tag()
         try:
             result = bpy.ops.rigo.generate_curve_corset()
