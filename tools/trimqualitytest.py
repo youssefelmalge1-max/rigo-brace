@@ -247,11 +247,28 @@ def _run():
                 lock_opening=False,
             ),
         )
+        # Add Curve Detail's contract is SHAPE PRESERVATION, not surface
+        # adherence. It used to radially re-project every control onto the
+        # body, which held them within 1.75 mm of it but moved the clinical
+        # line by up to 7.66 mm - a button whose only job is to add editing
+        # capacity was reshaping the prescription. Exact De Casteljau
+        # subdivision replaced that, so the assertion moved with it: the
+        # evaluated curve and the original stations must not move at all.
+        #
+        # `refined_control_surface_max` is still measured and reported,
+        # because the new stations now sit ON the unchanged curve and inherit
+        # its off-surface bulge (9.39 mm at the widest station spacing). That
+        # bulge is a PRE-EXISTING property of the raw Bezier - P2 measured
+        # 9.94 mm on the unrefined curve - and is removed by projection before
+        # anything is cut (curve_max_mm 2.85, p95 0.021 below). Whether the
+        # editable curve should hug the body more closely is the subject of
+        # the separate surface-adherence audit, not of this gate.
         refine_ok = (
             refine_result == {"FINISHED"}
             and len(refined_points) == controls_before_refine * 2
             and len(polygon_before_refine) == len(polygon_after_refine)
-            and refined_control_surface_max <= 1.75
+            and raw_refine_deviation <= 1.0e-5
+            and refine_deviation <= 1.0e-5
             and refine_region_iou >= 0.995
             and post_refine_smooth.affected > 0
         )

@@ -36,7 +36,7 @@ OUT = r"C:\Projects\Blender Add-on Braces\trimgentest_result.txt"
 TRIES = {"n": 0}
 
 # Raise as each patch lands; a revert lowers it again.
-ENFORCED_LEVEL = 3
+ENFORCED_LEVEL = 4
 
 GATES = []
 
@@ -721,23 +721,41 @@ def _handle_preservation(scan, scan_bvh, lines):
 
 
 def _refine_deviation(lines):
+    """Adding editing capacity must not move the clinical line at all.
+
+    Exact De Casteljau subdivision is shape-preserving by construction, so the
+    deviation should be numerical noise rather than a tolerance to negotiate.
+    Measured both ways: the evaluated curve against its pre-refine self, and
+    the ORIGINAL control points, which must not have moved by so much as a
+    nanometre.
+    """
     bpy.ops.rigo.auto_trimline()
     perimeter = _perimeter()
     dense_pre = curve_build_ops._curve_world_samples(perimeter)
-    pre = len(perimeter.data.splines[0].bezier_points)
+    originals = [
+        point.co.copy() for point in perimeter.data.splines[0].bezier_points
+    ]
+    pre = len(originals)
     bpy.ops.rigo.refine_trimline()
     perimeter = _perimeter()
-    post = len(perimeter.data.splines[0].bezier_points)
+    points = perimeter.data.splines[0].bezier_points
+    post = len(points)
     dense_post = curve_build_ops._curve_world_samples(perimeter)
     tree = KDTree(len(dense_pre))
     for index, point in enumerate(dense_pre):
         tree.insert(point, index)
     tree.balance()
     worst = max(tree.find(point)[2] for point in dense_post)
+    # Exact subdivision interleaves: original stations land on even indices.
+    original_move = max(
+        (points[index * 2].co - original).length
+        for index, original in enumerate(originals)
+    ) if post == pre * 2 else math.inf
     lines.append(
-        f"  refine {pre}->{post}: max shape deviation {worst*1000:.4f}mm"
+        f"  refine {pre}->{post}: max shape deviation {worst*1000:.6f}mm; "
+        f"original stations moved {original_move*1000:.3e}mm"
     )
-    return worst * 1000.0
+    return worst * 1000.0, original_move * 1000.0, (pre, post)
 
 
 def _visible_names():
@@ -899,8 +917,20 @@ def _run():
             "",
         )
 
-        refine_dev = _refine_deviation(lines)
+        refine_dev, refine_original_move, refine_counts = _refine_deviation(lines)
         _gate(4, "refine_deviation<=0.01mm", refine_dev <= 0.01, f"{refine_dev:.4f}")
+        _gate(
+            4,
+            "refine_originals_unmoved",
+            refine_original_move <= 1.0e-9,
+            f"{refine_original_move:.3e}",
+        )
+        _gate(
+            4,
+            "refine_doubles_capacity",
+            refine_counts[1] == refine_counts[0] * 2,
+            f"{refine_counts[0]}->{refine_counts[1]}",
+        )
 
         # --- lifecycle + display authority -------------------------------- #
         bpy.ops.rigo.auto_trimline()

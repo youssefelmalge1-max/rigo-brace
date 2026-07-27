@@ -1200,22 +1200,8 @@ def _radial_surface_world(fit, coordinate):
     return fit.scan_matrix @ hit[0] + normal * SURFACE_OFFSET
 
 
-def _fit_refined_controls(context, curve, scan):
-    fit = _radial_fit_context(context, curve, scan)
-    inverse_curve = curve.matrix_world.inverted()
-    for point in curve.data.splines[0].bezier_points:
-        fitted = _radial_surface_world(fit, curve.matrix_world @ point.co)
-        if fitted is None:
-            continue
-        delta = inverse_curve @ fitted - point.co
-        point.co += delta
-        point.handle_left += delta
-        point.handle_right += delta
-    curve.data.update_tag()
-
-
 class RIGO_OT_refine_trimline(Operator):
-    """Double editable controls and fit the new points back onto the body"""
+    """Double the editable controls without altering the curve's shape"""
 
     bl_idname = "rigo.refine_trimline"
     bl_label = "Add Curve Detail"
@@ -1243,8 +1229,14 @@ class RIGO_OT_refine_trimline(Operator):
             )
             return {"CANCELLED"}
         refined_count = _replace_spline_with_refined_controls(curve)
-        _fit_refined_controls(context, curve, scan)
-        curve["rigo_trim_handle_model"] = "REFINED_SURFACE_FIT"
+        # NO refit. `_replace_spline_with_refined_controls` already performs
+        # exact De Casteljau subdivision at t = 0.5, so the evaluated curve is
+        # mathematically unchanged and the new stations sit exactly ON it.
+        # Radially re-projecting every control afterwards - including the
+        # untouched originals - was what moved the clinical line by up to
+        # 7.66 mm for a button whose only job is to add editing capacity.
+        # A control that wants to be on the body has Fit Line to Body.
+        curve["rigo_trim_handle_model"] = "C2_SUBDIVIDED"
         mark_handles_solved(curve)
         curve["rigo_trim_refined"] = True
         mark_brace_dirty(context, "Trimline edit resolution refined")
@@ -1253,7 +1245,8 @@ class RIGO_OT_refine_trimline(Operator):
         _set_design_view(context, "TRIM")
         self.report(
             {"INFO"},
-            f"Trimline refined from {point_count} to {refined_count} controls",
+            f"Trimline refined from {point_count} to {refined_count} controls; "
+            "shape unchanged",
         )
         return {"FINISHED"}
 
