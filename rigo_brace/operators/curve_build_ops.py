@@ -1765,31 +1765,45 @@ def _build_curve_corset(context, settings, base, perimeter):
         corset["rigo_trim_curve_p95_error_mm"] = p95
         design_ops._bake_generation_metadata(context, corset, settings)
         complete = True
-        return corset
+        return corset, projected
     finally:
         if not complete and design_ops._object_is_registered(corset):
             design_ops._remove_object_and_orphan_mesh(corset)
 
 
-def _preview_curve(context, perimeter, base):
+def _preview_from_projected(context, base, projected, settings):
+    """Draw the overlay from the cutter's own path, lifted clear of the wall.
+
+    Previously this was a COPY of the source perimeter with its own Shrinkwrap,
+    so it was a second approximation of the trimline rather than the trimline
+    that was cut, and nothing guaranteed the two agreed. Building it from
+    `projected.coordinates` - the exact samples the cutter ribbon was built
+    from - makes the displayed line tangentially identical to the cut by
+    construction.
+
+    The only deliberate difference is radial: each sample is lifted along its
+    stored surface normal by the wall thickness plus a clearance, so the line
+    floats above the outer wall instead of being buried inside it. That lift
+    is a display offset along the normal only; it moves no sample along the
+    body, which is why the measured tangential agreement is zero.
+    """
     design_ops._discard_after_commit(bpy.data.objects.get(_BUILD_CURVE_CANDIDATE))
-    preview = perimeter.copy()
-    preview.data = perimeter.data.copy()
-    preview.name = _BUILD_CURVE_CANDIDATE
-    preview.data.name = _BUILD_CURVE_CANDIDATE
-    preview.data.bevel_depth = _PREVIEW_BEVEL_M
-    preview.modifiers.clear()
-    modifier = preview.modifiers.new(name="Follow Offset Mold", type="SHRINKWRAP")
-    modifier.target = base
-    # ON_SURFACE keeps the offset on the side the point CAME from - the source
-    # perimeter sits below the base (body side), so the old preview was held
-    # 0.2 mm under the inner wall, buried in the wall material. ABOVE_SURFACE
-    # forces the positive-normal side, so the line floats above the outer wall.
-    modifier.wrap_method = "NEAREST_SURFACEPOINT"
-    modifier.wrap_mode = "ABOVE_SURFACE"
-    modifier.offset = (
-        context.scene.rigo_brace.corset_thickness * 0.001 + _PREVIEW_CLEARANCE_M
-    )
+    lift = settings.corset_thickness * 0.001 + _PREVIEW_CLEARANCE_M
+    data = bpy.data.curves.new(_BUILD_CURVE_CANDIDATE, type="CURVE")
+    data.dimensions = "3D"
+    data.bevel_depth = _PREVIEW_BEVEL_M
+    data.bevel_resolution = 2
+    spline = data.splines.new("POLY")
+    spline.use_cyclic_u = True
+    spline.points.add(len(projected.coordinates) - 1)
+    for point, coordinate, normal in zip(
+        spline.points, projected.coordinates, projected.normals
+    ):
+        lifted = coordinate + normal * lift
+        point.co = (lifted.x, lifted.y, lifted.z, 1.0)
+    preview = bpy.data.objects.new(_BUILD_CURVE_CANDIDATE, data)
+    preview.matrix_world = base.matrix_world.copy()
+    preview.color = (1.0, 0.55, 0.05, 1.0)
     context.scene.collection.objects.link(preview)
     return preview
 
@@ -1800,6 +1814,40 @@ def _commit_preview(context, preview):
     preview.data.name = BUILD_TRIM_PERIMETER_NAME
     preview.show_in_front = False
     design_ops._set_design_view(context, "BRACE")
+
+
+def _stale_handle_reason(perimeter):
+    """Name the defect when a trimline's handles contradict its own points.
+
+    Moving control points in Blender's native curve editor changes positions
+    without re-deriving handles, so the handles still describe the shape the
+    curve had before. Measured on the hand-mangled fixture, the handles sat
+    21 mm from what the stamped model produces, and the Exact cutter folded
+    into a non-manifold cut. Note the curve's closest self-approach is
+    UNAFFECTED by the mangling (13.697 mm before and after, against a 3.0 mm
+    merge floor), so self-approach cannot be the reason reported here - it is
+    genuinely the stale handles.
+
+    Refusing carries a specific, actionable cause instead of the generic rim
+    failure the cut would otherwise raise several stages later.
+    """
+    from . import trimline_ops
+
+    model = str(perimeter.get("rigo_trim_handle_model", ""))
+    if model not in trimline_ops.SOLVED_HANDLE_MODELS:
+        return None
+    splines = perimeter.data.splines
+    if len(splines) != 1 or splines[0].type != "BEZIER":
+        return None
+    stale = trimline_ops.handle_staleness_m(splines[0], model)
+    if stale <= trimline_ops.STALE_HANDLE_LIMIT_M:
+        return None
+    return (
+        "The trimline's curve handles no longer match its control points "
+        f"(out of step by {stale * 1000.0:.1f} mm), so its points were moved "
+        "outside the trimline tools. Run Fit Line to Body, or nudge a point "
+        "with Edit on Body, to re-solve the curve before generating."
+    )
 
 
 class RIGO_OT_generate_curve_corset(Operator):
@@ -1817,6 +1865,12 @@ class RIGO_OT_generate_curve_corset(Operator):
             return {"CANCELLED"}
         if not design_ops._perimeter_belongs_to_scan(perimeter, scan):
             self.report({"ERROR"}, "Recreate the trimline for the current scan")
+            return {"CANCELLED"}
+        stale = _stale_handle_reason(perimeter)
+        if stale is not None:
+            # Refused here, before a single candidate object exists, so the
+            # scene is left exactly as it was found.
+            self.report({"ERROR"}, stale)
             return {"CANCELLED"}
         if scan.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -1839,9 +1893,11 @@ class RIGO_OT_generate_curve_corset(Operator):
         preview = None
         try:
             candidates.base = design_ops._prepare_candidate_base(context, scan, settings)
-            preview = _preview_curve(context, perimeter, candidates.base)
-            candidates.brace = _build_curve_corset(
+            candidates.brace, projected = _build_curve_corset(
                 context, settings, candidates.base, perimeter
+            )
+            preview = _preview_from_projected(
+                context, candidates.base, projected, settings
             )
             design_ops._commit_generation(context, snapshot, candidates, settings)
         except (

@@ -66,6 +66,24 @@ def _offset_distances(scan, base):
     return distances[len(distances) // 2], max(distances)
 
 
+def _preview_clearance(preview, base):
+    """Median distance from the preview polyline to the offset mold, in mm."""
+    if preview is None or base is None or not preview.data.splines:
+        return None
+    bvh = BVHTree.FromObject(base, bpy.context.evaluated_depsgraph_get())
+    inverse = base.matrix_world.inverted()
+    distances = []
+    for point in preview.data.splines[0].points:
+        world = preview.matrix_world @ point.co.to_3d()
+        hit = bvh.find_nearest(inverse @ world)
+        if hit[0] is not None:
+            distances.append((world - base.matrix_world @ hit[0]).length * 1000.0)
+    if not distances:
+        return None
+    distances.sort()
+    return distances[len(distances) // 2]
+
+
 def _write(lines):
     with open(OUT, "w", encoding="utf-8") as result_file:
         result_file.write("\n".join(lines))
@@ -93,11 +111,22 @@ def _run():
         first_signature = _mesh_signature(brace)
         first_error = float(brace.get("rigo_trim_curve_max_error_mm", 999.0))
         p95_error = float(brace.get("rigo_trim_curve_p95_error_mm", 999.0))
+        # The preview used to be a COPY of the source perimeter carrying its own
+        # Shrinkwrap, so this asserted "it has a modifier aimed at the base" -
+        # a check on the mechanism, which said nothing about whether the drawn
+        # line matched the cut. The preview is now built directly from the
+        # cutter's projected samples, so the honest assertion is that it holds
+        # that path: a modifier-free polyline sitting one wall thickness plus a
+        # clearance outside the base, i.e. just off the outer wall.
+        preview_gap = _preview_clearance(preview, base)
+        expected_gap = settings.corset_thickness + 1.5
         target_ok = bool(
             preview
-            and preview.modifiers
-            and preview.modifiers[0].type == "SHRINKWRAP"
-            and preview.modifiers[0].target is base
+            and not preview.modifiers
+            and preview.data.splines
+            and preview.data.splines[0].type == "POLY"
+            and preview_gap is not None
+            and abs(preview_gap - expected_gap) <= 1.0
         )
         first_ok = all(
             (
@@ -120,7 +149,9 @@ def _run():
             f"components={components} trim_max_mm={first_error:.4f} "
             f"trim_p95_mm={p95_error:.4f} "
             f"offset_median_mm={median_offset:.4f} offset_max_mm={maximum_offset:.4f} "
-            f"preview_target={target_ok} ok={first_ok}"
+            f"preview_from_cut_path={target_ok} "
+            f"preview_gap_mm={preview_gap if preview_gap is None else round(preview_gap, 3)} "
+            f"ok={first_ok}"
         )
 
         second_result = bpy.ops.rigo.generate_curve_corset()

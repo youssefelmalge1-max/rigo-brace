@@ -36,7 +36,7 @@ OUT = r"C:\Projects\Blender Add-on Braces\trimgentest_result.txt"
 TRIES = {"n": 0}
 
 # Raise as each patch lands; a revert lowers it again.
-ENFORCED_LEVEL = 1
+ENFORCED_LEVEL = 2
 
 GATES = []
 
@@ -119,7 +119,13 @@ def _junction_ratio(perimeter):
     return _pct(jumps, 0.95) / baseline, _pct(jumps, 0.95), baseline
 
 
-def _displayed_vs_built(perimeter):
+def _displayed_vs_raw(perimeter):
+    """Displayed line against its own control curve: the off-surface bulge.
+
+    NOT the displayed-versus-built number. The build projects the raw curve
+    onto the mold, which removes exactly this bulge, so a large value here does
+    not mean the cut lands in the wrong place - see `_displayed_vs_built`.
+    """
     dense = curve_build_ops._curve_world_samples(perimeter)
     displayed = _centerline(perimeter)
     tree = KDTree(len(dense))
@@ -128,6 +134,52 @@ def _displayed_vs_built(perimeter):
     tree.balance()
     gaps = sorted(tree.find(point)[2] for point in displayed)
     return _pct(gaps, 0.95), gaps[-1]
+
+
+def _body_footprint(scan, points):
+    """Where each sample sits ON the patient body - the common frame."""
+    bvh = BVHTree.FromObject(scan, bpy.context.evaluated_depsgraph_get())
+    inverse = scan.matrix_world.inverted()
+    footprint = []
+    for point in points:
+        hit = bvh.find_nearest(inverse @ point)
+        if hit[0] is not None:
+            footprint.append(scan.matrix_world @ hit[0])
+    return footprint
+
+
+def _displayed_vs_built(perimeter, overlay, scan):
+    """Did the cut land where the line was drawn, measured on the body.
+
+    Decomposing the raw separation against an estimated normal is the wrong
+    instrument here: the two curves are ~10 mm apart by design (liner + wall +
+    display lift), so a 15-degree error in the normal estimate alone fabricates
+    2.6 mm of "tangential" error - which is exactly what the first version of
+    this gate reported.
+
+    Both curves are therefore dropped onto the patient body first. Their
+    footprints share one surface, so the distance between them is tangential by
+    construction and carries no normal component to remove. Distance is taken
+    to the footprint POLYLINE, not to its nearest sample, so ~1 mm sampling
+    does not masquerade as up to 0.5 mm of deviation.
+    """
+    if overlay is None or scan is None:
+        return None
+    displayed = _body_footprint(scan, _centerline(perimeter))
+    built = _body_footprint(scan, _centerline(overlay))
+    if not displayed or not built:
+        return None
+    tree = KDTree(len(built))
+    for index, point in enumerate(built):
+        tree.insert(point, index)
+    tree.balance()
+    distances = sorted(
+        curve_build_ops._distance_to_polyline_m(
+            point, built, tree.find(point)[1]
+        )
+        for point in displayed
+    )
+    return _pct(distances, 0.95), distances[-1]
 
 
 def _min_non_adjacent_gap(points):
@@ -184,24 +236,96 @@ def _scan_normal_world(scan, bvh, world_point):
     return ((inverse.transposed().to_3x3()) @ hit[1]).normalized()
 
 
-def _drag_experiment(scan, scan_bvh, lines):
-    """Replicates the point-drag path; returns (far_move_mm, wipe_deg)."""
-    bpy.ops.rigo.auto_trimline()
-    perimeter = _perimeter()
+def _perform_drag(perimeter, scan, scan_bvh, drag_index, millimetres=8.0):
+    """Replicate RIGO_OT_slide_trimline_on_surface._move_dragged_point."""
     spline = perimeter.data.splines[0]
     points = spline.bezier_points
     count = len(points)
     matrix = perimeter.matrix_world
     inverse_matrix = matrix.inverted()
+    start = [p.co.copy() for p in points]
+    drag_world = matrix @ points[drag_index].co
+    drag_normal = _scan_normal_world(scan, scan_bvh, drag_world)
+    direction = Vector((0.0, 0.0, 1.0))
+    direction -= drag_normal * direction.dot(drag_normal)
+    direction.normalize()
+    target = drag_world + direction * (millimetres * 0.001)
+    delta = (inverse_matrix @ target) - start[drag_index]
+    affected = {}
+    for offset, weight in ((0, 1.0), (-1, 0.50), (1, 0.50), (-2, 0.18), (2, 0.18)):
+        index = (drag_index + offset) % count
+        affected[index] = max(weight, affected.get(index, 0.0))
+    for index, weight in affected.items():
+        intended = start[index] + delta * weight
+        fitted = trimline_ops._nearest_surface_world(
+            scan, scan_bvh, matrix @ intended
+        )
+        if fitted is not None:
+            points[index].co = inverse_matrix @ fitted
+    trimline_ops._set_c2_tangent_handles(spline)
+    perimeter.data.update_tag()
+    return drag_world
 
-    def theta(i):
-        return _theta_deg(perimeter, matrix @ points[i].co)
 
-    drag_index = min(range(count), key=lambda i: abs(abs(theta(i)) - 180.0))
-    far_index = min(range(count), key=lambda i: abs(theta(i) - 90.0))
+def _back_index(perimeter):
+    matrix = perimeter.matrix_world
+    points = perimeter.data.splines[0].bezier_points
+    return min(
+        range(len(points)),
+        key=lambda i: abs(abs(_theta_deg(perimeter, matrix @ points[i].co)) - 180.0),
+    )
 
+
+def _side_index(perimeter):
+    matrix = perimeter.matrix_world
+    points = perimeter.data.splines[0].bezier_points
+    return min(
+        range(len(points)),
+        key=lambda i: abs(_theta_deg(perimeter, matrix @ points[i].co) - 90.0),
+    )
+
+
+def _drag_locality(scan, scan_bvh, lines):
+    """How far a drag reaches, with no handle edit to confound it."""
+    bpy.ops.rigo.auto_trimline()
+    perimeter = _perimeter()
+    drag_index = _back_index(perimeter)
+    before = curve_build_ops._curve_world_samples(perimeter)
+    drag_world = _perform_drag(perimeter, scan, scan_bvh, drag_index)
+    after = curve_build_ops._curve_world_samples(perimeter)
+    cumulative = [0.0]
+    for index in range(1, len(before)):
+        cumulative.append(
+            cumulative[-1] + (before[index] - before[index - 1]).length
+        )
+    total = cumulative[-1]
+    origin = min(
+        range(len(before)), key=lambda i: (before[i] - drag_world).length
+    )
+    far = 0.0
+    for index in range(len(before)):
+        arc = abs(cumulative[index] - cumulative[origin])
+        arc = min(arc, total - arc)
+        if arc > 0.060:
+            far = max(far, (after[index] - before[index]).length)
+    lines.append(
+        f"  drag locality: 8mm drag at control {drag_index}; "
+        f"max displacement beyond 60mm arc = {far*1000:.3f}mm"
+    )
+    return far * 1000.0
+
+
+def _handle_preservation(scan, scan_bvh, lines):
+    """Does an unrelated drag overwrite a hand-set handle elsewhere?"""
+    bpy.ops.rigo.auto_trimline()
+    perimeter = _perimeter()
+    points = perimeter.data.splines[0].bezier_points
+    far_index = _side_index(perimeter)
+    drag_index = _back_index(perimeter)
     far_point = points[far_index]
-    normal = _scan_normal_world(scan, scan_bvh, matrix @ far_point.co)
+    normal = _scan_normal_world(
+        scan, scan_bvh, perimeter.matrix_world @ far_point.co
+    )
     rotation = Matrix.Rotation(math.radians(20.0), 4, normal)
     far_point.handle_left_type = "FREE"
     far_point.handle_right_type = "FREE"
@@ -212,62 +336,16 @@ def _drag_experiment(scan, scan_bvh, lines):
         far_point.handle_right - far_point.co
     )
     perimeter["rigo_trim_handle_model"] = "LINKED_TANGENTS"
-    rotated = (far_point.handle_right - far_point.co).normalized()
-
-    dense_before = curve_build_ops._curve_world_samples(perimeter)
-    start_states = [
-        (p.co.copy(), p.handle_left.copy(), p.handle_right.copy())
-        for p in points
-    ]
-    drag_world = matrix @ points[drag_index].co
-    drag_normal = _scan_normal_world(scan, scan_bvh, drag_world)
-    direction = Vector((0.0, 0.0, 1.0))
-    direction -= drag_normal * direction.dot(drag_normal)
-    direction.normalize()
-    target_world = drag_world + direction * 0.008
-    delta = (inverse_matrix @ target_world) - start_states[drag_index][0]
-    affected = {}
-    for offset, weight in ((0, 1.0), (-1, 0.50), (1, 0.50), (-2, 0.18), (2, 0.18)):
-        index = (drag_index + offset) % count
-        affected[index] = max(weight, affected.get(index, 0.0))
-    for index, weight in affected.items():
-        intended = start_states[index][0] + delta * weight
-        fitted = trimline_ops._nearest_surface_world(
-            scan, scan_bvh, matrix @ intended
-        )
-        if fitted is not None:
-            points[index].co = inverse_matrix @ fitted
-    trimline_ops._set_clamped_tangent_handles(spline)
-    perimeter.data.update_tag()
-
-    after = (far_point.handle_right - far_point.co).normalized()
-    wipe_deg = math.degrees(rotated.angle(after))
-
-    dense_after = curve_build_ops._curve_world_samples(perimeter)
-    cumulative = [0.0]
-    for index in range(1, len(dense_before)):
-        cumulative.append(
-            cumulative[-1]
-            + (dense_before[index] - dense_before[index - 1]).length
-        )
-    total = cumulative[-1]
-    origin = min(
-        range(len(dense_before)),
-        key=lambda i: (dense_before[i] - drag_world).length,
-    )
-    far_move = 0.0
-    for index in range(len(dense_before)):
-        arc = abs(cumulative[index] - cumulative[origin])
-        arc = min(arc, total - arc)
-        if arc > 0.060:
-            far_move = max(
-                far_move, (dense_after[index] - dense_before[index]).length
-            )
+    requested = (far_point.handle_right - far_point.co).normalized()
+    _perform_drag(perimeter, scan, scan_bvh, drag_index)
+    delivered = (far_point.handle_right - far_point.co).normalized()
+    wipe = math.degrees(requested.angle(delivered))
     lines.append(
-        f"  drag: drag_index={drag_index} far_index={far_index} "
-        f"far_move(>60mm arc)={far_move*1000:.3f}mm wipe={wipe_deg:.1f}deg"
+        f"  handle preservation: control {far_index} hand-rotated 20deg, "
+        f"then control {drag_index} dragged; hand-set direction lost "
+        f"{wipe:.1f}deg"
     )
-    return far_move * 1000.0, wipe_deg
+    return wipe
 
 
 def _refine_deviation(lines):
@@ -318,13 +396,11 @@ def _run():
         )
         _gate(2, "junction_curvature_ratio<=3", ratio <= 3.0, f"{ratio:.2f}")
 
-        gap_p95, gap_max = _displayed_vs_built(perimeter)
+        raw_p95, raw_max = _displayed_vs_raw(perimeter)
         lines.append(
-            f"  displayed-vs-built gap p95={gap_p95*1000:.3f}mm "
-            f"max={gap_max*1000:.3f}mm"
+            f"  displayed-vs-raw-control-curve (off-surface bulge, removed by "
+            f"projection) p95={raw_p95*1000:.3f}mm max={raw_max*1000:.3f}mm"
         )
-        _gate(2, "displayed_vs_built_p95<=1mm", gap_p95 <= 0.001, f"{gap_p95*1000:.3f}")
-        _gate(2, "displayed_vs_built_max<=2mm", gap_max <= 0.002, f"{gap_max*1000:.3f}")
 
         corner_error, chord = _opening_measurements(perimeter)
         lines.append(
@@ -345,8 +421,43 @@ def _run():
         lines.append(f"  min non-adjacent self-gap={gap*1000:.2f}mm")
         _gate(1, "no_self_crossing_gap>3mm", gap > 0.003, f"{gap*1000:.2f}")
 
-        far_move, wipe = _drag_experiment(scan, scan_bvh, lines)
+        # Prove the self-approach fallback actually engages. It never fires on
+        # the reference brace (13.7 mm clearance against a 6 mm trigger), and
+        # safety code that no test exercises is not safety code. Raising the
+        # trigger above the measured clearance must send the curve back to the
+        # old tangent-continuous rule - which shows up as the junction ratio
+        # returning to its pre-P2 value.
+        original_gap = trimline_ops.C2_MIN_SELF_GAP_M
+        try:
+            trimline_ops.C2_MIN_SELF_GAP_M = 0.050
+            bpy.ops.rigo.auto_trimline()
+            fallback_ratio = _junction_ratio(_perimeter())[0]
+            fallback_model = str(
+                _perimeter().get("rigo_trim_handle_model", "?")
+            )
+        finally:
+            trimline_ops.C2_MIN_SELF_GAP_M = original_gap
+        lines.append(
+            f"  self-approach fallback (trigger raised to 50mm): "
+            f"junction ratio={fallback_ratio:.2f} model={fallback_model}"
+        )
+        _gate(
+            2,
+            "self_approach_fallback_engages",
+            fallback_ratio > 5.0,
+            f"{fallback_ratio:.2f}",
+        )
+        _gate(
+            2,
+            "fallback_is_stamped_honestly",
+            fallback_model == "C2_SELF_APPROACH_FALLBACK",
+            fallback_model,
+        )
+        bpy.ops.rigo.auto_trimline()
+
+        far_move = _drag_locality(scan, scan_bvh, lines)
         _gate(3, "drag_influence>60mm<=0.5mm", far_move <= 0.5, f"{far_move:.3f}")
+        wipe = _handle_preservation(scan, scan_bvh, lines)
         _gate(3, "manual_handle_preserved<=0.5deg", wipe <= 0.5, f"{wipe:.1f}")
 
         refine_dev = _refine_deviation(lines)
@@ -452,6 +563,24 @@ def _run():
                 "overlay_hugs_shell<=3.5mm",
                 distances[-1] <= 0.0035,
                 f"max={distances[-1]*1000:.3f}",
+            )
+        built = _displayed_vs_built(_perimeter(), build, scan)
+        if built is not None:
+            lines.append(
+                f"  DISPLAYED vs BUILT on the body: p95={built[0]*1000:.3f}mm "
+                f"max={built[1]*1000:.3f}mm"
+            )
+            _gate(
+                2,
+                "displayed_vs_built_on_body_p95<=1mm",
+                built[0] <= 0.001,
+                f"{built[0]*1000:.3f}",
+            )
+            _gate(
+                2,
+                "displayed_vs_built_on_body_max<=2mm",
+                built[1] <= 0.002,
+                f"{built[1]*1000:.3f}",
             )
         settings.show_trim_overlay = False
         overlay_off = _visible_names()

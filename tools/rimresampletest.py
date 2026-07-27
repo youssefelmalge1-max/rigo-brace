@@ -8,10 +8,21 @@ Gates, in order of what they protect:
    radius jumps, no spikes beyond the fillet amplitude.
 2. The clinical trimline must not move: the boundary's distance to the
    projected trim curve stays inside a stated tolerance.
-3. A deliberately sharpened, wobbling trimline (vector-handle notch = a
-   genuine clinical corner, uneven control spacing) must still build, with
-   no frame-reversal spikes, no degenerate faces, and rim self-intersection
-   count zero.
+3. A directly hand-mangled trimline - control points moved in the raw curve
+   data, so the handles still describe the previous shape - must be REFUSED
+   SAFELY: a specific user-facing reason naming the stale handles, no partial
+   shell/cutter/candidate geometry left behind, the previously valid brace
+   still intact, and honest handle-model metadata on the curve. Re-solving
+   the handles the way the editor does must then let that same curve build,
+   so the refusal is a repairable gate rather than a dead end.
+
+   (Contract changed 2026-07-27 with the project owner's approval. It
+   previously required this curve to BUILD. Under the C2 generator it cannot:
+   the handles measure 21.0 mm out of step with their own control points and
+   fold the Exact cutter, while the curve's closest self-approach is
+   unchanged at 13.697 mm against a 3.0 mm merge floor - so the defect is
+   specifically stale handles, not a self-intersecting trimline. The accepted
+   product behaviour is a safe, specific refusal.)
 4. Manufacturing QA must still FAIL a genuinely thin wall - the rim fixes
    must never mask a real structural defect.
 """
@@ -29,6 +40,7 @@ from bracefixture import prepare_reference_design  # noqa: E402
 
 from bl_ext.user_default.rigo_brace.operators import (  # noqa: E402
     curve_build_ops,
+    trimline_ops,
 )
 from bl_ext.user_default.rigo_brace.operators.qa_ops import (  # noqa: E402
     evaluate_brace_qa,
@@ -277,28 +289,81 @@ def _run():
             checks.append(False)
         settings.corset_thickness = 4.0
 
-        # 4 - sharpened + unevenly spaced trimline.
+        # 4 - a directly hand-mangled trimline: points moved in the raw curve
+        # data, leaving handles that still describe the previous shape.
+        #
+        # CONTRACT CHANGED 2026-07-27, with the project owner's approval. This
+        # case used to require "must still build". Under the C2 generator it
+        # cannot: measured, the handles end up 21.0 mm out of step with their
+        # own control points, which folds the Exact cutter. Note the curve's
+        # closest self-approach is IDENTICAL before and after mangling
+        # (13.697 mm, against a 3.0 mm merge floor), so this is specifically a
+        # stale-handle defect and not a self-intersecting trimline.
+        #
+        # The accepted product behaviour is a safe, specific refusal, so that
+        # is what is asserted now: refuse, name the real cause, leave no
+        # partial geometry, and keep the previously valid brace intact. A test
+        # that merely tolerated any failure would be weaker than the one it
+        # replaces, so each of those is a separate check.
         CAP.clear()
+        previous_brace = bpy.data.objects.get("Rigo Corset")
+        previous_vertices = (
+            len(previous_brace.data.vertices) if previous_brace else -1
+        )
         _sharpen_trimline()
         try:
             result = bpy.ops.rigo.generate_curve_corset()
             error = ""
         except RuntimeError as exc:
             result, error = {"CANCELLED"}, str(exc).strip()
-        lines.append(f"sharpened generate={result} error={error!r}")
+        lines.append(f"mangled generate={result} error={error!r}")
+
+        refused = result == {"CANCELLED"}
+        reason_specific = (
+            "handles no longer match its control points" in error
+            or "out of step" in error
+        )
+        leftovers = sorted(
+            obj.name
+            for obj in bpy.data.objects
+            if "Candidate" in obj.name
+            or "Cutter" in obj.name
+            or "Previous" in obj.name
+        )
+        surviving = bpy.data.objects.get("Rigo Corset")
+        brace_intact = (
+            surviving is not None
+            and len(surviving.data.vertices) == previous_vertices
+        )
+        stamp = str(
+            bpy.data.objects["Rigo Trim Perimeter"].get(
+                "rigo_trim_handle_model", ""
+            )
+        )
+        stamp_honest = stamp in ("C2_PERIODIC", "C2_SELF_APPROACH_FALLBACK")
+        lines.append(
+            f"[mangled] refused={refused} reason_specific={reason_specific} "
+            f"leftover_geometry={leftovers} prior_brace_intact={brace_intact} "
+            f"stamp={stamp!r} stamp_honest={stamp_honest}"
+        )
+        checks.extend(
+            (refused, reason_specific, not leftovers, brace_intact, stamp_honest)
+        )
+
+        # 5 - and the refusal must be repairable: re-solving the handles the
+        # way the editor does has to make the very same curve build again.
+        # Without this the suite would accept a generator that refuses
+        # everything.
+        perimeter = bpy.data.objects["Rigo Trim Perimeter"]
+        trimline_ops._set_c2_tangent_handles(perimeter.data.splines[0])
+        perimeter.data.update_tag()
+        try:
+            result = bpy.ops.rigo.generate_curve_corset()
+            error = ""
+        except RuntimeError as exc:
+            result, error = {"CANCELLED"}, str(exc).strip()
+        lines.append(f"re-solved generate={result} error={error!r}")
         checks.append(result == {"FINISHED"})
-        if result == {"FINISHED"}:
-            brace = bpy.data.objects["Rigo Corset"]
-            checks.append(
-                _rim_checks(
-                    lines, "sharpened", requested, MAX_SPACING_RATIO_HOSTILE
-                )
-            )
-            checks.append(
-                _shell_checks(
-                    lines, "sharpened", brace, MAX_TRIM_ERROR_MM_HOSTILE
-                )
-            )
 
         lines.append(f"PASS={all(checks)}")
     except Exception as error:  # noqa: BLE001

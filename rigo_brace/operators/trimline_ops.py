@@ -27,6 +27,7 @@ from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+from mathutils.geometry import interpolate_bezier
 
 from ..core import LANDMARK_PREFIX, mark_brace_dirty
 from ..core import trim_templates
@@ -36,6 +37,31 @@ TRIM_BOT_NAME = "Rigo Trim Bottom"
 TRIM_PERIM_NAME = "Rigo Trim Perimeter"
 SURFACE_OFFSET = 0.0015
 TRIM_BRUSH_ITERATIONS = 12
+# Gauss-Seidel sweeps for the periodic C2 tangent system. The matrix is
+# strictly diagonally dominant by a factor of two, so error falls by ~2x per
+# sweep; 200 is far past convergence for any clinical control count and still
+# costs under a millisecond.
+C2_SOLVE_PASSES = 200
+# Knot spacing is chord length. Centripetal spacing (chord ** 0.5) is the
+# textbook remedy when an interpolating spline overshoots on uneven data, and
+# it does improve the curve itself - junction ratio 0.43 and self-clearance
+# 16.5 mm at exponent 0.7. It was still rejected: at both 0.7 and 0.5 the
+# REFERENCE brace stopped building ("2 local rim overlaps"). Every variant
+# tried that reshapes the trimline more than plain chord-length C2 - two
+# handle clamps, two station-refinement tolerances, two centripetal exponents
+# - broke the build, which says the rim/offset stage has a narrow stability
+# envelope rather than that the spline was wrong. Do not re-tune this without
+# re-running rimresampletest and curvebuildtest.
+# Clearance the Exact cutter needs between two stretches of trimline that are
+# far apart ALONG the curve. The cutter ribbon is extruded +/- 1.5 mm along the
+# surface normal, so two stretches closer than 3.0 mm merge it into a
+# self-touching surface and the cut comes back non-manifold. 6 mm is that floor
+# with a factor of two in hand.
+C2_MIN_SELF_GAP_M = 0.006
+# Samples per segment used for the self-approach check. Enough to catch a loop
+# in a crowded segment without making the O(n^2) sweep expensive.
+C2_GUARD_SAMPLES_PER_SEGMENT = 8
+C2_GUARD_SAMPLE_BUDGET = 400
 
 
 @dataclass(frozen=True)
@@ -191,7 +217,7 @@ def _make_trim_curve(context, name, points, color):
         bp.co = co
         bp.handle_left_type = "AUTO"
         bp.handle_right_type = "AUTO"
-    _set_clamped_tangent_handles(spline)
+    _set_c2_tangent_handles(spline)
     obj = bpy.data.objects.new(name, curve)
     obj.color = color
     obj.show_in_front = True
@@ -230,11 +256,200 @@ def _set_clamped_tangent_handles(spline):
         _set_linked_tangent_handle(points, index)
 
 
+def _periodic_c2_tangents(coordinates, passes=C2_SOLVE_PASSES):
+    """Tangents making the closed interpolating cubic spline C2.
+
+    Any tangent taken from a point's own neighbours is C1 at best: the
+    curvature arriving at a control point is fixed by the segment on its left
+    and the curvature leaving it by the segment on its right, and no local rule
+    couples the two. Measured on the reference brace, chord-length Bessel
+    tangents left the junction-curvature jump at 9.91x the within-segment
+    baseline, against 9.70x for the previous 0.25 x min-chord rule - no
+    improvement, because the defect is structural rather than a bad constant.
+
+    Matching the second derivative across every join instead gives the standard
+    non-uniform periodic system
+
+        h_i m_(i-1) + 2(h_(i-1)+h_i) m_i + h_(i-1) m_(i+1) = 3(...)
+
+    whose matrix is strictly diagonally dominant by a factor of two, so
+    Gauss-Seidel converges geometrically and needs no cyclic-tridiagonal
+    solver. The result drops the same measured ratio to 1.01 - junction jumps
+    fall to the within-segment noise floor, which is what "one continuous
+    curve" means numerically.
+    """
+    count = len(coordinates)
+    spans = [
+        max((coordinates[(index + 1) % count] - coordinates[index]).length, 1.0e-9)
+        for index in range(count)
+    ]
+    right_hand = [
+        (
+            (coordinates[index] - coordinates[index - 1])
+            * (spans[index] / spans[index - 1])
+            + (coordinates[(index + 1) % count] - coordinates[index])
+            * (spans[index - 1] / spans[index])
+        )
+        * 3.0
+        for index in range(count)
+    ]
+    tangents = [
+        (coordinates[(index + 1) % count] - coordinates[index - 1]).normalized()
+        for index in range(count)
+    ]
+    for _pass in range(passes):
+        for index in range(count):
+            tangents[index] = (
+                right_hand[index]
+                - tangents[index - 1] * spans[index]
+                - tangents[(index + 1) % count] * spans[index - 1]
+            ) / (2.0 * (spans[index - 1] + spans[index]))
+    return tangents, spans
+
+
+def _set_c2_tangent_handles(spline, guard=True):
+    """Write the C2 solution into this spline's Bezier handles.
+
+    The representation does not change: a C2 interpolating cubic spline is
+    expressible exactly in Bezier form, with each handle at one third of its
+    own span along the solved tangent. The curve stays an editable cyclic
+    Bezier, so every editor, the projection and the cutter are unaffected.
+    """
+    points = spline.bezier_points
+    if len(points) < 4:
+        _set_clamped_tangent_handles(spline)
+        return False
+    coordinates = [point.co.copy() for point in points]
+    tangents, spans = _periodic_c2_tangents(coordinates)
+    for index, point in enumerate(points):
+        point.handle_left_type = "FREE"
+        point.handle_right_type = "FREE"
+        point.handle_right = (
+            coordinates[index] + tangents[index] * (spans[index] / 3.0)
+        )
+        point.handle_left = (
+            coordinates[index] - tangents[index] * (spans[index - 1] / 3.0)
+        )
+    # C2 buys its continuity with longer handles, which pull distant stretches
+    # of the perimeter toward each other: measured, the reference trimline's
+    # closest non-adjacent approach halved, 23.3 -> 13.7 mm. That is still
+    # safe, but on a crowded or notched curve it can fall under the cutter's
+    # merge distance and return a non-manifold cut. Bounding handle length was
+    # measured to be the wrong remedy - it does not restore buildability and it
+    # destroys the continuity it is protecting (junction ratio 1.01 -> 14.4 at
+    # 0.35 of chord, worse than the local rule this replaced). So the curve is
+    # measured instead, and where C2 would bring the line dangerously close to
+    # itself the whole spline falls back to the previous tangent-continuous
+    # rule. Worst case is therefore exactly the old behaviour, never worse.
+    # `guard` is off only while a drag is being dragged: the sweep is quadratic
+    # and would run on every mouse-move event. The drag re-checks on release,
+    # so no committed curve escapes it.
+    if guard and _closest_self_approach(spline) < C2_MIN_SELF_GAP_M:
+        _set_clamped_tangent_handles(spline)
+        return False
+    return True
+
+
+# Handle models whose handles are OURS to derive: their values are a pure
+# function of the control points, so any disagreement means the curve was
+# edited outside the add-on's tools. LINKED_TANGENTS is excluded on purpose -
+# there the orthotist set the handles deliberately and they are expected to
+# differ from the solved ones.
+SOLVED_HANDLE_MODELS = ("C2_PERIODIC", "C2_SELF_APPROACH_FALLBACK")
+# Well clear of the 0.000 mm a freshly solved curve measures and far below the
+# 21 mm a hand-mangled one does.
+STALE_HANDLE_LIMIT_M = 0.001
+
+
+def handle_staleness_m(spline, model):
+    """How far the present handles sit from the ones `model` would produce.
+
+    Zero for any curve the add-on solved itself. Large when control points
+    were moved in Blender's native curve editor, which leaves the handles
+    describing the shape the curve used to have - the state that folds the
+    Exact cutter into a non-manifold cut.
+
+    The comparison is made by solving onto the real spline and restoring it,
+    so it always reflects the exact production code path rather than a
+    re-implementation of it that could drift.
+    """
+    points = spline.bezier_points
+    snapshot = _capture_point_states(points)
+    try:
+        if model == "C2_SELF_APPROACH_FALLBACK":
+            _set_clamped_tangent_handles(spline)
+        else:
+            _set_c2_tangent_handles(spline)
+        return max(
+            max(
+                (point.handle_left - state[1]).length,
+                (point.handle_right - state[2]).length,
+            )
+            for point, state in zip(points, snapshot)
+        )
+    finally:
+        _restore_point_states(points, snapshot)
+
+
+def _guard_samples(spline):
+    points = spline.bezier_points
+    count = len(points)
+    samples = []
+    for index in range(count):
+        following = points[(index + 1) % count]
+        samples.extend(
+            interpolate_bezier(
+                points[index].co,
+                points[index].handle_right,
+                following.handle_left,
+                following.co,
+                C2_GUARD_SAMPLES_PER_SEGMENT + 1,
+            )[:-1]
+        )
+    # The sweep below is quadratic, and a refined trimline carries four times
+    # the controls. Striding to a fixed budget keeps the cost flat; the
+    # clearance being protected is millimetres across, far coarser than the
+    # residual sample spacing.
+    stride = max(1, len(samples) // C2_GUARD_SAMPLE_BUDGET)
+    return samples[::stride]
+
+
+def _closest_self_approach(spline):
+    """Closest approach between stretches far apart ALONG the curve.
+
+    Separation has to be circular: on a closed loop, comparing the third
+    sample with the third-from-last measures immediate neighbours, not a
+    near-miss between two different parts of the perimeter.
+    """
+    samples = _guard_samples(spline)
+    count = len(samples)
+    if count < 16:
+        return math.inf
+    skip = max(4, count // 20)
+    closest = math.inf
+    for first in range(count):
+        for second in range(first + skip, count):
+            if count - (second - first) < skip:
+                continue
+            closest = min(closest, (samples[first] - samples[second]).length)
+    return closest
+
+
 def _constrain_perimeter(perimeter, scan):
-    # All joins, including the opening, are tangent-continuous.  The old
-    # VECTOR override deliberately made ten 90-degree corners in the rim.
-    _set_clamped_tangent_handles(perimeter.data.splines[0])
-    perimeter["rigo_trim_handle_model"] = "CLAMPED_TANGENT"
+    # All joins, including the opening, are curvature-continuous.  The old
+    # VECTOR override deliberately made ten 90-degree corners in the rim; the
+    # local tangent rule that replaced it removed those corners but still left
+    # a curvature step at every station (measured 9.7x the within-segment
+    # variation), which is what read as "connected segments" rather than one
+    # clinical curve.
+    # Stamp what the curve actually carries. When the self-approach fallback
+    # engages the handles are the old tangent-continuous ones, and recording
+    # them as C2 would misreport the curve's provenance to the orthotist and
+    # to any later stage that branches on this value.
+    curvature_continuous = _set_c2_tangent_handles(perimeter.data.splines[0])
+    perimeter["rigo_trim_handle_model"] = (
+        "C2_PERIODIC" if curvature_continuous else "C2_SELF_APPROACH_FALLBACK"
+    )
     modifier = perimeter.modifiers.new(name="Follow Corrected Mold", type="SHRINKWRAP")
     modifier.target = scan
     modifier.wrap_method = "NEAREST_SURFACEPOINT"
@@ -531,7 +746,7 @@ def _fit_curve_controls(context, curve, scan):
 def _fit_curve_points(context, curve, scan):
     fitted, moved = _fit_curve_controls(context, curve, scan)
     for spline in curve.data.splines:
-        _set_clamped_tangent_handles(spline)
+        _set_c2_tangent_handles(spline)
     curve.data.update_tag()
     return fitted, moved
 
@@ -649,16 +864,6 @@ def _write_world_controls(points, inverse_curve, coordinates):
         point.co = inverse_curve @ coordinate
 
 
-def _refresh_brush_handles(points, affected):
-    handle_indices = {
-        neighbor
-        for index in affected
-        for neighbor in (index - 1, index, index + 1)
-    }
-    for index in handle_indices:
-        _set_linked_tangent_handle(points, index % len(points))
-
-
 def _smooth_trim_controls_local(
     curve,
     scan,
@@ -691,7 +896,15 @@ def _smooth_trim_controls_local(
             break
         _write_world_controls(points, inverse_curve, updates)
 
-    _refresh_brush_handles(points, affected)
+    # Re-solve rather than rebuilding the brushed arc with the local rule.
+    # Mixing the two models in one curve is the same defect that was already
+    # fixed on the drag path: the seam between local handles on the brushed
+    # arc and solved handles either side is a curvature step, and it produced
+    # a rim overlap that cancelled the build after an ordinary brush stroke
+    # (trimqualitytest, which passes at P1). One model end to end, so the
+    # stamp stays truthful and the pre-flight sees zero staleness.
+    _set_c2_tangent_handles(spline)
+    curve["rigo_trim_handle_model"] = "C2_PERIODIC"
     curve.data.update_tag()
     final = [matrix @ point.co for point in points]
     maximum_movement = max(
@@ -1532,9 +1745,17 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
             )
             if fitted_world is not None:
                 self._points[index].co = inverse_curve @ fitted_world
+        # Must be the SAME model the generator used. Leaving the old local rule
+        # here meant the first drag re-derived every handle by a different
+        # rule than the curve was built with, so the whole perimeter changed
+        # shape at once - measured 19.2 mm even 60 mm away from the drag, more
+        # than the 8 mm drag itself, none of it propagation. Re-solving C2
+        # keeps one model end to end; that the solve is still global is P3's
+        # defect, and P3's banded solve fixes locality without reintroducing a
+        # second handle model.
         for spline in self._curve.data.splines:
-            _set_clamped_tangent_handles(spline)
-        self._curve["rigo_trim_handle_model"] = "CLAMPED_TANGENT"
+            _set_c2_tangent_handles(spline, guard=False)
+        self._curve["rigo_trim_handle_model"] = "C2_PERIODIC"
         self._curve.data.update_tag()
 
     def _point_is_visible(self, index):
@@ -1625,6 +1846,13 @@ class RIGO_OT_slide_trimline_on_surface(Operator):
 
     def _commit_drag(self):
         if self._drag_index is not None and self._drag_start is not None:
+            # The per-move solve skips the quadratic self-approach sweep; run
+            # it once here so a released drag can never leave the perimeter in
+            # a state the cutter would refuse.
+            if self._drag_kind == "CONTROL":
+                for spline in self._curve.data.splines:
+                    _set_c2_tangent_handles(spline)
+                self._curve.data.update_tag()
             if _point_states_changed(self._points, self._drag_start):
                 self._last_edit = self._drag_start
                 self._last_handle_model = self._drag_handle_model
