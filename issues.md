@@ -599,3 +599,58 @@ arc — larger than the 8 mm drag itself, none of it propagation) or produced a 
 at the model seam. LESSON: when a curve's handles are a solved global property, every
 mutator must use the SAME solve; a mutator that leaves the stamp to its caller will also
 get its own output rejected by any check that trusts the stamp.
+
+### #40 SHIPPED — the editable preview was drawn inside the patient
+Signed measurement (negative = inside the body) identified the disappearing path as the
+DISPLAY PREVIEW, not the cutter, not a duplicate, not a stale object:
+
+| path | inside the body | worst inward |
+|---|---|---|
+| control points (authoritative) | 0/42 (0%) | +1.500 mm — all exactly at standoff |
+| raw Bezier (what Generate cuts) | 229/2016 (11.4%) | −4.469 mm |
+| **displayed after Shrinkwrap** | **113/1008 (11.2%)** | **−1.500 mm** |
+| cut rim of the built brace | 0/20052 (0%) | +3.0 … +7.0 mm |
+
+Every displayed sample measured exactly ±1.500 mm, naming the mechanism: `ON_SURFACE`
+offsets to whichever side the source point came from, so where the raw Bezier dipped
+inside, the preview was pushed a further 1.5 mm inside and the body occluded it — the
+line appeared to break into segments. `ABOVE_SURFACE` fixes it (the policy P1 already
+proved on the build overlay). Display-only; generated brace hash identical
+(c314823eaf18dd5f). Shipped 50e88ae.
+
+### #41 OPEN — raw Bezier inter-station sagitta (bounded, downstream-safe)
+All 42 controls sit at exactly +1.5 mm, but the curve BETWEEN them cuts the corner on
+convex body regions and enters the patient by up to 4.469 mm over 11.4% of its length.
+The built brace is unaffected (rim 0% inside, +3.0…+7.0 mm), so this is a defect of the
+authoring surface, not of the product.
+
+**A one-sided band constraint was prototyped as evidence and REJECTED** (`trimbanddbg.py`,
+not integrated). The mechanism itself works: a one-sided violation field, dilated then
+Gaussian-smoothed along arc length, displaced along BARYCENTRICALLY INTERPOLATED vertex
+normals, 3 fixed passes — reference and dense fixtures reach **0.00% penetration** with
+fairness preserved (turn max 4.65 → 5.46 deg) and controls untouched (0.000e+00 mm).
+
+Two findings block it:
+
+1. **Zero penetration and protected features are mutually exclusive on this geometry.**
+   With protection ON the residual is 4.17% inside, worst −2.400 mm — and that residual
+   was IDENTICAL across reference/hostile/dense (−2.400/−2.410/−2.400). That invariance
+   was the clue (LM-0035's trap): the residual lies ENTIRELY inside the protected opening
+   zone. Disabling protection gives 0.00% and worst +0.179 mm. The trimline penetrates
+   the body *within* the protected region, so "preserve protected stations" and "zero
+   samples inside" cannot both hold here.
+2. **Fairness collapses on the hostile fixture**: turn max 4.74 → 82.99 deg. NOT caused by
+   the protection mask — disabling it leaves 82.99 deg unchanged. The correction there is
+   large (8.98 mm) and the notch's rapidly diverging normals turn a smooth scalar
+   displacement into a kink.
+
+Two mechanism lessons worth keeping even though the prototype is rejected:
+- displacing along raw FACE normals re-injects triangulation noise exactly as LM-0035
+  predicts (turn max 20.32 deg); interpolated vertex normals bring it to 5.46 deg.
+- a Gaussian averages a peak DOWN, so smoothing a violation field under-corrects the
+  deepest dips; dilating before smoothing is what makes a smoothed field satisfy a
+  one-sided constraint.
+
+Deferred until the offset-mold architecture (#37) is fixed, per the project owner's
+instruction. The first version of this prototype also measured against the offset mold
+rather than the body and "corrected" 93% of the curve for the liner offset — a non-defect.
