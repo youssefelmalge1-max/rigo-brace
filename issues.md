@@ -654,3 +654,60 @@ Two mechanism lessons worth keeping even though the prototype is rejected:
 Deferred until the offset-mold architecture (#37) is fixed, per the project owner's
 instruction. The first version of this prototype also measured against the offset mold
 rather than the body and "corrected" 93% of the curve for the liner offset — a non-defect.
+
+### #41a CORRECTION — penetration figures restated per reference surface
+A previous summary of #41 called the protected-zone residual a "sub-millimetre dip".
+That was WRONG: it had been measured at -2.400 mm, and the figure was carried across
+without its reference surface. Distances measured against different surfaces are not
+comparable and must never be mixed in a clinical judgement, so all of them are restated
+here, each against a named surface.
+
+**Reference surfaces**
+- **BODY / source scan** (`A type model`) — the patient geometry. This fixture applies no
+  deform or pad, so the **corrected body is identical to the source scan**; there is no
+  distinct third surface.
+- **OFFSET MOLD** (`Rigo Corset Base`) = scan +3.0 mm liner, then Laplacian-faired. The
+  cutter projects onto this.
+- The trimline is authored **1.5 mm outside the BODY**, so it sits **~1.5 mm inside the
+  OFFSET MOLD by construction** (measured control standoff vs mold: p50 −1.499 mm).
+  "Inside the mold" is therefore **not** penetration and cannot be read as such.
+
+**Authoritative raw Bézier vs the BODY — the clinical question**
+
+| region | inside | inside arc | worst inward |
+|---|---|---|---|
+| whole curve | 229/2016 (11.36%) | 315.1 mm | **−4.469 mm** |
+| protected opening zone | 84/578 (14.53%) | 105.5 mm | **−2.400 mm** |
+| everywhere else | 145/1438 (10.08%) | 209.7 mm | **−4.469 mm** |
+| control points | 0 | — | deepest is **+1.418 mm** (outside) |
+
+**Same curve vs the OFFSET MOLD — not a penetration measure**
+
+| region | inside | worst inward |
+|---|---|---|
+| whole curve | 1876/2016 (93.06%) | −7.468 mm |
+| protected opening zone | 566/578 (97.92%) | −5.390 mm |
+| control points | all | −1.500 mm = the liner offset, by design |
+
+**Corrected conclusions**
+- The protected-zone residual is **−2.400 mm relative to the patient body**. That is
+  **not** sub-millimetre and is clinically material. The earlier characterisation was an
+  error.
+- The deepest penetration overall, −4.469 mm, is **outside** the protected zone and is
+  therefore correctable without touching any protected landmark.
+- The protected zone nevertheless contains genuine penetration of its own (14.53% of its
+  samples, worst −2.400 mm), which is why hard-protecting the whole opening arc and
+  demanding zero penetration were mutually exclusive.
+- Every control point is correctly placed: the deepest sits +1.418 mm outside the body.
+  All penetration is inter-station sagitta, never placement.
+- The 93.06% "inside the mold" figure describes the liner offset and must not be quoted
+  as penetration.
+
+**Policy recorded for after #37** (project owner, 2026-07-27): the complete opening arc is
+NOT immovable. Hard protection applies only at semantic landmarks, endpoints and
+intentional high/low points; the interpolated curve between them may move **outward only**,
+within a small measured tolerance, and must not move inward or materially change intended
+opening coverage. The band experiment is to be repeated on that basis — hard protection at
+feature points, soft influence around them, smooth outward-only correction between them,
+zero body penetration, preserved coverage and fairness — and **only after #37 is
+addressed**.
