@@ -60,7 +60,9 @@ looks like a **limb scan** (not a torso), and imports lying on its side (long ax
 | — | "Add Curve Detail" moved the line 7.66 mm | ✅ **FIXED** (P4, fd1a95f) — radial refit removed; subdivision was already exact |
 | 40 | Editable preview drawn INSIDE the patient | ✅ **FIXED** (50e88ae) — `ON_SURFACE` → `ABOVE_SURFACE`; 11.2 % inside → 0 % |
 | 41 | Raw Bézier inter-station sagitta | 🔴 **OPEN** — band constraint prototyped and REJECTED on evidence |
-| **37** | **Offset-mold self-intersection** | 🔴 **OPEN — THE NEXT IMPLEMENTATION TASK, AND THE ONLY ONE.** Five independent pieces of evidence; blocks #23, #41, #42 |
+| **37** | **Offset-mold fold, scan-dependent (B-type)** | 🔴 **OPEN — REWRITTEN 2026-07-28 and narrowed.** Naive normal offset folds on B at ≥2.0 mm; A is clean to 5.0 mm. Blocks #42 |
+| 43 | Painted-path low-density boundary-resample fold | 🔴 **OPEN, NEW** — cap 48 fails, 84/168 clean; fails during boundary resample |
+| 44 | Station-refinement rim overlap | 🔴 **OPEN, NEW** — 6 local overlaps; mold and cut clean; fails during rim construction |
 | **42** | **Trimline must be a curve ON the generated inner brace surface** | 🔴 **OPEN, BLOCKED BEHIND #37.** Persistent inner-surface architecture; see DEC-0039 |
 
 > ⛔ **STANDING PROHIBITION (#42).** Do **not** remove `SURFACE_OFFSET` from
@@ -851,3 +853,63 @@ geometrically follows the inner-surface curvature.
 2241 mm of continuous arc, worst −7.468 mm, max float-away +8.580 mm.
 
 Blocked behind #37.
+
+
+### #37 REWRITTEN 2026-07-28 — scan-dependent offset-mold fold (B-type)
+
+The original text blamed a general offset-mold self-intersection for five symptoms. Measured
+against current code, that was wrong: the mechanism is real but **scan-dependent**, and only
+one of the five reproductions is actually an offset-mold problem. The other two are filed
+separately as #43 and #44 — they are NOT part of #37 merely because their final symptom is
+also an overlap.
+
+**Mechanism (confirmed).** `_prepare_candidate_base` offsets with a DISPLACE modifier,
+direction NORMAL. That is a naive per-vertex displacement, not a true offset surface, so it
+folds where neighbouring normals converge inside the offset distance.
+
+| clearance | pairs | fold regions | largest | concave sites |
+|---|---|---|---|---|
+| 0.1 / 0.5 / 1.0 mm | **0** | — | — | — |
+| **2.0 mm** | 4 | 1 | 7 verts | 0/4 |
+| 3.0 mm (default) | 7 | 2 | 8 verts | 6/7 |
+| 5.0 mm (stress) | 165 | 7 | 89 verts | **163/165** |
+
+Monotonic in clearance, overwhelmingly concave, clustered at ~(185, 74, 10) mm and
+~(187, 64, 17) mm. Source scan itself: **0** of 89,718 triangles. A-type: **0** at every
+clearance to 5.0 mm — hence scan-dependent. At the 3.0 mm default the defect touches
+**8 vertices of 44,859 (0.018 %)**.
+
+**Fix direction: Candidate A (topology-preserving local repair), evidence prototype only.**
+Candidate B (voxel/remesh true offset) is fallback-only and must not be prototyped unless A
+fails at 2.0 and 3.0 mm. Requirements: repair only connected failing regions; preserve
+topology, vertex identity and provenance; never voxel-remesh the whole surface; never alter
+the source scan; never silently reduce the requested clearance; no unrestricted smoothing.
+The repair must reconstruct a valid local offset, not merely move triangles until the
+intersection test passes.
+
+Clearance policy: 0.1/0.5/1.0 mm unchanged and clean; **2.0 and 3.0 mm must reach zero**;
+5.0 mm reported separately as a stress case and must not be used to weaken the 0.1–3.0 mm
+requirement.
+
+Blocks #42. #42 must not begin until B-type offset construction is reliable across the
+clinically supported clearances.
+
+### #43 OPEN — painted-path low-density boundary-resample fold
+Path: `custom_trim_ops` (painted), which does not involve Add Curve Detail.
+
+| cap | keep-interior | weld | resample | result |
+|---|---|---|---|---|
+| 48 | 1 | 0 | **1** | **CANCELLED** — 5 overlaps (`inner 1, inner+rim 1, outer+rim 3`) |
+| 84 | 1 | 0 | 0 | FINISHED |
+| 168 | 0 | 0 | 0 | FINISHED |
+
+The offset mold is clean. The keep-interior fold is transient and healed by the weld; the
+one that survives **boundary resample** is the failure. Note the direction is the REVERSE of
+the retired 84-control ceiling: coarse fails, dense is clean. Not an offset-mold defect.
+
+### #44 OPEN — station-refinement rim overlap
+Corrected probe (re-stamping P3's handle signature) reproduces **6 local rim overlaps** with
+C2 + 1.2 mm sagitta station refinement, 73 controls. Offset mold and all cutting stages are
+clean; the failure begins during **rim construction**. This is the constraint that made P2
+reject its better-curve variants (junction ratio 0.87 here, versus 1.01 shipped). Not an
+offset-mold defect.
