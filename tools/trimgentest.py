@@ -136,6 +136,42 @@ def _displayed_vs_raw(perimeter):
     return _pct(gaps, 0.95), gaps[-1]
 
 
+def _signed_body_distances(scan, points):
+    """Signed distance to the body: negative means inside the patient."""
+    bvh = BVHTree.FromObject(scan, bpy.context.evaluated_depsgraph_get())
+    inverse = scan.matrix_world.inverted()
+    normal_matrix = inverse.transposed().to_3x3()
+    signed = []
+    for point in points:
+        hit = bvh.find_nearest(inverse @ point)
+        if hit[0] is None:
+            continue
+        surface = scan.matrix_world @ hit[0]
+        normal = (normal_matrix @ hit[1]).normalized()
+        signed.append((point - surface).dot(normal))
+    return sorted(signed)
+
+
+def _preview_above_surface(scan, lines):
+    """The editable preview must never be drawn inside the patient.
+
+    Measured signed, because an unsigned distance cannot tell a 1.5 mm
+    standoff from a 1.5 mm penetration - and before this fix those were
+    exactly the two populations present.
+    """
+    bpy.ops.rigo.auto_trimline()
+    perimeter = _perimeter()
+    signed = _signed_body_distances(scan, _centerline(perimeter))
+    inside = [value for value in signed if value < 0.0]
+    lines.append(
+        f"  preview vs body: n={len(signed)} signed_mm "
+        f"min={signed[0]*1000:+.3f} p50={_pct(signed, 0.5)*1000:+.3f} "
+        f"max={signed[-1]*1000:+.3f} | inside the body: {len(inside)}/"
+        f"{len(signed)} ({100.0*len(inside)/max(len(signed),1):.1f}%)"
+    )
+    return len(inside), signed[0] * 1000.0
+
+
 def _body_footprint(scan, points):
     """Where each sample sits ON the patient body - the common frame."""
     bvh = BVHTree.FromObject(scan, bpy.context.evaluated_depsgraph_get())
@@ -844,6 +880,14 @@ def _run():
             fallback_model,
         )
         bpy.ops.rigo.auto_trimline()
+
+        preview_inside, preview_min = _preview_above_surface(scan, lines)
+        _gate(
+            1,
+            "preview_never_inside_body",
+            preview_inside == 0,
+            f"{preview_inside} samples, min {preview_min:+.3f}mm",
+        )
 
         far_move, beyond_band = _drag_locality(scan, scan_bvh, lines)
         _gate(

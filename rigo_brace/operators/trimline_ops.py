@@ -625,7 +625,20 @@ def _constrain_perimeter(perimeter, scan):
     modifier = perimeter.modifiers.new(name="Follow Corrected Mold", type="SHRINKWRAP")
     modifier.target = scan
     modifier.wrap_method = "NEAREST_SURFACEPOINT"
-    modifier.wrap_mode = "ON_SURFACE"
+    # ABOVE_SURFACE, not ON_SURFACE. ON_SURFACE offsets to whichever side the
+    # source point came from, and the raw Bezier dips inside the body between
+    # stations (measured: 11.4 % of evaluated samples, worst 4.469 mm in), so
+    # the displayed line was placed a further 1.5 mm INSIDE exactly there -
+    # every displayed sample measured exactly -1.500 mm over 11.2 % of its
+    # length. That is the line the orthotist watched disappear into the mold.
+    # ABOVE_SURFACE forces the positive-normal side, so the preview is always
+    # visible above the skin. This is the same policy already proven on the
+    # build overlay in P1.
+    #
+    # Display only: `_curve_world_samples` reads the raw control points and
+    # handles, never the evaluated curve, so no modifier setting here can
+    # reach the cutter or change the generated brace.
+    modifier.wrap_mode = "ABOVE_SURFACE"
     modifier.offset = SURFACE_OFFSET
     modifier.show_in_editmode = True
     modifier.show_on_cage = True
