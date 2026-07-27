@@ -874,3 +874,62 @@ refine <=1 mm, zero tube penetration).
 Risk: none yet (audit only). Confidence: high - every claim measured this session.
 Next action: user decision on P1-P4; adversarial cross-review when the codex CLI
 quota returns 2026-08-01.
+
+## Lesson ID: LM-0037
+Date: 2026-07-27
+Source: the upstream trimline wave P1-P4, the surface-adherence audit and its
+rejected band-constraint prototype (commits 3f1c561, 2c3fe7d, 55dabb6, fd1a95f,
+50e88ae, a29ccbb).
+Observation: four separate user-visible defects had four unrelated causes, and every
+one of them was misdiagnosed at least once before measurement settled it.
+ - the "doubled trimline" was never duplicate geometry: it was the BRACE-view preview,
+   a 1.2 mm tube whose centreline sat 0.015-0.41 mm from the shell, so 1008/1008 samples
+   were inside their own tube radius.
+ - the "connected segments" feel was C1-vs-C2. Junction curvature jumps measured 9.70x
+   the within-segment variation. NO local tangent rule can fix this - Bessel/third-of-
+   chord measured 9.91x - because the curvature entering a station is fixed by its left
+   segment and the curvature leaving it by its right, and nothing local couples them.
+   The closed non-uniform C2 solve gives 1.01.
+ - "displayed is not what is built" was largely my own measurement error: I compared the
+   display against the RAW Bezier rather than the projected cut path. The clinically
+   meaningful tangential deviation was already 0.094 p95 / 0.570 max mm before any fix.
+ - "Add Curve Detail moves the line 7.66 mm" was not the subdivision, which was already
+   exact De Casteljau. It was a radial refit running afterwards over EVERY control.
+ - "the trimline disappears into the mold" was the display Shrinkwrap's ON_SURFACE mode
+   offsetting to the side the source point came from; every displayed sample measured
+   exactly -1.500 or +1.500 mm.
+Underlying principle: a user-visible symptom names a LOCATION, never a cause. Five
+symptoms here, five different stages, and in four of them the first plausible mechanism
+was wrong. Measure the specific pair that isolates one variable before writing a fix -
+and when a result is INVARIANT across a swept variable, that is the tell (it caught the
+protected-zone residual at -2.400/-2.410/-2.400 mm across three fixtures).
+Blender/geometry lessons paid for this session:
+ - `wrap_mode = ON_SURFACE` respects the ORIGINATING side. For anything that must stay
+   visible above skin, ABOVE_SURFACE is the only safe choice. This bit twice, on two
+   different curves, months apart.
+ - a curve whose handles are a solved GLOBAL property must have every mutator use the
+   same solve. Two handle models in one curve produced a phantom 19.2 mm "drag
+   propagation" (larger than the 8 mm drag) and, separately, a rim overlap that
+   cancelled the build after an ordinary brush stroke.
+ - detecting "handles no longer match their points" by re-solving and comparing works
+   only while every solve is global; fingerprinting the control POSITIONS the handles
+   were last solved for survives banded solves and hand-set tangents too.
+ - displacing a smooth correction along raw FACE normals re-injects triangulation noise
+   (turn max 20.32 deg); interpolated vertex normals give 5.46 deg. And a Gaussian
+   averages a peak DOWN, so a smoothed violation field under-corrects the deepest dip -
+   dilate before smoothing.
+Clinical implication: the generated trimline is now one curvature-continuous curve whose
+cut lands where it is drawn (0.146 p95 / 0.685 max mm on the body), edits are local in
+millimetres and bit-exactly undoable, adding detail cannot move the prescription, and the
+editable line no longer vanishes inside the patient. The manufactured brace was never at
+risk from the display defects - the cut rim measured 0% inside the body throughout.
+Reusable feature: `tools/trimgentest.py` (35-gate battery, per-patch enforcement levels
+so a revert relaxes only its own gates), `trimshot.py`, `trimadheredbg.py`,
+`trimbanddbg.py`, `trimhostiledbg.py`.
+Test case needed: done - trimgentest at P4 enforcement plus the full battery.
+Risk: low for what shipped; the offset-mold blocker (#37) is unchanged and now has a
+fourth independent piece of evidence against it.
+Confidence: high - every figure above is a measurement from this session.
+Next action: the offset-mold self-intersection (#37) is the shared constraint behind P2's
+rejected variants, the 84-control ceiling, the projection-sigma ceiling and now the
+rejected band constraint. Nothing upstream of it can improve further until it is fixed.
