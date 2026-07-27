@@ -859,3 +859,57 @@ Files affected: `rigo_brace/operators/curve_build_ops.py` (`_rim_profile`,
 Tests required: rimresampletest, curvebuildtest, qaexclusiontest, thicknesstest,
 referencetrimtest, qatest, selftest, importtest, customtrimseamtest, curvefinishtest,
 trimqualitytest, slotbracetest - all green.
+
+## Decision ID: DEC-0038
+Date: 2026-07-27
+Decision: Ship the upstream trimline patches P1 (display truth) and P2 (one
+curvature-continuous clinical curve) independently, each behind its own numeric and
+visual gate. Change the hostile-fixture contract in `rimresampletest` from "a
+hand-mangled trimline must still build" to "it must be refused safely, with a specific
+user-facing reason, no partial geometry, an intact prior brace, honest handle-model
+metadata, and a refusal that re-solving repairs".
+Reason: the generated trimline was C1, not one continuous curve — junction curvature
+jumps measured 9.70x the within-segment variation, which is the "connected segments"
+defect the orthotist reported. Handles derived from a point's own neighbours cannot do
+better than C1; only a global solve couples the curvature entering a station to the
+curvature leaving it. The closed non-uniform C2 system delivers 1.01 while staying
+exactly representable in the existing Bezier form, so nothing downstream changes.
+Alternatives measured and REJECTED — all of them either failed to fix the defect or
+broke the build, and two produced a BETTER curve that still could not be built:
+per-side Bessel tangents (9.91, no better than baseline — the disproof that any local
+rule can work); handle clamps at 0.45 own-span (never binds), 0.45 min-span (reference
+build fails), 0.35 and 0.25 (ratio 14.4 and 24.3, worse than the rule replaced);
+centripetal parameterisation at alpha 0.7 and 0.5 (ratio 0.43 and 1.30 — the best
+curves measured — reference build fails, 2 rim overlaps); sagitta-driven station
+refinement at 1.2 and 0.6 mm (6 rim overlaps / outer-wall overlap).
+Why rejected: the pattern "better curve, failed build" places the constraint in the
+rim/offset stage rather than in the spline. Clamping in particular is self-defeating —
+it truncates the handle lengths the C2 solution encodes, so it destroys the continuity
+it is meant to protect.
+Clinical risk: the trimline is smoother and its cut lands where it is drawn
+(displayed-vs-built on the body 0.146 p95 / 0.685 max mm; opening corner drift
+0.0000 mm). A directly hand-mangled curve now refuses instead of building — accepted by
+the project owner because that curve is mangled outside the add-on's tools and the
+refusal is safe, specific and repairable. Ordinary editor operations must still build,
+and a brush-then-generate failure found during the battery was FIXED rather than
+accepted under that narrowing.
+Technical risk: C2 halves the trimline's self-clearance (23.3 -> 13.7 mm against a
+3.0 mm cutter merge floor). A stamped fallback reverts a spline to the previous
+tangent-continuous rule below 6 mm; it does not fire on any tested fixture and is proven
+to engage by a test that raises its trigger.
+Rollback plan: revert 3f1c561 and 2c3fe7d independently; each is self-contained, and P1
+is provably display-only (identical corset hash before and after).
+Files affected: `rigo_brace/operators/trimline_ops.py` (C2 solve, self-approach
+fallback, staleness measurement, brush re-solve), `rigo_brace/operators/curve_build_ops.py`
+(overlay from the cutter's projected path, stale-handle pre-flight),
+`rigo_brace/core/__init__.py` and `ui/panels.py` (overlay toggle), `tools/trimgentest.py`
+(new), `tools/trimshot.py` (new), `tools/curvebuildtest.py` and `tools/rimresampletest.py`
+(contracts updated), P2 prototypes and diagnostics.
+Tests required: trimgentest, rimresampletest, curvebuildtest, trimqualitytest,
+trimbrushtest, trimbrushcanceltest, selftest, qatest, exporttest, thicknesstest,
+referencetrimtest, customtrimseamtest, curvefinishtest — all green; front/side/oblique
+captures unchanged in silhouette.
+Follow-up: P3 (editor locality) and P4 (exact De Casteljau refine) remain. The offset-mold
+self-intersection is scheduled as the next ARCHITECTURAL task (issues.md #37): it is the
+shared constraint behind this decision's rejected variants and three previously capped
+features, and trimline quality cannot rise further until it is fixed.

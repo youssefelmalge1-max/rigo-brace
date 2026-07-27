@@ -531,3 +531,71 @@ LESSON: the per-point displacement cap must never bind. Tightening it from 0.4 t
 because clipping each point's shift while its neighbours are clipped differently
 destroys the smoothness the Gaussian just created. Strength belongs to sigma, which is
 continuous; the cap is a safety stop only.
+
+## 2026-07-27 — upstream trimline wave (P1/P2 shipped; P3/P4 open)
+
+### #35 P1 — the "doubled trimline" was the build preview, not duplicate geometry
+Reported as two overlapping paths plus dark specks along the rim. Object lifecycle was
+never at fault: regeneration replaces every trim object by name, and two consecutive
+`auto_trimline` + two consecutive Generate calls left zero `.001`/Candidate/Backup
+leftovers. The cause was that BRACE view deliberately showed `Rigo Build Trim Perimeter`
+— a 1.2 mm-radius tube shrinkwrapped 0.2 mm above the inner wall, so its centreline sat
+0.015–0.41 mm from the shell and **1008/1008 sampled points were closer than the tube's
+own radius**. The whole tube was inside the shell; the half that emerged read as a second
+edge. Fixed by making the overlay opt-in (`show_trim_overlay`, default off), thinning it
+to r=0.30 mm and lifting it clear of the OUTER wall. Clearance now 1.436–1.712 mm, zero
+penetration. Shipped 3f1c561; geometry bit-identical (hash e5c7be9cc95ab771 before and
+after), so it is provably display-only.
+
+### #36 P2 — the trimline was C1, not one continuous curve
+Junction curvature jumps measured 9.70x the within-segment variation, concentrated at the
+opening corners and the top-front transition: the "connected segments" complaint. Cause is
+structural, not a bad constant — handles derived from a point's own neighbours cannot be
+better than C1. A closed non-uniform C2 spline solve takes the ratio to **1.01**, with
+turn p95 2.32 -> 1.92 deg and trim fidelity p95 0.029 -> 0.020 mm. Shipped 2c3fe7d.
+
+### #37 OPEN, ARCHITECTURAL — the offset mold self-intersects
+**This is the shared constraint behind #36's rejected variants and three previously capped
+features. It is the next architectural task.**
+Every P2 variant that reshaped the trimline more than plain chord-length C2 broke the
+build, including two that produced a measurably BETTER curve:
+
+| variant | junction ratio | reference build |
+|---|---|---|
+| C2 chord-length (shipped) | 1.01 | FINISHED |
+| centripetal alpha 0.7 | **0.43** | FAILS — 2 rim overlaps |
+| centripetal alpha 0.5 | 1.30 | FAILS |
+| sagitta stations 1.2 mm | 0.86 | FAILS — 6 rim overlaps |
+| sagitta stations 0.6 mm | 0.64 | FAILS — outer-wall overlap |
+
+The pattern — better curve, failed build — locates the limit in the rim/offset stage, not
+in the spline. Same wall as: the `_MAX_CUSTOM_CONTROLS = 84` density ceiling (raising it
+gives 5–8 rim overlaps, measured as INNER wall against INNER wall — the patient-contact
+surface folding into itself); the projection sigma ceiling (1.5 mm broke the hairpin by
+one overlap, LM-0035); and LM-0026's B-type 4 mm Solidify collapse. Until the offset mold
+is fixed, trimline quality is capped by a defect that is not in the trimline.
+
+### #38 P2 — reduced hand-mangled-curve envelope (accepted, contract updated)
+A trimline whose control points are moved in Blender's native curve editor keeps handles
+describing its previous shape. Measured 21.0 mm out of step, which folds the Exact cutter.
+Its closest self-approach is **unchanged** at 13.697 mm against a 3.0 mm merge floor, so
+this is specifically a stale-handle defect and NOT a self-intersecting trimline — the
+first hypothesis, and wrong.
+Under the C1 generator such a curve happened to build; under C2 it cannot. Accepted by the
+project owner because the curve is directly hand-mangled and the generator now refuses it
+safely rather than emitting invalid brace geometry. `rimresampletest`'s contract was
+updated from "must build" to the accepted behaviour, asserted clause by clause: refuse,
+name the real cause, leave no partial geometry, keep the prior brace intact, stamp the
+handle model honestly — and re-solving the handles must let the same curve build, so the
+refusal is a repairable gate rather than a generator that refuses everything.
+NOT accepted, and fixed instead: the smooth brush rebuilt only its own arc with the old
+local rule, and the seam against the solved handles either side cancelled the build after
+an **ordinary** stroke. That is a normal editor operation, outside the approved narrowing.
+
+### #39 P2 — two handle models in one curve (fixed twice, same root cause)
+Both the drag path and the smooth brush re-derived handles with a different rule than the
+generator used, so a single edit silently reshaped the whole perimeter (19.2 mm at 60 mm
+arc — larger than the 8 mm drag itself, none of it propagation) or produced a rim overlap
+at the model seam. LESSON: when a curve's handles are a solved global property, every
+mutator must use the SAME solve; a mutator that leaves the stamp to its caller will also
+get its own output rejected by any check that trusts the stamp.
