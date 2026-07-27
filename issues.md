@@ -48,6 +48,33 @@ looks like a **limb scan** (not a torso), and imports lying on its side (long ax
 | 27 | `designtest` fails: 2 non-manifold edges from the legacy generator | 🔴 **OPEN, PRE-EXISTING** — identical failure with the seam fix disabled |
 | 28 | `outlinetest` fails: `rigo.edit_outline.poll()` context incorrect | 🔴 **OPEN, PRE-EXISTING** — identical failure with the seam fix disabled |
 
+**2026-07-27 upstream trimline wave** (details at the end of this file)
+
+| # | Finding | Status |
+|---|---|---|
+| 35 | "Doubled trimline" = BRACE-view preview embedded in the shell | ✅ **FIXED** (P1, 3f1c561) — 1008/1008 tube samples inside the shell → 0 |
+| 36 | Trimline was C1, read as "connected segments" | ✅ **FIXED** (P2, 2c3fe7d) — junction curvature ratio 9.70 → 1.01 |
+| 38 | Hand-mangled curve refuses instead of building | 🔵 **ACCEPTED** — contract changed with owner approval; safe, specific, repairable refusal |
+| 39 | Two handle models in one curve | ✅ **FIXED** (P2/P3) — every mutator now uses the same solve |
+| — | Edits were non-local and wiped hand-set handles | ✅ **FIXED** (P3, 55dabb6) — mm arc-length falloff, banded C2, bit-exact undo |
+| — | "Add Curve Detail" moved the line 7.66 mm | ✅ **FIXED** (P4, fd1a95f) — radial refit removed; subdivision was already exact |
+| 40 | Editable preview drawn INSIDE the patient | ✅ **FIXED** (50e88ae) — `ON_SURFACE` → `ABOVE_SURFACE`; 11.2 % inside → 0 % |
+| 41 | Raw Bézier inter-station sagitta | 🔴 **OPEN** — band constraint prototyped and REJECTED on evidence |
+| **37** | **Offset-mold self-intersection** | 🔴 **OPEN — THE NEXT IMPLEMENTATION TASK, AND THE ONLY ONE.** Five independent pieces of evidence; blocks #23, #41, #42 |
+| **42** | **Trimline must be a curve ON the generated inner brace surface** | 🔴 **OPEN, BLOCKED BEHIND #37.** Persistent inner-surface architecture; see DEC-0039 |
+
+> ⛔ **STANDING PROHIBITION (#42).** Do **not** remove `SURFACE_OFFSET` from
+> `trimline_ops.py` as a standalone fix. It corrects only the systematic −1.500 mm bias and
+> leaves ±7–8 mm of inter-station sagitta — 93.06 % of the evaluated curve on the wrong
+> side of the inner brace surface — while making every control station read ~0.000 mm, so
+> the defect would *look* fixed. The constant offset correction and full evaluated-curve
+> conformance must ship together, never as separate partial fixes.
+
+> **Sequencing (owner, 2026-07-27):** #37 first and only. Do not begin #42 until the
+> offset-mold architecture is fixed and verified against all five existing evidence cases.
+> The five shipped trimline commits (3f1c561, 2c3fe7d, 55dabb6, fd1a95f, 50e88ae) are to be
+> preserved unchanged while #37 is investigated.
+
 ---
 
 ## ✅ Fixed
