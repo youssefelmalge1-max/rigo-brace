@@ -38,7 +38,7 @@ import traceback
 import bpy
 
 sys.path.insert(0, r"C:\Projects\Blender Add-on Braces\tools")
-from bracefixture import prepare_reference_design  # noqa: E402
+from bracefixture import prepare_design, prepare_reference_design  # noqa: E402
 
 from bl_ext.user_default.rigo_brace.operators import design_ops  # noqa: E402
 from bl_ext.user_default.rigo_brace.operators.mesh_intersections import (  # noqa: E402
@@ -125,7 +125,12 @@ def _run():
         return 0.1
     lines = []
     try:
-        scan, settings = prepare_reference_design()
+        if os.environ.get("RIGO_MOLD_FIXTURE") == "btype":
+            scan, settings = prepare_design(
+                r"C:\Projects\Blender Add-on Braces\B type model.stl", "B"
+            )
+        else:
+            scan, settings = prepare_reference_design()
         fairing = int(os.environ.get("RIGO_MOLD_FAIRING", settings.corset_smooth))
         settings.corset_smooth = fairing
         lines.append(
@@ -173,6 +178,25 @@ def _run():
                 if pairs:
                     ring = _neighbours(triangles)
                     _describe_sites(base.data, triangles, pairs, ring, lines)
+                    # Local fold or one connected patch? Union the triangles
+                    # involved and count connected groups - a handful of
+                    # isolated folds is a very different repair from one large
+                    # collapsed region.
+                    groups = []
+                    for first, second in pairs:
+                        members = set(triangles[first]) | set(triangles[second])
+                        merged = [members]
+                        for existing in groups:
+                            if existing & members:
+                                merged.append(existing)
+                        for existing in merged[1:]:
+                            groups.remove(existing)
+                        groups.append(set().union(*merged))
+                    lines.append(
+                        f"      connectivity: {len(pairs)} pairs form "
+                        f"{len(groups)} disjoint fold region(s); "
+                        f"largest touches {max(len(g) for g in groups)} vertices"
+                    )
             finally:
                 if base is not None and design_ops._object_is_registered(base):
                     design_ops._remove_object_and_orphan_mesh(base)

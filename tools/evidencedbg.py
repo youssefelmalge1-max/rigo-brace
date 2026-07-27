@@ -45,10 +45,15 @@ from bl_ext.user_default.rigo_brace.operators.mesh_intersections import (  # noq
 )
 
 CASE = os.environ.get("RIGO_EV_CASE", "painted")
+HOSTILE = bool(os.environ.get("RIGO_EV_HOSTILE"))
 CONTROLS = int(os.environ.get("RIGO_EV_CONTROLS", "84"))
 SIGMA_MM = float(os.environ.get("RIGO_EV_SIGMA", "1.0"))
 PARAM = CONTROLS if CASE == "painted" else (SIGMA_MM if CASE == "sigma" else "4mm")
-OUT = rf"C:\Projects\Blender Add-on Braces\evidencedbg_{CASE}_{PARAM}.txt"
+OUT = (
+    rf"C:\Projects\Blender Add-on Braces\evidencedbg_{CASE}_{PARAM}"
+    + ("_hostile" if HOSTILE else "")
+    + ".txt"
+)
 TRIES = {"n": 0}
 STAGES = []
 CLASSES = {}
@@ -124,6 +129,33 @@ def _paint_front_band(scan, axis, front, z_low, z_high):
     return painted
 
 
+def _sharpen():
+    """The rimresampletest hostile fixture, with P3's signature re-stamped."""
+    from bl_ext.user_default.rigo_brace.operators import trimline_ops
+
+    perimeter = bpy.data.objects["Rigo Trim Perimeter"]
+    points = perimeter.data.splines[0].bezier_points
+    count = len(points)
+    notch = count // 3
+    for offset in (-1, 0, 1):
+        point = points[(notch + offset) % count]
+        point.handle_left_type = "AUTO"
+        point.handle_right_type = "AUTO"
+    points[notch].co.z -= 0.015
+    crowd = (2 * count) // 3
+    anchor = points[crowd].co.copy()
+    for offset in (1, 2):
+        point = points[(crowd + offset) % count]
+        direction = point.co - anchor
+        if direction.length > 1e-9:
+            point.co = anchor + direction.normalized() * (0.005 * offset)
+        point.handle_left_type = "AUTO"
+        point.handle_right_type = "AUTO"
+    trimline_ops._set_c2_tangent_handles(perimeter.data.splines[0])
+    trimline_ops.mark_handles_solved(perimeter)
+    perimeter.data.update_tag()
+
+
 def _run():
     TRIES["n"] += 1
     if not hasattr(bpy.types, "RIGO_PT_main") and TRIES["n"] < 30:
@@ -169,6 +201,13 @@ def _run():
             except RuntimeError as exc:
                 trim, trim_error = {"CANCELLED"}, str(exc).strip()[:120]
             lines.append(f"create trimline from paint={trim} {trim_error}")
+
+        if HOSTILE:
+            # The historical sigma break was measured on the hostile hairpin,
+            # not the reference, so the reference-only rerun did not test the
+            # recorded claim at all.
+            _sharpen()
+            lines.append("fixture=HOSTILE hairpin (notch + crowded stations)")
 
         if CASE == "sigma":
             curve_build_ops._PROJECTION_SMOOTH_M = SIGMA_MM * 0.001

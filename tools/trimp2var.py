@@ -341,6 +341,11 @@ def _run():
                 _refine_balanced(
                     bpy.context, perimeter, scan, bvh, tolerance, lines
                 )
+            # P3 added a stale-handle pre-flight keyed to a fingerprint of the
+            # control POSITIONS the handles were last solved for. This probe
+            # edits controls directly, so without re-stamping, Generate refuses
+            # before any geometry is built and the run measures nothing.
+            trimline_ops.mark_handles_solved(perimeter)
             perimeter.data.update_tag()
             bpy.context.view_layer.update()
 
