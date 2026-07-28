@@ -1,0 +1,761 @@
+"""Contract-gated quality test for Pressure/Expansion regions + style library.
+
+Implements knowledge/region_quality_contract.md (#48): validity, smoothness,
+amount, feather, library parity, resolution robustness, evaluated-surface
+consistency, determinism and performance — as hard PASS/FAIL gates, not
+appearance.  Writes regionqualtest_result.txt (last line PASS=True/False).
+
+GUI Blender only:
+  & blender.exe --app-template rigo_brace --python tools\regionqualtest.py
+"""
+
+import math
+import random
+import statistics
+import time
+import traceback
+
+import bpy
+import bmesh
+import importlib
+from mathutils import Vector, kdtree
+from mathutils.bvhtree import BVHTree
+
+_OUT = r"C:\Projects\Blender Add-on Braces\regionqualtest_result.txt"
+_SCAN = r"C:\Projects\Blender Add-on Braces\Brace Sample.stl"
+_PATIENT = r"C:\Projects\Blender Add-on Braces\A type model.stl"
+_TRIES = {"n": 0}
+_log = []
+_GATES = {}
+_STYLE_LABELS = (
+    "QA Gate Scan Style", "QA Gate Scan Style5",
+    "QA Gate Flat Style", "QA Gate Patient Style",
+)
+
+
+def _mark(msg):
+    _log.append(str(msg))
+    with open(_OUT, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(_log))
+
+
+def _gate(name, ok, detail=""):
+    _GATES[name] = bool(ok)
+    _mark(f"GATE {name}={'ok' if ok else 'FAIL'} {detail}")
+
+
+# --------------------------------------------------------------------------- #
+# helpers (shared with regionqualdbg.py measurement machinery)
+# --------------------------------------------------------------------------- #
+def _import_scan(path):
+    bpy.ops.wm.stl_import(filepath=path)
+    obj = bpy.context.active_object
+    settings = bpy.context.scene.rigo_brace
+    settings.scan_object = obj
+    bpy.context.view_layer.objects.active = obj
+    settings.scan_units = "mm"
+    bpy.ops.rigo.apply_units()
+    return obj
+
+
+def _delete(obj):
+    try:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    except Exception:
+        pass
+
+
+def _adjacency(me):
+    adj = [[] for _ in range(len(me.vertices))]
+    for e in me.edges:
+        a, b = e.vertices
+        adj[a].append(b)
+        adj[b].append(a)
+    return adj
+
+
+def _group_weights(obj, mask):
+    vg = obj.vertex_groups.get(mask)
+    if vg is None:
+        return {}
+    gi = vg.index
+    out = {}
+    for v in obj.data.vertices:
+        for g in v.groups:
+            if g.group == gi:
+                out[v.index] = g.weight
+                break
+    return out
+
+
+def _nonmanifold(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    n = sum(1 for e in bm.edges if not e.is_manifold)
+    bm.free()
+    return n
+
+
+def _snapshot(obj):
+    me = obj.data
+    return (
+        {v.index: v.co.copy() for v in me.vertices},
+        {v.index: v.normal.copy() for v in me.vertices},
+        {p.index: p.normal.copy() for p in me.polygons},
+    )
+
+
+def _footprint_faces(me, fp):
+    return [p for p in me.polygons if any(vi in fp for vi in p.vertices)]
+
+
+def _dihedral_map(obj, fp):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    out = {}
+    for e in bm.edges:
+        if len(e.link_faces) != 2:
+            continue
+        if not any(v.index in fp for v in e.verts):
+            continue
+        key = (e.verts[0].index, e.verts[1].index)
+        try:
+            out[key] = math.degrees(abs(e.calc_face_angle()))
+        except ValueError:
+            out[key] = 180.0
+    bm.free()
+    return out
+
+
+def _self_intersections(obj, fp):
+    me = obj.data
+    faces = _footprint_faces(me, fp)
+    if not faces:
+        return 0
+    verts = [v.co for v in me.vertices]
+    polys = [tuple(p.vertices) for p in faces]
+    tree = BVHTree.FromPolygons(verts, polys, all_triangles=True)
+    hits = set()
+    for a, b in tree.overlap(tree):
+        if a == b or set(polys[a]) & set(polys[b]):
+            continue
+        hits.add((min(a, b), max(a, b)))
+    return len(hits)
+
+
+def _mean_edge_mm(me, fp):
+    total = 0.0
+    n = 0
+    for e in me.edges:
+        a, b = e.vertices
+        if a in fp or b in fp:
+            total += (me.vertices[a].co - me.vertices[b].co).length
+            n += 1
+    return (total / n * 1000.0) if n else 3.0
+
+
+def _osc_gate_mm(amount_mm, feather_mm, h_mm):
+    return max(1.0, 2.0 * amount_mm * 6.0 / (feather_mm * feather_mm) * h_mm * h_mm)
+
+
+def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
+             amount_mm, expect_sign, nonman0):
+    me = obj.data
+    adj = _adjacency(me)
+    fp = {i for i, w in weights.items() if w > 1e-5}
+    d = {}
+    for v in me.vertices:
+        d[v.index] = (v.co - before[v.index]).dot(before_n[v.index]) * 1000.0
+
+    holes = 0
+    for i in fp | {n for i in fp for n in adj[i]}:
+        if weights.get(i, 0.0) < 0.1:
+            if sum(1 for n in adj[i] if weights.get(n, 0.0) > 0.5) >= 3:
+                holes += 1
+
+    osc = []
+    for i in fp:
+        if adj[i]:
+            osc.append(abs(d[i] - sum(d[n] for n in adj[i]) / len(adj[i])))
+    osc_max = max(osc) if osc else 0.0
+    osc_mean = (sum(osc) / len(osc)) if osc else 0.0
+
+    rev = 0
+    rev_tol = max(0.2, 0.05 * amount_mm)
+    for e in me.edges:
+        a, b = e.vertices
+        wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
+        if wa == wb or (wa == 0.0 and wb == 0.0):
+            continue
+        if (wa - wb) * (abs(d[a]) - abs(d[b])) < 0 and abs(abs(d[a]) - abs(d[b])) > rev_tol:
+            rev += 1
+
+    core = [abs(d[i]) for i, w in weights.items() if w > 0.9]
+    core_med = statistics.median(core) if core else 0.0
+    outside = max(
+        (abs(d[v.index]) for v in me.vertices if v.index not in weights),
+        default=0.0,
+    )
+    sign_ok = all((d[i] * expect_sign) >= -0.05 for i in fp if abs(d[i]) > 0.1)
+
+    post_dih = _dihedral_map(obj, fp)
+    new_spikes = sum(
+        1 for key, a in post_dih.items()
+        if a > 60.0 and pre_dih.get(key, 0.0) <= 45.0
+    )
+    inverted = sum(
+        1 for p in _footprint_faces(me, fp)
+        if p.normal.dot(before_fn[p.index]) < 0.0
+    )
+    degen = sum(1 for p in _footprint_faces(me, fp) if p.area < 1e-12)
+    selfx = _self_intersections(obj, fp)
+    nonman_delta = _nonmanifold(obj) - nonman0
+
+    _mark(
+        f"[{tag}] verts={len(fp)} core_med={core_med:.2f}/{amount_mm} "
+        f"outside={outside:.4f} osc_max={osc_max:.3f} osc_mean={osc_mean:.4f} "
+        f"rev={rev} new_spikes={new_spikes} inverted={inverted} degen={degen} "
+        f"selfx={selfx} holes={holes} nonman_delta={nonman_delta} sign_ok={sign_ok}"
+    )
+    return {
+        "d": d, "fp": fp, "holes": holes, "osc_max": osc_max,
+        "osc_mean": osc_mean, "rev": rev, "core_med": core_med,
+        "outside": outside, "new_spikes": new_spikes, "inverted": inverted,
+        "degen": degen, "selfx": selfx, "nonman_delta": nonman_delta,
+        "sign_ok": sign_ok, "weights": weights, "coords": before,
+    }
+
+
+def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
+              skip_osc=False):
+    """Validity + Amount + Feather gate block from the contract."""
+    _gate(
+        f"{tag}.validity",
+        m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
+        and m["holes"] == 0 and m["nonman_delta"] == 0 and m["sign_ok"],
+        f"selfx={m['selfx']} inv={m['inverted']} holes={m['holes']}",
+    )
+    if not skip_osc:
+        bound = _osc_gate_mm(amount_mm, feather_mm, h_mm)
+        _gate(
+            f"{tag}.smooth",
+            m["osc_max"] <= bound,
+            f"osc_max={m['osc_max']:.2f} bound={bound:.2f}",
+        )
+    if not skip_amount:
+        _gate(
+            f"{tag}.amount",
+            0.9 * amount_mm <= m["core_med"] <= 1.1 * amount_mm,
+            f"core_med={m['core_med']:.2f}",
+        )
+    _gate(
+        f"{tag}.feather",
+        m["outside"] <= 0.001 and m["rev"] == 0,
+        f"outside={m['outside']:.4f} rev={m['rev']}",
+    )
+
+
+def _gate_parity(tag, m_direct, m_import, amount_mm=15.0):
+    keys = set(m_direct["d"]) & set(m_import["d"])
+    diffs = [abs(m_direct["d"][k] - m_import["d"][k]) for k in keys]
+    rms = math.sqrt(sum(x * x for x in diffs) / len(diffs))
+    # Effective footprints (w > 0.05): near-zero mask skirts are not clinical.
+    eff_d = {i for i, w in m_direct["weights"].items() if w > 0.05}
+    eff_i = {i for i, w in m_import["weights"].items() if w > 0.05}
+    iou = len(eff_d & eff_i) / len(eff_d | eff_i)
+    if m_direct.get("coords"):
+        coords = m_direct["coords"]
+        cd = sum((coords[i] for i in eff_d), Vector()) / len(eff_d)
+        ci = sum((coords[i] for i in eff_i), Vector()) / len(eff_i)
+        _mark(
+            f"[{tag}] parity-diag: |eff_d|={len(eff_d)} |eff_i|={len(eff_i)} "
+            f"centroid_gap={(cd - ci).length * 1000.0:.2f}mm"
+        )
+        extra = sorted(
+            eff_i - eff_d, key=lambda i: -m_import["weights"].get(i, 0.0)
+        )[:6]
+        for i in extra:
+            _mark(
+                f"[{tag}]   extra v{i}: w_dir={m_direct['weights'].get(i, 0.0):.3f} "
+                f"w_imp={m_import['weights'].get(i, 0.0):.3f} "
+                f"r_seed={(coords[i] - cd).length * 1000.0:.1f}mm"
+            )
+    # Rim tolerance: the transition zone may shift laterally by ~1.5 edges;
+    # the core must match tightly (rms).
+    _gate(
+        f"{tag}.parity",
+        m_import["osc_max"] <= 1.5 * m_direct["osc_max"] + 0.3
+        and m_import["new_spikes"] <= m_direct["new_spikes"] + 2
+        and iou >= 0.75 and rms <= 0.5 and max(diffs) <= 0.25 * amount_mm,
+        f"IoU={iou:.3f} rms={rms:.3f} maxdd={max(diffs):.2f} "
+        f"osc={m_import['osc_max']:.2f}vs{m_direct['osc_max']:.2f} "
+        f"spikes={m_import['new_spikes']}vs{m_direct['new_spikes']}",
+    )
+
+
+def _gate_cursor_import(tag, obj, style_id, cursor_world):
+    """Gate: import at a point on the VISIBLE surface lands there with ~full
+    weight and a hole-free field (evaluated-surface correctness, contract 7).
+
+    The vertex under the cursor is resolved on the evaluated surface BEFORE
+    the import (the import adds its own preview modifier, which moves it)."""
+    settings = bpy.context.scene.rigo_brace
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    ev = obj.evaluated_get(depsgraph).to_mesh()
+    tree = kdtree.KDTree(len(ev.vertices))
+    for v in ev.vertices:
+        tree.insert(obj.matrix_world @ v.co, v.index)
+    tree.balance()
+    _co, under_cursor, dist = tree.find(Vector(cursor_world))
+    obj.evaluated_get(depsgraph).to_mesh_clear()
+
+    settings.region_style = style_id
+    bpy.context.scene.cursor.location = cursor_world
+    try:
+        st = bpy.ops.rigo.region_style_import()
+    except RuntimeError as exc:
+        _gate(tag, False, f"raised {exc}")
+        return
+    if st != {"FINISHED"}:
+        _gate(tag, False, f"returned {st}")
+        return
+    region = obj.rigo_regions[obj.rigo_region_index]
+    weights = _group_weights(obj, region.surface_mask)
+    w_at_cursor = weights.get(under_cursor, 0.0)
+    adj = _adjacency(obj.data)
+    fp = {i for i, w in weights.items() if w > 1e-5}
+    holes = 0
+    for i in fp:
+        if weights.get(i, 0.0) < 0.1 and sum(
+            1 for n in adj[i] if weights.get(n, 0.0) > 0.5
+        ) >= 3:
+            holes += 1
+    _gate(
+        tag,
+        w_at_cursor >= 0.8 and holes == 0 and len(fp) > 50,
+        f"w_at_cursor={w_at_cursor:.3f} holes={holes} verts={len(fp)} "
+        f"cursor_snap={dist * 1000.0:.1f}mm",
+    )
+
+
+def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
+    """Hostile-case contract: commit either produces VALID geometry or
+    refuses with a bit-exact restore and the live preview kept."""
+    mask = obj.rigo_regions[obj.rigo_region_index].surface_mask
+    fp = {i for i, w in weights.items() if w > 1e-5}
+    pre_dih = _dihedral_map(obj, fp)
+    before, before_n, before_fn = _snapshot(obj)
+    try:
+        st = bpy.ops.rigo.region_apply()
+    except RuntimeError as exc:
+        st = {"CANCELLED"}
+        _mark(f"[{tag}] refused: {exc}")
+    if st == {"FINISHED"}:
+        m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
+                     weights, amount, -1.0, nonman0)
+        _gate(
+            f"{tag}.valid_commit",
+            m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
+            and m["holes"] == 0 and m["nonman_delta"] == 0
+            and m["outside"] <= 0.001
+            and 0.9 * amount <= m["core_med"] <= 1.1 * amount,
+            f"selfx={m['selfx']} inv={m['inverted']} core={m['core_med']:.2f}",
+        )
+    else:
+        restored = all(
+            (obj.data.vertices[i].co - before[i]).length == 0.0
+            for i in before
+        )
+        preview = obj.modifiers.get(f"RIGO_REGION_PREVIEW_{mask}") is not None
+        _gate(f"{tag}.refuse_safe", restored and preview,
+              f"bit_exact_restore={restored} preview_kept={preview}")
+
+
+def _make_grid(name, size_m, divisions, jitter_frac, seed):
+    rng = random.Random(seed)
+    bm = bmesh.new()
+    bmesh.ops.create_grid(
+        bm, x_segments=divisions, y_segments=divisions, size=size_m * 0.5
+    )
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    spacing = size_m / divisions
+    for v in bm.verts:
+        if len(v.link_edges) >= 6:
+            v.co.x += rng.uniform(-jitter_frac, jitter_frac) * spacing
+            v.co.y += rng.uniform(-jitter_frac, jitter_frac) * spacing
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.scene.rigo_brace.scan_object = obj
+    bpy.context.view_layer.objects.active = obj
+    return obj
+
+
+def _nearest_vertex(me, point):
+    tree = kdtree.KDTree(len(me.vertices))
+    for v in me.vertices:
+        tree.insert(v.co, v.index)
+    tree.balance()
+    _co, idx, _d = tree.find(point)
+    return idx
+
+
+def _paint_patch(obj, seed_face, count):
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_mode(type="FACE")
+    bpy.ops.mesh.select_all(action="DESELECT")
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+    seed = bm.faces[seed_face]
+    patch = {seed}
+    frontier = [seed]
+    while len(patch) < count and frontier:
+        nxt = []
+        for f in frontier:
+            for e in f.edges:
+                for lf in e.link_faces:
+                    if lf not in patch:
+                        patch.add(lf)
+                        nxt.append(lf)
+        frontier = nxt
+    for f in patch:
+        f.select = True
+    bmesh.update_edit_mesh(obj.data)
+
+
+def _run_direct_circle(tag, obj, amount, kind, seed_idx, radius,
+                       feather_for_gate=None, commit=True):
+    settings = bpy.context.scene.rigo_brace
+    me = obj.data
+    bpy.context.scene.cursor.location = obj.matrix_world @ me.vertices[seed_idx].co
+    settings.region_radius = radius
+    settings.region_magnitude = amount
+    settings.region_kind = kind
+    settings.region_falloff = "SMOOTH"
+    bpy.ops.rigo.region_add_circle()
+    region = obj.rigo_regions[obj.rigo_region_index]
+    weights = _group_weights(obj, region.surface_mask)
+    fp = {i for i, w in weights.items() if w > 1e-5}
+    pre_dih = _dihedral_map(obj, fp)
+    nonman0 = _nonmanifold(obj)
+    before, before_n, before_fn = _snapshot(obj)
+    if not commit:
+        return None, weights
+    bpy.ops.rigo.region_apply()
+    sign = -1.0 if kind == "PRESSURE" else 1.0
+    m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
+                 amount, sign, nonman0)
+    h = _mean_edge_mm(me, fp)
+    _gate_vaf(tag, m, amount, feather_for_gate or radius, h)
+    return m, weights
+
+
+def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
+                parity_ref=None, core_required=True):
+    settings = bpy.context.scene.rigo_brace
+    settings.region_style = style_id
+    bpy.context.scene.cursor.location = cursor_world
+    try:
+        st = bpy.ops.rigo.region_style_import()
+    except RuntimeError as exc:
+        _gate(f"{tag}.import", False, f"raised {exc}")
+        return None
+    if st != {"FINISHED"}:
+        _gate(f"{tag}.import", False, f"returned {st}")
+        return None
+    region = obj.rigo_regions[obj.rigo_region_index]
+    weights = _group_weights(obj, region.surface_mask)
+    fp = {i for i, w in weights.items() if w > 1e-5}
+    pre_dih = _dihedral_map(obj, fp)
+    nonman0 = _nonmanifold(obj)
+    before, before_n, before_fn = _snapshot(obj)
+    t0 = time.perf_counter()
+    bpy.ops.rigo.region_apply()
+    dt = time.perf_counter() - t0
+    sign = -1.0 if region.kind == "PRESSURE" else 1.0
+    m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
+                 region.magnitude_mm, sign, nonman0)
+    h = _mean_edge_mm(obj.data, fp)
+    _gate_vaf(tag, m, amount, feather_for_gate, h, skip_amount=not core_required)
+    if parity_ref is not None:
+        _gate_parity(tag, parity_ref, m)
+    _mark(f"[{tag}] commit_time={dt:.2f}s")
+    return m
+
+
+# --------------------------------------------------------------------------- #
+def _run():
+    _TRIES["n"] += 1
+    if not hasattr(bpy.types, "RIGO_PT_main") and _TRIES["n"] < 40:
+        return 0.25
+    settings = bpy.context.scene.rigo_brace
+    lib = importlib.import_module(
+        "bl_ext.user_default.rigo_brace.core.region_library"
+    )
+    t_all = time.perf_counter()
+
+    def _safe(name, fn):
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            _mark(f"[{name}] CASE ERROR={exc!r}\n{traceback.format_exc()}")
+            _gate(f"{name}.completed", False, "exception")
+
+    state = {}
+
+    def scan_cases():
+        obj = _import_scan(_SCAN)
+        m, _w = _run_direct_circle("direct15", obj, 15.0, "PRESSURE", 9000, 30.0)
+        state["m_direct15"] = m
+        state["cursor"] = tuple(bpy.context.scene.cursor.location)
+        st = bpy.ops.rigo.region_style_save(style_name="QA Gate Scan Style")
+        _gate("save.v2", st == {"FINISHED"}
+              and lib.get_entry(settings.region_style) is not None
+              and lib.get_entry(settings.region_style).get("field") is not None,
+              "schema v2 with field")
+        state["style"] = settings.region_style
+        _delete(obj)
+
+        obj = _import_scan(_SCAN)
+        _run_direct_circle("direct5", obj, 5.0, "PRESSURE", 9000, 30.0)
+        bpy.ops.rigo.region_style_save(style_name="QA Gate Scan Style5")
+        state["style5"] = settings.region_style
+        _delete(obj)
+        obj = _import_scan(_SCAN)
+        _run_direct_circle("expand15", obj, 15.0, "EXPANSION", 9000, 30.0)
+        _delete(obj)
+
+        # painted path (geodesic feather regression): a clean-area patch is
+        # the gated product case; the wrinkled face-5000 armpit patch is the
+        # hostile stress case (commit must repair or warn, never tear).
+        for tag, seed_face, gated in (
+            ("paint15", None, True),        # patch around vertex 9000
+            ("paint15_hostile", 5000, False),
+        ):
+            obj = _import_scan(_SCAN)
+            if seed_face is None:
+                for p in obj.data.polygons:
+                    if 9000 in p.vertices:
+                        seed_face = p.index
+                        break
+            _paint_patch(obj, seed_face, 300)
+            settings.region_kind = "PRESSURE"
+            settings.region_magnitude = 15.0
+            settings.region_feather = 10.0
+            settings.region_falloff = "SMOOTH"
+            bpy.ops.rigo.region_add()
+            region = obj.rigo_regions[obj.rigo_region_index]
+            weights = _group_weights(obj, region.surface_mask)
+            nonman0 = _nonmanifold(obj)
+            if gated:
+                fp = {i for i, w in weights.items() if w > 1e-5}
+                pre_dih = _dihedral_map(obj, fp)
+                before, before_n, before_fn = _snapshot(obj)
+                bpy.ops.rigo.region_apply()
+                m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
+                             weights, 15.0, -1.0, nonman0)
+                _gate_vaf(tag, m, 15.0, 10.0, _mean_edge_mm(obj.data, fp))
+            else:
+                _commit_valid_or_refuse(tag, obj, 15.0, 10.0, weights, nonman0)
+            _delete(obj)
+
+    def import_cases():
+        style = state["style"]
+        cursor = state["cursor"]
+        obj = _import_scan(_SCAN)
+        m = _run_import("import_same", obj, style, cursor, 15.0, 30.0,
+                        parity_ref=state["m_direct15"])
+        _delete(obj)
+
+        # Candidate A (legacy v1 = IDW path): same entry without the field.
+        entry = dict(lib.get_entry(style))
+        entry = {k: v for k, v in entry.items() if k != "field"}
+        entry["id"] = "QA_GATE_V1"
+        entry["label"] = "QA Gate Scan Style"  # cleaned up by label
+        entry["schema_version"] = 1
+        lib.upsert_entry(entry)
+        obj = _import_scan(_SCAN)
+        m = _run_import("import_v1idw", obj, "QA_GATE_V1", cursor, 15.0, 30.0,
+                        parity_ref=state["m_direct15"])
+        _delete(obj)
+        lib.delete_entry("QA_GATE_V1")
+
+        obj = _import_scan(_SCAN)
+        moved = obj.matrix_world @ obj.data.vertices[20000].co
+        _delete(obj)
+        obj = _import_scan(_SCAN)
+        _run_import("import_moved", obj, style, tuple(moved), 15.0, 30.0)
+        _delete(obj)
+
+        for tag, ratio in (("import_decim065", 0.65), ("import_decim030", 0.30)):
+            obj = _import_scan(_SCAN)
+            mod = obj.modifiers.new("QA_DEC", "DECIMATE")
+            mod.ratio = ratio
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            _run_import(tag, obj, style, cursor, 15.0, 30.0)
+            _delete(obj)
+
+        # repeated import onto already-committed geometry (screenshot case).
+        # 5+5 mm is a feasible clinical stack — fully gated; 15+15 mm exceeds
+        # what the sample torso can absorb (30 mm total on a ~60 mm body
+        # radius), so it is a warn-path stress case: valid state, no leakage,
+        # and strictly better than the pre-fix wreckage.
+        def _repeat(tag, style_id, amount, gated):
+            obj = _import_scan(_SCAN)
+            _run_import(f"{tag}_a", obj, style_id, cursor, amount, 30.0)
+            settings.region_style = style_id
+            bpy.context.scene.cursor.location = cursor
+            st = bpy.ops.rigo.region_style_import()
+            if st != {"FINISHED"}:
+                _gate(f"{tag}_b.import", False, f"returned {st}")
+                _delete(obj)
+                return
+            region = obj.rigo_regions[obj.rigo_region_index]
+            weights = _group_weights(obj, region.surface_mask)
+            nonman0 = _nonmanifold(obj)
+            if gated:
+                fp = {i for i, w in weights.items() if w > 1e-5}
+                pre_dih = _dihedral_map(obj, fp)
+                before, before_n, before_fn = _snapshot(obj)
+                bpy.ops.rigo.region_apply()
+                m = _measure(f"{tag}_b", obj, before, before_n, before_fn,
+                             pre_dih, weights, amount, -1.0, nonman0)
+                _gate(
+                    f"{tag}_b.validity",
+                    m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
+                    and m["holes"] == 0 and m["nonman_delta"] == 0,
+                    f"selfx={m['selfx']} inv={m['inverted']} holes={m['holes']}",
+                )
+                _gate(f"{tag}_b.feather", m["outside"] <= 0.001,
+                      f"outside={m['outside']:.4f}")
+            else:
+                _commit_valid_or_refuse(f"{tag}_b", obj, amount, 30.0,
+                                        weights, nonman0)
+            _delete(obj)
+
+        _repeat("repeat5", state["style5"], 5.0, gated=True)
+        _repeat("repeat15", style, 15.0, gated=False)
+
+        # import while another region's preview is live (RC2 frame test):
+        # the cursor sits on the VISIBLE (previewed) surface; the evaluated
+        # vertex under the cursor must receive ~full weight.
+        obj = _import_scan(_SCAN)
+        me = obj.data
+        bpy.context.scene.cursor.location = obj.matrix_world @ me.vertices[9000].co
+        settings.region_radius = 30.0
+        settings.region_magnitude = 15.0
+        settings.region_kind = "PRESSURE"
+        bpy.ops.rigo.region_add_circle()  # live preview, NOT committed
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        ev = obj.evaluated_get(depsgraph).to_mesh()
+        visible = obj.matrix_world @ ev.vertices[9000].co.copy()
+        obj.evaluated_get(depsgraph).to_mesh_clear()
+        _gate_cursor_import("preview_stack", obj, style, visible)
+        _delete(obj)
+
+        # evaluated-surface consistency: live 20 mm displace on the target
+        obj = _import_scan(_SCAN)
+        v = obj.data.vertices[9000]
+        mod = obj.modifiers.new("QA_INFLATE", "DISPLACE")
+        mod.direction = "NORMAL"
+        mod.mid_level = 0.0
+        mod.strength = 0.020
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        ev = obj.evaluated_get(depsgraph).to_mesh()
+        visible = obj.matrix_world @ ev.vertices[9000].co.copy()
+        obj.evaluated_get(depsgraph).to_mesh_clear()
+        _gate_cursor_import("eval_consistency", obj, style, visible)
+        _delete(obj)
+
+        # determinism: identical inputs -> bit-equal weights
+        runs = []
+        for _ in range(2):
+            obj = _import_scan(_SCAN)
+            settings.region_style = style
+            bpy.context.scene.cursor.location = state["cursor"]
+            bpy.ops.rigo.region_style_import()
+            region = obj.rigo_regions[obj.rigo_region_index]
+            runs.append(_group_weights(obj, region.surface_mask))
+            _delete(obj)
+        _gate("determinism", runs[0] == runs[1],
+              f"n0={len(runs[0])} n1={len(runs[1])}")
+
+    def patient_cases():
+        obj = _import_scan(_PATIENT)
+        me = obj.data
+        xs = [v.co.x for v in me.vertices]
+        ys = [v.co.y for v in me.vertices]
+        zs = [v.co.z for v in me.vertices]
+        cx, cz = (min(xs) + max(xs)) * 0.5, (min(zs) + max(zs)) * 0.5
+        back = _nearest_vertex(me, Vector((cx, min(ys), cz)))
+        front = _nearest_vertex(me, Vector((cx, max(ys), cz)))
+        m_back, _w = _run_direct_circle(
+            "patient_back", obj, 15.0, "PRESSURE", back, 30.0
+        )
+        t0 = time.perf_counter()
+        st = bpy.ops.rigo.region_style_save(style_name="QA Gate Patient Style")
+        state["style_patient"] = settings.region_style
+        _delete(obj)
+
+        obj = _import_scan(_PATIENT)
+        m_front, _w = _run_direct_circle(
+            "patient_front", obj, 15.0, "PRESSURE", front, 30.0
+        )
+        front_cursor = tuple(bpy.context.scene.cursor.location)
+        _delete(obj)
+
+        obj = _import_scan(_PATIENT)
+        t0 = time.perf_counter()
+        m = _run_import("patient_import_front", obj, state["style_patient"],
+                        front_cursor, 15.0, 30.0, parity_ref=m_front)
+        dt = time.perf_counter() - t0
+        _gate("perf", dt <= 2.0, f"import+commit={dt:.2f}s on patient scan")
+        _delete(obj)
+
+        # cross-scan import (style authored on Brace Sample)
+        obj = _import_scan(_PATIENT)
+        back_cursor = obj.matrix_world @ obj.data.vertices[back].co
+        _run_import("patient_import_cross", obj, state["style"],
+                    tuple(back_cursor), 15.0, 30.0)
+        _delete(obj)
+
+    def flat_cases():
+        g = _make_grid("QA_GATE_SRC", 0.3, 100, 0.3, 1)
+        seed = _nearest_vertex(g.data, Vector((0, 0, 0)))
+        m_flat, _w = _run_direct_circle(
+            "flat_direct", g, 15.0, "PRESSURE", seed, 30.0
+        )
+        bpy.ops.rigo.region_style_save(style_name="QA Gate Flat Style")
+        style_flat = settings.region_style
+        _delete(g)
+        for tag, divs, jseed in (
+            ("flat_dense", 150, 2), ("flat_same", 100, 3), ("flat_coarse", 50, 4)
+        ):
+            g = _make_grid(f"QA_GATE_{tag}", 0.3, divs, 0.3, jseed)
+            _run_import(tag, g, style_flat, (0.0, 0.0, 0.0), 15.0, 30.0)
+            _delete(g)
+
+    try:
+        _mark("phase=start")
+        _safe("scan", scan_cases)
+        _safe("imports", import_cases)
+        _safe("patient", patient_cases)
+        _safe("flat", flat_cases)
+        _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
+        failed = [k for k, v in _GATES.items() if not v]
+        _mark(f"failed_gates={failed}")
+        _mark(f"PASS={not failed and len(_GATES) > 20}")
+    except Exception as exc:  # noqa: BLE001
+        _mark(f"ERROR={exc!r}\n{traceback.format_exc()}\nPASS=False")
+    finally:
+        for e in list(lib.load_library(force=True)):
+            if e.get("label") in _STYLE_LABELS:
+                lib.delete_entry(e["id"])
+        bpy.ops.wm.quit_blender()
+    return None
+
+
+bpy.app.timers.register(_run, first_interval=0.5)

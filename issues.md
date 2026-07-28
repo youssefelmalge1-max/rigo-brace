@@ -1206,3 +1206,28 @@ what the failing 8 of 21 arc cells hit today.
 
 No production change was made, so the full 25-cell + fixture + QA battery was NOT run - there
 is nothing new to validate. #47 unchanged; the rim-radius ceiling was not touched.
+
+### #48 FIXED — reusable Pressure/Expansion styles tore the surface (Voronoi transfer + mixed geometry states)
+
+User-visible: importing a saved correction style (and committing painted regions at
+15 mm) produced spiked, folded, crater-like geometry that smoothing could not repair.
+
+Measured causes (ERR-0030): nearest-sample Voronoi weight transfer (111 spikes on a flat
+grid vs 0 direct), evaluated-frame vs raw-vertex mixing in the import (`closest_point_on_mesh`
+is evaluated-state), styles sampled from already-displaced geometry, integer-ring feather
+terracing, hard radius/normal cutoffs (core lost entirely on decimate-0.30 targets), and
+extrinsic tangent-plane bleed across concave folds.
+
+Fix (DEC-0041): schema-v2 styles with a bilinear grid field (IDW fallback for v1),
+bake-time undisplaced snapshots with an import-identical frame, evaluated-consistent
+import with soft guards + connected-component + geodesic trim, geodesic mm feather for
+painted regions, commit along faired normals with tangential fold repair, and
+refuse-with-bit-exact-restore when a correction would tear.
+
+Contract + evidence: `knowledge/region_quality_contract.md`; gated by
+`tools/regionqualtest.py` (PASS, 60+ gates: validity, smoothness, amount 90–110 %,
+feather, import parity IoU ≥ 0.75 / rms ≤ 0.5 mm, resolution robustness, evaluated-surface
+correctness, determinism, ≤ 2 s). `regiontest`/`regionstyletest`/`selftest` PASS.
+Limitation: physically infeasible requests (e.g. 15 mm onto the creased armpit noise of
+the sample scan, or 15+15 mm stacked into a ~60 mm-radius body) are REFUSED with an
+actionable message; the scan is restored bit-exactly and the live preview kept.

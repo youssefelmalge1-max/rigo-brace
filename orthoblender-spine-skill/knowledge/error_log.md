@@ -462,3 +462,32 @@ controlled by orthographic clip settings. Clamp the origin from the actual view 
 for floating-point precision, and do not truncate the subsequent BVH travel distance.
 Files affected: `operators/trimline_ops.py`, `tools/trimvisibilitytest.py`, verification
 and audit documentation.
+
+## Error ID: ERR-0030
+Date: 2026-07-29
+Where: `region_ops.py` — reusable Pressure/Expansion style library (#48)
+Symptoms: imported styles produced torn, spiked, crater-like geometry (user screenshots);
+smoothing could not recover it. Direct painted regions also folded at 15 mm.
+Root causes, all measured (`regionqualdbg.py`, `regionprovdbg.py`):
+- RC1 nearest-sample Voronoi weight transfer at import: piecewise-constant field, edge
+  weight jumps to 0.91; on a FLAT grid import produced 111 dihedral spikes vs 0 direct.
+- RC2 mixed geometry states: `closest_point_on_mesh` consults the EVALUATED mesh (proved
+  on this build: with a live preview the returned frame sat on the previewed crater,
+  z −9.12 mm, normal tilted 57°) while the field iterated RAW `scan.data` — mass
+  mis-culling by the normal tolerance (724 culled on a flat plane).
+- RC3 styles sampled from COMMITTED (displaced) geometry — crater-shaped sample cloud.
+- RC4 painted feather quantized to integer topological rings — terraced weights; 115
+  self-intersections at 15 mm/10 mm on the sample scan.
+- RC5 hard radius/normal cutoffs — ±amount cliffs at the footprint edge; on decimate-0.30
+  targets the whole core was lost (core_med 0.00 of 15 mm requested).
+- Plus: extrinsic tangent-plane mapping bled weights across concave folds (w 0.37 given to
+  vertices whose geodesic distance exceeded the authored span), and the snapshot frame
+  normal must be derived exactly as the import derives it or the projection shears.
+Fix applied: see DEC-0041. Regression: `regionqualtest.py` (60+ contract gates, PASS),
+`regiontest.py`, `regionstyletest.py`, `selftest.py` all PASS.
+Prevention rule: any resampling of a per-vertex field between meshes must be interpolated
+(grid/IDW), never nearest-sample; any operator mixing a surface lookup with a vertex sweep
+must take both from the SAME (evaluated) geometry state; never gate surface quality on
+max-displacement alone — gate oscillation, dihedral spikes, inversion, self-intersection.
+Files affected: `operators/region_ops.py`, `tools/regionqualtest.py`,
+`tools/regionqualdbg.py`, `tools/regiontest.py`, `tools/regionstyletest.py`.

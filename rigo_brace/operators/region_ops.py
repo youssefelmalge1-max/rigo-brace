@@ -13,6 +13,9 @@ original implementation.
 """
 
 import heapq
+import json
+import math
+
 import bpy
 import bmesh
 from bpy.props import StringProperty
@@ -24,6 +27,9 @@ from ..core import mark_brace_dirty, region_library
 
 _PREVIEW_PREFIX = "RIGO_REGION_PREVIEW_"
 _MASK_EDGE_WEIGHT = 1e-6
+# Undisplaced tangent-frame snapshot of each region, stored on the object at
+# bake time so "Save Committed Style" never samples the deformed surface (#48).
+_SNAPSHOT_PREFIX = "rigo_style_src_"
 
 
 def _preview_name(region):
@@ -129,9 +135,125 @@ def _mesh_spacing_mm(scan):
     return total_length / len(scan.data.edges) if scan.data.edges else 2.0
 
 
+def _style_snapshot(scan, weights, coords=None, normals=None,
+                    build_field=False, origin_world=None):
+    """Tangent-frame samples + resampled field of the UNdisplaced region.
+
+    Captured at bake time (before any displacement is committed) so a saved
+    style describes the authored influence field, not a crater-shaped
+    snapshot of already-corrected geometry (#48 RC3).  ``coords``/``normals``
+    default to the raw mesh; pass evaluated arrays where the region was built
+    against the evaluated surface.
+    """
+    me = scan.data
+    if coords is None:
+        coords = [v.co for v in me.vertices]
+    if normals is None:
+        normals = [v.normal for v in me.vertices]
+    matrix = scan.matrix_world
+    normal_matrix = matrix.to_3x3()
+    indices = sorted(weights)
+    # Frame origin = the point the orthotist anchored the region to (circle
+    # seed / import cursor); painted regions fall back to the weight-weighted
+    # core centroid.  The frame NORMAL must be derived exactly the way the
+    # import side derives it (_target_surface at the anchor) — any other
+    # normal (area mean, weighted mean) shears the projection on creased
+    # surfaces and shifts the imported footprint.
+    if origin_world is None:
+        center = Vector()
+        total = 0.0
+        for i in indices:
+            w = max(weights[i], 1e-6)
+            center += (matrix @ coords[i]) * w
+            total += w
+        center /= total
+    else:
+        center = Vector(origin_world)
+    surface_point, normal = _target_surface(scan, center)
+    if surface_point is not None:
+        center = surface_point
+    else:
+        normal = Vector()
+        for i in indices:
+            normal += (normal_matrix @ normals[i]) * (weights[i] * weights[i])
+        if normal.length < 1e-9:
+            normal = Vector((0.0, 0.0, 1.0))
+        normal.normalize()
+    side, up, outward = _surface_frame(normal)
+    samples = []
+    normal_offsets = []
+    for i in indices:
+        relative = matrix @ coords[i] - center
+        samples.append([
+            round(relative.dot(side) * 1000.0, 3),
+            round(relative.dot(up) * 1000.0, 3),
+            round(weights[i], 5),
+        ])
+        normal_offsets.append(abs(relative.dot(outward)) * 1000.0)
+    spacing = _sample_spacing_mm(scan, set(indices))
+    snapshot = {
+        "samples": samples,
+        "sample_radius_mm": max(1.0, spacing * 1.75),
+        "normal_tolerance_mm": max(15.0, max(normal_offsets) + spacing * 2.0),
+        "spacing_mm": spacing,
+    }
+    if build_field:
+        snapshot["field"] = _field_from_samples(samples, spacing)
+    return snapshot
+
+
+def _store_snapshot(scan, mask, snapshot):
+    scan[_SNAPSHOT_PREFIX + mask] = json.dumps(snapshot)
+
+
+def _load_snapshot(scan, mask):
+    raw = scan.get(_SNAPSHOT_PREFIX + mask)
+    if not raw:
+        return None
+    try:
+        snapshot = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return snapshot if snapshot.get("samples") else None
+
+
+def _drop_snapshot(scan, mask):
+    key = _SNAPSHOT_PREFIX + mask
+    if key in scan:
+        del scan[key]
+
+
+def _evaluated_positions(scan):
+    """Vertex-aligned coords/normals of the EVALUATED scan, or (None, None).
+
+    The user paints and places the cursor on the surface AFTER modifiers
+    (live region previews, smoothing, lattices).  Reading raw ``scan.data``
+    against an evaluated target frame mixes two geometry states and tears the
+    imported footprint apart (#48 RC2).  Topology-changing modifiers break
+    the per-vertex alignment, so those return None and the caller refuses.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = scan.evaluated_get(depsgraph)
+    me = evaluated.to_mesh()
+    if me is None:
+        return None, None
+    if len(me.vertices) != len(scan.data.vertices):
+        evaluated.to_mesh_clear()
+        return None, None
+    coords = [v.co.copy() for v in me.vertices]
+    normals = [v.normal.copy() for v in me.vertices]
+    evaluated.to_mesh_clear()
+    return coords, normals
+
+
 def _target_surface(scan, target_world):
+    """Closest point/normal on the EVALUATED surface — what the user sees."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = scan.evaluated_get(depsgraph)
     inverse = scan.matrix_world.inverted()
-    found, location, normal, _index = scan.closest_point_on_mesh(inverse @ target_world)
+    found, location, normal, _index = evaluated.closest_point_on_mesh(
+        inverse @ target_world
+    )
     if not found:
         return None, None
     world_location = scan.matrix_world @ location
@@ -139,28 +261,390 @@ def _target_surface(scan, target_world):
     return world_location, world_normal
 
 
-def _weights_from_style(scan, entry, target_world, target_normal):
-    side, up, outward = _surface_frame(target_normal)
-    sample_tree = kdtree.KDTree(len(entry["samples"]))
-    for index, sample in enumerate(entry["samples"]):
-        sample_tree.insert((sample[0], sample[1], 0.0), index)
-    sample_tree.balance()
-    radius = max(
-        float(entry["sample_radius_mm"]), _mesh_spacing_mm(scan) * 1.75
+def _field_from_samples(samples, spacing_mm):
+    """Resample scattered (u, v, weight) samples onto a regular 2D grid.
+
+    The stored grid is what makes an imported style geometrically continuous:
+    bilinear interpolation cannot reproduce the source triangulation's Voronoi
+    cells the way nearest-sample lookup did (#48 RC1), and it is independent
+    of the target mesh density by construction.
+    """
+    xs = [s[0] for s in samples]
+    ys = [s[1] for s in samples]
+    pad = 2.0
+    extent_x = max(xs) - min(xs) + 2.0 * pad
+    extent_y = max(ys) - min(ys) + 2.0 * pad
+    cell = max(1.0, min(2.0, spacing_mm * 0.75), extent_x / 127.0, extent_y / 127.0)
+    x0 = min(xs) - pad
+    y0 = min(ys) - pad
+    nx = int(math.ceil(extent_x / cell)) + 1
+    ny = int(math.ceil(extent_y / cell)) + 1
+    tree = kdtree.KDTree(len(samples))
+    for index, sample in enumerate(samples):
+        tree.insert((sample[0], sample[1], 0.0), index)
+    tree.balance()
+    support = spacing_mm * 2.5
+    eps2 = (spacing_mm * 0.35) ** 2
+    values = []
+    for j in range(ny):
+        cy = y0 + j * cell
+        for i in range(nx):
+            cx = x0 + i * cell
+            numerator = 0.0
+            denominator = 0.0
+            nearest = None
+            for _co, sindex, dist in tree.find_n((cx, cy, 0.0), 6):
+                if nearest is None or dist < nearest:
+                    nearest = dist
+                if dist > support:
+                    continue
+                kernel = 1.0 / (dist * dist + eps2)
+                numerator += samples[sindex][2] * kernel
+                denominator += kernel
+            if denominator == 0.0 or nearest is None or nearest > support:
+                values.append(0.0)
+                continue
+            value = numerator / denominator
+            # Taper cells beyond the authored sample hull so the imported
+            # footprint keeps the authored outline instead of an IDW skirt.
+            hull_start = spacing_mm * 1.2
+            if nearest > hull_start:
+                t = max(0.0, 1.0 - (nearest - hull_start) / (spacing_mm * 1.3))
+                value *= t * t * (3.0 - 2.0 * t)
+            # Core plateau: the full requested amount must survive resampling.
+            if value >= 0.99:
+                value = 1.0
+            elif value <= 0.005:
+                value = 0.0
+            values.append(round(value, 4))
+    return {
+        "cell_mm": cell,
+        "x0": round(x0, 3),
+        "y0": round(y0, 3),
+        "nx": nx,
+        "ny": ny,
+        "values": values,
+    }
+
+
+def _field_weight(field, u, v):
+    """Bilinear sample of the stored weight grid; 0 outside its bounds."""
+    cell = field["cell_mm"]
+    gx = (u - field["x0"]) / cell
+    gy = (v - field["y0"]) / cell
+    i0 = int(math.floor(gx))
+    j0 = int(math.floor(gy))
+    fx = gx - i0
+    fy = gy - j0
+    nx = field["nx"]
+    ny = field["ny"]
+    values = field["values"]
+
+    def cell_value(i, j):
+        if i < 0 or j < 0 or i >= nx or j >= ny:
+            return 0.0
+        return values[j * nx + i]
+
+    return (
+        cell_value(i0, j0) * (1.0 - fx) * (1.0 - fy)
+        + cell_value(i0 + 1, j0) * fx * (1.0 - fy)
+        + cell_value(i0, j0 + 1) * (1.0 - fx) * fy
+        + cell_value(i0 + 1, j0 + 1) * fx * fy
     )
-    normal_limit = float(entry["normal_tolerance_mm"])
-    weights = {}
-    for vertex in scan.data.vertices:
-        world = scan.matrix_world @ vertex.co
-        relative = world - target_world
-        normal_offset = abs(relative.dot(outward)) * 1000.0
-        if normal_offset > normal_limit:
+
+
+def _idw_weight(samples, tree, u, v, support, eps2):
+    """Continuous inverse-distance interpolation for legacy (v1) styles."""
+    numerator = 0.0
+    denominator = 0.0
+    nearest = None
+    for _co, sindex, dist in tree.find_n((u, v, 0.0), 6):
+        if nearest is None or dist < nearest:
+            nearest = dist
+        if dist > support:
             continue
-        coordinate = (relative.dot(side) * 1000.0, relative.dot(up) * 1000.0, 0.0)
-        _nearest, sample_index, distance = sample_tree.find(coordinate)
-        if distance <= radius:
-            weights[vertex.index] = float(entry["samples"][sample_index][2])
-    return weights
+        kernel = 1.0 / (dist * dist + eps2)
+        numerator += samples[sindex][2] * kernel
+        denominator += kernel
+    if denominator == 0.0 or nearest is None or nearest > support:
+        return 0.0
+    weight = numerator / denominator
+    # Smooth taper beyond the sample hull instead of a hard radius cliff.
+    half = support * 0.5
+    if nearest > half:
+        t = 1.0 - (nearest - half) / half
+        weight *= t * t * (3.0 - 2.0 * t)
+    return weight
+
+
+def _connected_subset(scan, weights, coords, target_world):
+    """Keep only the mesh-connected patch nearest the cursor.
+
+    The tangent-plane footprint can also catch the far wall of the body; edge
+    connectivity — not a hard normal-offset cull — is what separates them
+    without tearing the near patch (#48 RC5).
+    """
+    if not weights:
+        return weights
+    me = scan.data
+    member = set(weights)
+    parent = {i: i for i in member}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for edge in me.edges:
+        a, b = edge.vertices
+        if a in member and b in member:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+    components = {}
+    for i in member:
+        components.setdefault(find(i), []).append(i)
+    if len(components) == 1:
+        return weights
+    matrix = scan.matrix_world
+
+    def closest_distance(indices):
+        return min(
+            (matrix @ coords[i] - target_world).length_squared for i in indices
+        )
+
+    keep = min(components.values(), key=closest_distance)
+    return {i: weights[i] for i in keep}
+
+
+def _faired_normals(me, weights, mean_edge):
+    """Displacement directions: normals averaged over a geodesic radius.
+
+    On wrinkled scan areas the raw per-vertex normals point every which way;
+    pressing 15 mm along them shreds the crease walls even under a perfectly
+    smooth influence field.  A pad presses along a coherent direction, so the
+    commit displaces along normals faired over ~2 edge lengths (min 6 mm).
+    Unit length, so |displacement| stays exactly amount × weight.
+    """
+    radius = max(0.006, 2.0 * mean_edge)
+    member = {i for i, w in weights.items() if w >= 1e-6}
+    # Two-pass zone-restricted adjacency (member + ~2 rings) — building the
+    # whole scan's adjacency per commit costs more than the fairing itself.
+    ring1 = set(member)
+    for edge in me.edges:
+        a, b = edge.vertices
+        if a in member or b in member:
+            ring1.add(a)
+            ring1.add(b)
+    adjacency = {}
+    for edge in me.edges:
+        a, b = edge.vertices
+        if a in ring1 or b in ring1:
+            adjacency.setdefault(a, []).append(b)
+            adjacency.setdefault(b, []).append(a)
+    faired = {}
+    for i in member:
+        dist = {i: 0.0}
+        heap = [(0.0, i)]
+        accumulated = Vector()
+        while heap:
+            d, j = heapq.heappop(heap)
+            if d > dist.get(j, 1e30):
+                continue
+            accumulated += me.vertices[j].normal
+            for k in adjacency.get(j, ()):
+                nd = d + (me.vertices[j].co - me.vertices[k].co).length
+                if nd <= radius and nd < dist.get(k, 1e30):
+                    dist[k] = nd
+                    heapq.heappush(heap, (nd, k))
+        if accumulated.length < 1e-9:
+            accumulated = me.vertices[i].normal.copy()
+        faired[i] = accumulated.normalized()
+    return faired, adjacency
+
+
+def _footprint_self_intersections(me, member, faces=None):
+    """Indices of footprint faces that intersect a non-adjacent face."""
+    from mathutils.bvhtree import BVHTree
+
+    if faces is None:
+        faces = [
+            p for p in me.polygons if any(vi in member for vi in p.vertices)
+        ]
+    if not faces:
+        return set()
+    # Local vertex table: only the footprint-face vertices, not the whole scan.
+    used = sorted({vi for p in faces for vi in p.vertices})
+    local = {vi: n for n, vi in enumerate(used)}
+    verts = [me.vertices[vi].co for vi in used]
+    polys = [tuple(local[vi] for vi in p.vertices) for p in faces]
+    tree = BVHTree.FromPolygons(verts, polys, all_triangles=True)
+    bad = set()
+    for a, b in tree.overlap(tree):
+        if a == b or set(polys[a]) & set(polys[b]):
+            continue
+        bad.add(faces[a].index)
+        bad.add(faces[b].index)
+    return bad
+
+
+def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
+                  adjacency, baseline, affected=None):
+    """Remove folded, degenerate or self-intersecting slivers after commit.
+
+    Slides ONLY the vertices of defective faces (plus one ring, never outside
+    the mask) toward their one-ring mean, restricted to the pre-commit
+    tangent plane — the normal component, i.e. the clinical mm amount, is
+    preserved by construction.  ``baseline`` holds face indices that were
+    already defective BEFORE the commit (dirty scans) — those are not ours to
+    fix and never count.  Deterministic, bounded, self-terminating.
+    Returns the number of faces still defective after the pass.
+    """
+    me = obj.data
+    member = {i for i, w in weights.items() if w >= 1e-6}
+    if not member:
+        return 0
+    if affected is None:
+        affected = [
+            p for p in me.polygons if any(vi in member for vi in p.vertices)
+        ]
+
+    def defective():
+        bad = {
+            p.index for p in affected
+            if p.normal.dot(pre_face_normals[p.index]) <= 1e-9
+            or p.area < 1e-12
+        }
+        bad |= _footprint_self_intersections(me, member, affected)
+        return bad - baseline
+
+    bad = defective()
+    for _ in range(20):
+        if not bad:
+            return 0
+        relax = set()
+        for p_index in bad:
+            for vi in me.polygons[p_index].vertices:
+                if vi in member:
+                    relax.add(vi)
+                for neighbor in adjacency.get(vi, ()):
+                    if neighbor in member:
+                        relax.add(neighbor)
+        for vi in sorted(relax):
+            neighbors = adjacency.get(vi)
+            if not neighbors:
+                continue
+            mean = Vector()
+            for j in neighbors:
+                mean += me.vertices[j].co
+            mean /= len(neighbors)
+            delta = mean - me.vertices[vi].co
+            normal = pre_vertex_normals[vi]
+            delta -= normal * delta.dot(normal)  # tangential slide only
+            me.vertices[vi].co += delta * 0.5
+        me.update()
+        bad = defective()
+    return len(bad)
+
+
+def _weights_from_style(scan, entry, target_world, target_normal, coords):
+    """Evaluate the stored style field at every (evaluated) target vertex.
+
+    Returns a continuous weight field: bilinear grid for v2 entries, IDW for
+    v1 sample clouds; a soft normal-offset guard fades over [tol, 2*tol]
+    instead of cutting, and only the cursor-connected patch survives.
+    """
+    side, up, outward = _surface_frame(target_normal)
+    samples = entry["samples"]
+    field = entry.get("field") or None
+    tree = None
+    support = eps2 = 0.0
+    if field is None:
+        spacing = max(0.5, float(entry.get("sample_radius_mm", 3.0)) / 1.75)
+        support = spacing * 2.5
+        eps2 = (spacing * 0.35) ** 2
+        tree = kdtree.KDTree(len(samples))
+        for index, sample in enumerate(samples):
+            tree.insert((sample[0], sample[1], 0.0), index)
+        tree.balance()
+    tolerance = max(5.0, float(entry.get("normal_tolerance_mm", 15.0)))
+    matrix = scan.matrix_world
+    weights = {}
+    for index, co in enumerate(coords):
+        relative = matrix @ co - target_world
+        normal_offset = abs(relative.dot(outward)) * 1000.0
+        if normal_offset >= tolerance * 2.0:
+            continue
+        u = relative.dot(side) * 1000.0
+        v = relative.dot(up) * 1000.0
+        if field is not None:
+            weight = _field_weight(field, u, v)
+        else:
+            weight = _idw_weight(samples, tree, u, v, support, eps2)
+        if weight <= 0.005:
+            continue
+        if normal_offset > tolerance:
+            t = 1.0 - (normal_offset - tolerance) / tolerance
+            weight *= t * t * (3.0 - 2.0 * t)
+            if weight <= 0.005:
+                continue
+        weights[index] = weight
+    weights = _connected_subset(scan, weights, coords, target_world)
+    return _geodesic_trim(scan, weights, coords, target_world, samples)
+
+
+def _geodesic_trim(scan, weights, coords, target_world, samples):
+    """Soft-trim vertices the authored region could never have reached.
+
+    The tangent-plane mapping is extrinsic: it happily assigns weights across
+    a concave fold to surface 22 mm away in space but 50 mm away along the
+    surface.  The authored region (paint or geodesic circle) is intrinsic, so
+    the surface path from the cursor, measured inside the footprint, must not
+    exceed the sample span; the excess fades out smoothly, never a cliff.
+    """
+    if not weights:
+        return weights
+    limit = max(math.hypot(s[0], s[1]) for s in samples) * 1.35 * 0.001
+    if limit <= 0.0:
+        return weights
+    me = scan.data
+    matrix = scan.matrix_world
+    member = set(weights)
+    seed = min(
+        member,
+        key=lambda i: (matrix @ coords[i] - target_world).length_squared,
+    )
+    neighbors = {}
+    for edge in me.edges:
+        a, b = edge.vertices
+        if a in member and b in member:
+            length = (coords[a] - coords[b]).length
+            neighbors.setdefault(a, []).append((b, length))
+            neighbors.setdefault(b, []).append((a, length))
+    dist = {seed: 0.0}
+    heap = [(0.0, seed)]
+    while heap:
+        d, i = heapq.heappop(heap)
+        if d > dist.get(i, 1e30):
+            continue
+        for j, length in neighbors.get(i, ()):
+            nd = d + length
+            if nd <= limit and nd < dist.get(j, 1e30):
+                dist[j] = nd
+                heapq.heappush(heap, (nd, j))
+    fade_start = limit * 0.8
+    trimmed = {}
+    for i, w in weights.items():
+        d = dist.get(i)
+        if d is None:
+            continue
+        if d > fade_start:
+            t = 1.0 - (d - fade_start) / (limit - fade_start)
+            w *= t * t * (3.0 - 2.0 * t)
+        if w > 0.005:
+            trimmed[i] = w
+    return trimmed
 
 
 def _scan(context):
@@ -214,51 +698,46 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
         return None, None, None, 0.0
     normal.normalize()
 
-    # Mean edge length inside the selection -> feather mm to topological rings.
-    lengths = [
-        e.calc_length() for e in bm.edges if e.verts[0].select and e.verts[1].select
-    ]
-    avg_edge = (sum(lengths) / len(lengths)) if lengths else 0.01
-    feather_rings = max(0, round((feather_mm * 0.001) / max(avg_edge, 1e-6)))
-
-    # BFS ring distance from the region boundary inward.
+    # Geodesic (edge-walk Dijkstra) distance in METRES from the boundary
+    # inward.  Integer topological rings quantized the feather into visible
+    # terraces on irregular scan triangles (#48 RC4); real surface distance
+    # keeps the falloff continuous whatever the triangulation.
     sel_set = {v.index for v in sel}
-    ring = {}
-    frontier = []
-    for v in sel:
-        for e in v.link_edges:
-            o = e.other_vert(v)
-            if o.index not in sel_set:
-                ring[v.index] = 0
-                frontier.append(v)
-                break
-    if not frontier:  # closed selection (whole mesh) — no boundary anywhere
+    boundary = [
+        v for v in sel
+        if any(e.other_vert(v).index not in sel_set for e in v.link_edges)
+    ]
+    if not boundary:  # closed selection (whole mesh) — no boundary anywhere
         weights = {v.index: 1.0 for v in sel}
         return weights, centroid.copy(), normal, radius_mm
 
-    depth = 0
-    while frontier:
-        depth += 1
-        nxt = []
-        for v in frontier:
-            for e in v.link_edges:
-                o = e.other_vert(v)
-                if o.index in sel_set and o.index not in ring:
-                    ring[o.index] = depth
-                    nxt.append(o)
-        frontier = nxt
-    max_ring = max(ring.values())
+    depth = {v.index: 0.0 for v in boundary}
+    heap = [(0.0, v.index) for v in boundary]
+    heapq.heapify(heap)
+    while heap:
+        d, idx = heapq.heappop(heap)
+        if d > depth.get(idx, 1e30):
+            continue
+        for e in bm.verts[idx].link_edges:
+            o = e.other_vert(bm.verts[idx])
+            if o.index not in sel_set:
+                continue
+            nd = d + e.calc_length()
+            if nd < depth.get(o.index, 1e30):
+                depth[o.index] = nd
+                heapq.heappush(heap, (nd, o.index))
+    max_depth = max(depth.values())
 
     # Feather cannot be wider than the region is deep — normalize so the
     # innermost vertices always reach full weight 1.0.
-    f_eff = min(feather_rings, max_ring)
+    f_eff = min(feather_mm * 0.001, max_depth)
     weights = {}
     for idx in sel_set:
-        r = ring.get(idx, max_ring)
-        if f_eff <= 0:
+        d = depth.get(idx, max_depth)
+        if f_eff <= 1e-9:
             weights[idx] = 1.0
         else:
-            weights[idx] = _falloff(min(r, f_eff) / f_eff, falloff_kind)
+            weights[idx] = _falloff(min(d, f_eff) / f_eff, falloff_kind)
     return weights, centroid.copy(), normal, radius_mm
 
 
@@ -297,6 +776,7 @@ class RIGO_OT_region_add(Operator):
             # Keep zero-falloff boundary vertices as near-zero group members so
             # Edit Selection can reconstruct the original painted face border.
             vg.add([idx], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+        _store_snapshot(obj, mask, _style_snapshot(obj, weights))
 
         region = obj.rigo_regions.add()
         region.name = f"Region {seq}"
@@ -342,11 +822,19 @@ class RIGO_OT_region_add_circle(Operator):
             self.report({"ERROR"}, "The scan has no geometry")
             return {"CANCELLED"}
 
+        # Work on the EVALUATED vertex positions (the surface the user sees
+        # and places the cursor on); indices stay valid on the raw mesh as
+        # long as no modifier changes the vertex count.
+        coords, eval_normals = _evaluated_positions(obj)
+        if coords is None:
+            coords = [v.co.copy() for v in me.vertices]
+            eval_normals = [v.normal.copy() for v in me.vertices]
+
         # Seed = the mesh vertex nearest the 3D cursor (in object space).
         cursor_local = obj.matrix_world.inverted() @ context.scene.cursor.location
-        tree = kdtree.KDTree(len(me.vertices))
-        for v in me.vertices:
-            tree.insert(v.co, v.index)
+        tree = kdtree.KDTree(len(coords))
+        for index, co in enumerate(coords):
+            tree.insert(co, index)
         tree.balance()
         _co, seed, seed_dist = tree.find(cursor_local)
         radius = settings.region_radius * 0.001
@@ -357,10 +845,10 @@ class RIGO_OT_region_add_circle(Operator):
         # Geodesic (edge-walk Dijkstra) distances from the seed, capped at the
         # radius — surface distance, so the region can NOT bleed through to the
         # far side of the body the way a plain sphere would.
-        neighbors = [[] for _ in range(len(me.vertices))]
+        neighbors = [[] for _ in range(len(coords))]
         for e in me.edges:
             a, b = e.vertices
-            length = (me.vertices[a].co - me.vertices[b].co).length
+            length = (coords[a] - coords[b]).length
             neighbors[a].append((b, length))
             neighbors[b].append((a, length))
         dist = {seed: 0.0}
@@ -387,7 +875,7 @@ class RIGO_OT_region_add_circle(Operator):
 
         normal = Vector()
         for i, w in weights.items():
-            normal += me.vertices[i].normal * w
+            normal += eval_normals[i] * w
         if normal.length < 1e-9:
             self.report({"ERROR"}, "Could not read the surface direction")
             return {"CANCELLED"}
@@ -399,11 +887,17 @@ class RIGO_OT_region_add_circle(Operator):
         vg = obj.vertex_groups.new(name=mask)
         for idx, w in weights.items():
             vg.add([idx], w, "REPLACE")
+        _store_snapshot(
+            obj, mask, _style_snapshot(
+                obj, weights, coords, eval_normals,
+                origin_world=obj.matrix_world @ coords[seed],
+            )
+        )
 
         region = obj.rigo_regions.add()
         region.name = f"Circle {seq}"
         region.kind = settings.region_kind
-        region.center = me.vertices[seed].co
+        region.center = coords[seed]
         region.direction = normal
         region.magnitude_mm = settings.region_magnitude
         region.radius_mm = settings.region_radius
@@ -500,6 +994,9 @@ class RIGO_OT_region_update(Operator):
             group = obj.vertex_groups.new(name=region.surface_mask)
             for index, weight in weights.items():
                 group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+            _store_snapshot(
+                obj, region.surface_mask, _style_snapshot(obj, weights)
+            )
             region.center = centroid
             region.direction = normal
             region.radius_mm = radius_mm
@@ -541,19 +1038,43 @@ class RIGO_OT_region_style_save(Operator):
             self.report({"ERROR"}, "Enter a style name")
             return {"CANCELLED"}
 
-        samples, normal_offsets, weights = _style_samples(scan, group)
-        spacing = _sample_spacing_mm(scan, set(weights))
+        snapshot = _load_snapshot(scan, region.surface_mask)
+        if snapshot is None:
+            # Legacy region without a bake-time snapshot: sample the current
+            # (already displaced) surface — last resort, kept for continuity.
+            samples, normal_offsets, weights = _style_samples(scan, group)
+            spacing = _sample_spacing_mm(scan, set(weights))
+            snapshot = {
+                "samples": samples,
+                "sample_radius_mm": max(1.0, spacing * 1.75),
+                "normal_tolerance_mm": max(
+                    15.0, max(normal_offsets) + spacing * 2.0
+                ),
+                "spacing_mm": spacing,
+            }
+            self.report(
+                {"WARNING"},
+                "Older region: style sampled from the committed shape",
+            )
+        if not snapshot.get("field"):
+            spacing = float(
+                snapshot.get("spacing_mm", snapshot["sample_radius_mm"] / 1.75)
+            )
+            snapshot["field"] = _field_from_samples(
+                snapshot["samples"], spacing
+            )
         entry = {
             "id": region_library.identifier_from_label(label),
             "label": label,
             "kind": region.kind,
             "magnitude_mm": region.magnitude_mm,
             "falloff": region.falloff_type,
-            "samples": samples,
-            "sample_radius_mm": max(1.0, spacing * 1.75),
-            "normal_tolerance_mm": max(15.0, max(normal_offsets) + spacing * 2.0),
+            "samples": snapshot["samples"],
+            "sample_radius_mm": snapshot["sample_radius_mm"],
+            "normal_tolerance_mm": snapshot["normal_tolerance_mm"],
+            "field": snapshot["field"],
             "requires_orthotist_review": True,
-            "schema_version": 1,
+            "schema_version": 2,
         }
         region_library.upsert_entry(entry)
         context.scene.rigo_brace.region_style = entry["id"]
@@ -580,11 +1101,19 @@ class RIGO_OT_region_style_import(Operator):
             return {"CANCELLED"}
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
+        coords, eval_normals = _evaluated_positions(scan)
+        if coords is None:
+            self.report(
+                {"ERROR"},
+                "A modifier changes the scan's vertex count — apply it "
+                "before importing a style",
+            )
+            return {"CANCELLED"}
         target, normal = _target_surface(scan, context.scene.cursor.location)
         if target is None:
             self.report({"ERROR"}, "Place the 3D cursor on the scan surface")
             return {"CANCELLED"}
-        weights = _weights_from_style(scan, entry, target, normal)
+        weights = _weights_from_style(scan, entry, target, normal, coords)
         if len(weights) < 3:
             self.report({"ERROR"}, "Saved style does not overlap enough scan vertices")
             return {"CANCELLED"}
@@ -595,6 +1124,11 @@ class RIGO_OT_region_style_import(Operator):
         group = scan.vertex_groups.new(name=mask)
         for index, weight in weights.items():
             group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+        _store_snapshot(
+            scan, mask, _style_snapshot(
+                scan, weights, coords, eval_normals, origin_world=target
+            )
+        )
 
         inverse_normal = scan.matrix_world.to_3x3().inverted() @ normal
         region = scan.rigo_regions.add()
@@ -667,8 +1201,66 @@ class RIGO_OT_region_apply(Operator):
         if modifier is None:
             self.report({"ERROR"}, "Could not create the region preview")
             return {"CANCELLED"}
-        modifier_name = modifier.name
-        bpy.ops.object.modifier_apply(modifier=modifier_name)
+        group = obj.vertex_groups.get(region.surface_mask)
+        weights = {}
+        for vertex in obj.data.vertices:
+            for g in vertex.groups:
+                if g.group == group.index:
+                    weights[vertex.index] = g.weight
+                    break
+        me = obj.data
+        member = {i for i, w in weights.items() if w >= 1e-6}
+        affected = [
+            p for p in me.polygons if any(vi in member for vi in p.vertices)
+        ]
+        pre_face_normals = {p.index: p.normal.copy() for p in affected}
+        zone = set(member)
+        for p in affected:
+            zone.update(p.vertices)
+        pre_vertex_normals = {i: me.vertices[i].normal.copy() for i in zone}
+        edge_total = 0.0
+        edge_count = 0
+        for edge in me.edges:
+            a, b = edge.vertices
+            if a in member or b in member:
+                edge_total += (me.vertices[a].co - me.vertices[b].co).length
+                edge_count += 1
+        mean_edge = edge_total / edge_count if edge_count else 0.003
+
+        # Pre-existing defects on a dirty scan are not ours to fix or to
+        # block on — baseline them out of the repair verdict.
+        baseline = _footprint_self_intersections(me, member, affected)
+        baseline |= {p.index for p in affected if p.area < 1e-12}
+        pre_positions = {i: me.vertices[i].co.copy() for i in member}
+
+        # Commit analytically along FAIRED normals: |displacement| is exactly
+        # amount × weight (unit directions), matching the preview magnitude,
+        # while the coherent direction field keeps scan creases from
+        # shredding the way raw per-vertex normals do (#48).
+        faired, adjacency = _faired_normals(me, weights, mean_edge)
+        sign = -1.0 if region.kind == "PRESSURE" else 1.0
+        offset = sign * region.magnitude_mm * 0.001
+        for i in faired:
+            me.vertices[i].co += faired[i] * (offset * weights[i])
+        me.update()
+        remaining = _repair_folds(
+            obj, weights, pre_face_normals, pre_vertex_normals, adjacency,
+            baseline, affected,
+        )
+        if remaining:
+            # State safety (#48 contract 8): never leave a torn commit.
+            # Restore bit-exactly and keep the live preview for adjustment.
+            for i, co in pre_positions.items():
+                me.vertices[i].co = co
+            me.update()
+            self.report(
+                {"ERROR"},
+                f"{region.name}: {region.magnitude_mm:.1f} mm folds this area "
+                f"({remaining} faces would tear). Reduce the amount, widen "
+                "the region, or smooth the scan first — nothing was changed",
+            )
+            return {"CANCELLED"}
+        obj.modifiers.remove(modifier)
         obj[_committed_key(region)] = True
         mark_brace_dirty(context, "Pressure/expansion changed the corrected body")
         verb = "pressed in" if region.kind == "PRESSURE" else "expanded out"
@@ -774,6 +1366,7 @@ class RIGO_OT_region_remove(Operator):
         committed_key = _committed_key(region)
         if committed_key in obj:
             del obj[committed_key]
+        _drop_snapshot(obj, region.surface_mask)
         vg = obj.vertex_groups.get(region.surface_mask)
         if vg is not None:
             obj.vertex_groups.remove(vg)

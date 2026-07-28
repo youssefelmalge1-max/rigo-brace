@@ -985,3 +985,29 @@ Cost: one full build per Apply, which is why it is an explicit step and never ru
 slider movement.
 Sequencing: this is the product contract for #46. The architectural half - making valid local
 edits less likely to produce rim overlaps at all - is separate and still open.
+
+## Decision ID: DEC-0041
+Date: 2026-07-29
+Decision: rebuild the reusable correction pipeline on a continuous field + consistent
+geometry state + validity-or-refusal commit (#48).
+- Styles (schema v2) store BOTH the raw sample cloud (v1 compat) and a regular 2D
+  tangent-frame grid resampled by IDW with a core plateau snapped to 1.0 and a hull
+  taper; import evaluates the grid bilinearly (v1 entries: k-NN IDW with smooth taper).
+- The style snapshot is captured at region BAKE time from UNdisplaced geometry
+  (`rigo_style_src_<mask>` on the object); frame origin = the authoring anchor (circle
+  seed / import cursor), frame normal = `_target_surface` at that anchor (identical
+  derivation to the import side, else the projection shears on creased surfaces).
+- Import and circle regions read the EVALUATED vertex positions (refuse with an
+  actionable error if the modifier stack changes the vertex count); soft normal guard
+  fades over [tol, 2·tol]; only the cursor-connected component survives; a soft geodesic
+  trim (Dijkstra inside the footprint, limit 1.35× sample span, smooth fade) removes
+  across-the-fold bleed.
+- Painted feather is geodesic millimetres (multi-source Dijkstra from the boundary), not
+  integer rings.
+- Commit displaces analytically along geodesically FAIRED unit normals (|d| = amount×w
+  exactly), then a bounded tangential-only repair loop clears inverted/degenerate/
+  self-intersecting slivers (pre-existing scan defects baselined out). If repair cannot
+  converge, commit REFUSES and restores bit-exactly, keeping the live preview.
+Rejected: warn-and-keep-torn-geometry (violates state safety), remesh-as-default
+(destroys clinical fidelity), reducing the requested amount (forbidden by task).
+Cost: import+commit 1.9 s on the 45k-vert patient scan.

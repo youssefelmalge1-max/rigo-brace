@@ -79,7 +79,11 @@ def _run():
         bpy.ops.mesh.select_all(action="DESELECT")
         bm = bmesh.from_edit_mesh(scan.data)
         bm.faces.ensure_lookup_table()
-        seed = bm.faces[5000]
+        bm.verts.ensure_lookup_table()
+        # Clean-zone patch (around vertex 9000).  The face-5000 armpit zone is
+        # creased scan noise: committing there now correctly REFUSES (folds) —
+        # that behaviour is gated by regionqualtest.py, not this flow test.
+        seed = bm.verts[9000].link_faces[0]
         patch = {seed}
         frontier = [seed]
         while len(patch) < 300 and frontier:

@@ -1040,3 +1040,15 @@ Confidence: high; every number is measured this session.
 Next action: #46 architectural fix — the rim runs permanently clamped (~0.36 mm delivered
 against a 1.00 mm request at 100 % of stations), and the aggregates do NOT discriminate which
 edits fail, so the next measurement must localise the overlapping rim faces.
+
+## Lesson ID: LM-0041
+`Object.closest_point_on_mesh` on this Blender 5.0.1 build consults the EVALUATED mesh
+(modifiers included) even when called on the original object — measured, not assumed: with
+a live 15 mm preview modifier, the returned point sat on the previewed crater (z −9.12 mm,
+normal 57° off a flat plane). Any code that pairs it with raw `object.data` vertex sweeps
+is mixing geometry states. Related: graph-edge Dijkstra "geodesic" distance exceeds true
+surface distance by ~10–25 % anisotropically on irregular scans, and an extrinsic
+tangent-plane radius reaches across concave folds that an intrinsic metric never crosses —
+when a footprint must match an authored region, trim by within-footprint graph distance.
+Tangential-only relaxation (delta minus its component along the pre-commit normal) repairs
+folded slivers while preserving the delivered mm amount exactly.
