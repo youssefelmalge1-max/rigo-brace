@@ -592,8 +592,22 @@ class RIGO_OT_smooth_trimline(Operator):
         dense, per = _dense_path(spline, matrix)
         count = len(dense)
         n_ctrl = len(spline.bezier_points)
-        # Straighten is the one mode that can fail its own contract, so it
-        # carries a rollback snapshot. Taken before any mutation.
+        # SHARED acceptance contract (#46). Every mode - not just Straighten -
+        # can leave a trimline that only fails later at Generate, so every mode
+        # records the pre-edit state before touching anything and none of them
+        # is authoritative until Apply & Verify has proven it buildable.
+        from . import trimverify_ops
+
+        trimverify_ops.stash_pre_edit(curve)
+        curve["rigo_trim_edit_params"] = (
+            f"{self.mode}|{self.smoothness:.4f}|{self.iterations}|"
+            f"{self.preserve:.4f}|{self.influence:.4f}|"
+            f"{self.straighten_amount:.4f}|{int(self.pin_endpoints)}|"
+            f"{int(self.lock_landmarks)}|{self.arc_start}|{self.arc_end}|"
+            f"{int(self.adaptive_refine)}|{self.refine_tolerance:.4f}"
+        )
+        # Straighten additionally fails its own contract measurably, so it
+        # carries an immediate in-operator rollback. Taken before any mutation.
         rollback = (
             _capture_spline(spline) if self.mode == "STRAIGHTEN" else None
         )
@@ -707,7 +721,28 @@ class RIGO_OT_smooth_trimline(Operator):
                 [matrix @ p.co for p in spline.bezier_points], arc_run_controls
             )
             if ratio_after > ratio_before * (1.0 + 1.0e-6):
-                _restore_spline(spline, rollback)
+                # ONE restore implementation. Rolling back geometry only, with
+                # a private helper, left `rigo_trim_edit_params`,
+                # `rigo_trim_handle_model` and the pending snapshot behind, so
+                # an up-front refusal did NOT leave the curve exact - the
+                # matrix caught it at arc (20,28). The shared
+                # `restore_trimline` puts geometry, handle types, selection and
+                # metadata back together, which is the whole point of having a
+                # single acceptance contract.
+                import json
+
+                pending = str(curve.get(trimverify_ops.PENDING_KEY, ""))
+                if pending:
+                    # `restore_trimline` already clears every tracked key
+                    # before reinstating the snapshot, so a params value that
+                    # legitimately predates this edit survives and this one
+                    # does not.
+                    trimverify_ops.restore_trimline(curve, json.loads(pending))
+                    del curve[trimverify_ops.PENDING_KEY]
+                else:
+                    _restore_spline(spline, rollback)
+                    if "rigo_trim_edit_params" in curve:
+                        del curve["rigo_trim_edit_params"]
                 curve.data.update_tag()
                 _keep_trimline_visible(context, curve)
                 penetration = _chord_penetration_mm(

@@ -609,6 +609,30 @@ def _draw_design(layout, context):
             text="* Straighten Arc is experimental — verify Generate",
             icon="ERROR",
         )
+        # Shared transactional acceptance (#46): sliders stay live preview,
+        # and ONE verification decides whether the edit becomes authoritative.
+        from ..operators.trimverify_ops import verification_state_cached
+
+        state = verification_state_cached(context, perimeter)
+        verify_row = box.row(align=True)
+        verify_row.scale_y = 1.3
+        verify_row.operator(
+            "rigo.apply_trimline_edit",
+            text="Apply & Verify Trimline",
+            icon="CHECKMARK",
+        )
+        if state == "VERIFIED":
+            box.label(text="Trimline VERIFIED — builds cleanly", icon="CHECKMARK")
+        elif state == "STALE":
+            box.label(
+                text="Verification STALE — inputs changed since it passed",
+                icon="ERROR",
+            )
+        else:
+            box.label(
+                text="Not verified — Apply & Verify before accepting",
+                icon="QUESTION",
+            )
         box.label(
             text="Brush locally; Edit shows linked 3-point tangents",
             icon="INFO",

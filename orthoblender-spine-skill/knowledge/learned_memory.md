@@ -994,3 +994,49 @@ Test case needed: yes — done, trimsmoothtest.py phase 6; verified red before t
 Risk: low — 28/28 feature gates plus the six-suite regression green.
 Confidence: high; every number above is measured this session (tools/trimmoddbg.py, tools/trimvisdbg.py).
 Next action: user hands-on check in the real UI after restarting Blender; #41/#42 unchanged.
+
+## Lesson ID: LM-0040
+Date: 2026-07-29
+Source: building the shared transactional acceptance contract (#46, DEC-0040)
+Observation: three defects in one session were all invisible to a green battery, and each was
+caught only by widening the evidence rather than by reasoning. (a) `_plain()` used
+`list(value)` to make ID properties JSON-safe; strings are iterable, so `list("C2_PERIODIC")`
+returned eleven single characters and every string metadata value was silently rewritten on
+capture and restored as a character list — the geometry rolled back bit-exact while the
+metadata did not. (b) `_TRACKED_METADATA` named `rigo_trim_control_signature`, which does not
+exist; the real key is `rigo_trim_solved_signature`, so a rollback left the handle-solve
+fingerprint stale. (c) the Straighten refusal used its own private `_restore_spline` instead
+of the shared `restore_trimline`, so an up-front refusal restored geometry but left
+`rigo_trim_edit_params` and the pending snapshot behind.
+Underlying principle: a per-mode or per-path battery proves nothing about the modes and paths
+it does not exercise. Expanding the edit matrix from one arc to seven turned Smooth Arc from
+"green" into "fails on 1 of 7" and revealed Blend failing on 3 of 7 with no prior cross-arc
+evidence at all. Coverage, not cleverness, found every one of these.
+Diagnostic note: I burned two wrong hypotheses on the rollback failure (selection baseline,
+metadata key) before writing a probe that simply printed the first differing field. When a
+comparison fails, print the difference immediately — do not theorise about which field it is.
+Test-harness note: two silent harness faults nearly produced false confidence. A patch whose
+search string contained an escaped `\n` never matched, so a per-mode result file stayed in
+"w" mode and every arc overwrote the previous one — a seven-arc sweep left one arc's result
+and looked complete. ALWAYS verify a patch actually applied, and prefer one result file per
+cell over appending. Separately, two concurrent Blender instances exhausted memory ("Calloc
+returns null"), and seven builds in one session crashed with no result file while the shell
+loop still printed "done" — a loop that reports completion regardless of exit code is not
+evidence.
+Performance note: `verification_state` hashes every vertex and triangle of the evaluated scan
+(~60k struct packs). Calling it from a panel `draw` runs it on every redraw including
+mouse-over. Cache behind a `depsgraph_update_post` dirty flag; keep the exact function as the
+authority for the operator and the gates.
+Clinical implication: 8 of 21 measured arc edits produce an unbuildable brace. Before this
+contract every one of them reached the orthotist as an accepted design that only failed later
+at Generate.
+Reusable feature: `trimverify_ops` (snapshot/restore, signed verification, hidden candidate
+built under `_CORSET_CANDIDATE_NAME` so a committed brace is never at risk);
+`tools/trimacceptmatrix.py` one-cell-per-launch matrix pattern.
+Template update needed: no.
+Test case needed: yes — done, 25/25 green.
+Risk: low for the contract; #46's architectural half is untouched.
+Confidence: high; every number is measured this session.
+Next action: #46 architectural fix — the rim runs permanently clamped (~0.36 mm delivered
+against a 1.00 mm request at 100 % of stations), and the aggregates do NOT discriminate which
+edits fail, so the next measurement must localise the overlapping rim faces.

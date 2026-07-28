@@ -938,12 +938,23 @@ one control 105 mm away on a different part of the body. **Adherence stays perfe
 surface-distance check can detect this** — the trimline looks accepted and only fails later
 at Generate.
 
-Guarded, not repaired: Straighten now measures its own contract (arc/chord ratio must fall)
-and, when it does not, restores the trimline **bit-exactly** and refuses with the measured
-reason. Of seven arcs, the ratio rose only for the catastrophic one and fell for every arc
-that built, so the discriminator is exact on the evidence available. A real fix needs a
-straightening target that is defined **on the surface** (e.g. a geodesic between the pinned
-endpoints) instead of a chord through space.
+**This is a REFUSAL GUARD ONLY. It is not the Straighten implementation.** The guard measures
+Straighten's own contract (arc/chord ratio must fall) and, when it does not, restores the
+trimline **bit-exactly** and refuses with the measured reason. Of seven arcs, the ratio rose
+only for the catastrophic one and fell for every arc that built, so the discriminator is
+exact on the evidence available — but refusing a bad case is not the same as computing a good
+one, and arcs that pass the guard can still be wrong in kind.
+
+Required final implementation — Straighten must be **surface-defined**:
+
+1. straighten in the **selected clinical view**;
+2. follow a **geodesic or surface-constrained target** between the pinned endpoints;
+3. **never** flatten toward a free 3D chord through the body;
+4. preserve endpoint and protected-landmark constraints (already satisfied: 0.0000 mm);
+5. verify that the in-view bow or arc/chord metric **actually improves**.
+
+Straighten stays visibly experimental — enum label, panel button `*`, warning row — until that
+implementation exists. The guard is removable only when it does.
 
 ### #46 OPEN — sub-millimetre trimline edits break the rim, for BOTH Smooth Arc and Straighten
 Path: rim/offset construction. **Not** specific to Straighten, and this is the blocking one.
@@ -972,3 +983,50 @@ of fix; guaranteeing "never leaves an unbuildable state" requires buildability v
 that all four modes share, which costs a full generate and is therefore an explicit
 verification step rather than something that can run on every slider tweak. Needs an owner
 decision before implementation.
+
+#### #46 — product contract DONE, architectural half still open
+
+**Transactional acceptance shipped** (DEC-0040, `operators/trimverify_ops.py`). Full matrix,
+25 cells, all green — 4 modes x 7 arcs plus painted, manual and signature. **8 of 21 arc
+cells are unbuildable**, and every one is now refused with its measured stage and rolled back
+bit-exactly, with the last valid brace left at `67836v/117726f`:
+
+| arc | Smooth All | Smooth Arc | Straighten | Blend |
+|---|---|---|---|---|
+| (17,21) | verified | **rejected** | verified | verified |
+| (18,20) | — | verified | **rejected** | **rejected** |
+| (20,28) | — | verified | **refused (#45)** | **rejected** |
+| (24,30) | — | verified | verified | verified |
+| (10,14) | — | verified | **rejected** | verified |
+| (30,36) | — | verified | verified | verified |
+| (2,8)   | — | verified | **rejected** | **rejected** |
+
+Blend fails on 3 of 7 arcs and had no prior cross-arc evidence at all, so #46 spans all four
+modes, not the two originally measured.
+
+**Architectural half — first measurement** (`tools/rimmargindbg.py`; fillet 1.00 mm,
+8 segments, 4 mm wall):
+
+| case | spacing median | rim ceiling 0.35x | headroom min | stations below request | build |
+|---|---|---|---|---|---|
+| unedited | 1.041 mm | ~0.36 mm | -0.811 mm | **2228/2228** | OK |
+| SMOOTH_ARC (17,21) | 1.044 | ~0.37 | -0.876 | **2232/2232** | FAIL |
+| SMOOTH_ARC (18,20) | 1.046 | ~0.37 | -0.811 | **2225/2225** | OK |
+| SMOOTH_ARC (24,30) | 1.040 | ~0.36 | -0.872 | **2234/2234** | OK |
+
+The requested fillet is unachievable at **100 % of stations in every case, including those
+that build**: the rim runs permanently clamped to ~0.36 mm against a 1.00 mm request. The
+"narrow stability margin" is therefore not narrow, it is **absent** — the stage is saturated
+by construction, which is why an arbitrary sub-millimetre perturbation can tip it.
+
+**Honest negative: these aggregates do NOT discriminate failure.** (17,21) fails while
+(24,30) builds with near-identical statistics — headroom min -0.876 vs -0.872, p05 -0.731 vs
+-0.729, one sub-radius curvature station in both, minimum spacing 0.356 vs 0.367 mm. The
+trigger is LOCAL, not aggregate.
+
+Next step, NOT yet done: locate the 3 overlapping rim faces in the (17,21) failure and compare
+their local neighbourhood against the same location in a passing case. Candidate directions,
+in order of evidence: raise boundary spacing so the ceiling can carry the requested radius
+(`_rim_target_spacing_m` itself argues for 4x the radius, which a 1.04 mm median spacing does
+not deliver at 1.00 mm), or clamp the request to the achievable ceiling and say so, rather
+than silently delivering ~0.36 mm.

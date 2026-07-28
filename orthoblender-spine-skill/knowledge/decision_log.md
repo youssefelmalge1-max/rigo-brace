@@ -955,3 +955,33 @@ Sequencing: blocked behind #37 (offset-mold self-intersection). The #41a opening
 hard protection only at semantic landmarks and intentional features, outward-only
 correction between them - applies to this work, refined by requirement 9: protection pins
 features, it does not license penetration between them.
+
+## Decision ID: DEC-0040
+Date: 2026-07-28
+Decision: Trimline editing gets ONE shared transactional acceptance contract covering all
+four modes (Smooth All, Smooth Arc, Straighten Arc, Blend Junction), not per-mode guards.
+Sliders and the redo panel stay live preview with no verification and no build; a single
+explicit **Apply & Verify** builds a hidden transactional candidate through the real
+pipeline and either stamps the trimline VERIFIED for its signature or restores the previous
+trimline bit-exactly. Implemented as `operators/trimverify_ops.py`.
+Reason: the evidence rejected per-mode safety assumptions. Over seven arcs, a **1.03 mm**
+Smooth Arc edit at (17,21) destroyed a brace that builds unedited, while a **60 mm**
+Straighten elsewhere built fine; failure is neither monotonic in edit size nor confined to
+one mode. Every mode can therefore hand the orthotist an accepted-looking trimline that only
+fails later at Generate, and a guard written per mode would be the wrong shape of fix.
+Verification runs the REAL pipeline - offset mold, projection, cut, boundary resample, rim,
+wall join, manifold check - because a proxy check is precisely what let a 1.03 mm edit through.
+Safety property: the candidate is built under `_CORSET_CANDIDATE_NAME`, never `CORSET_NAME`,
+so a committed brace is untouched whichever way verification goes. That is what lets a
+rejection honestly promise the last valid brace is unchanged.
+Signature: the VERIFIED stamp is bound to the EVALUATED body (LM-0039), the raw trimline
+controls, handles and handle types, the edit parameters, and every build-affecting setting
+(`BUILD_SETTINGS`: thickness, offset, fairing, fillet radius and segments, transition width,
+edge band, design style, trim top/bottom, opening width). Adding a build-affecting setting
+without registering it there would let a stamp outlive its inputs, so that list is part of
+the contract. Measured: changing thickness, fillet radius, offset or deforming the body all
+flip the state to STALE; restoring them returns it to VERIFIED; any edit clears it outright.
+Cost: one full build per Apply, which is why it is an explicit step and never runs on a
+slider movement.
+Sequencing: this is the product contract for #46. The architectural half - making valid local
+edits less likely to produce rim overlaps at all - is separate and still open.
