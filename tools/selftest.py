@@ -102,6 +102,7 @@ def _check():
         "op_slide_trimline_on_surface": _is_registered(registered, "slide_trimline_on_surface"),
         "op_snap_trimline_to_surface": _is_registered(registered, "snap_trimline_to_surface"),
         "op_smooth_trimline_brush": _is_registered(registered, "smooth_trimline_brush"),
+        "op_smooth_trimline": _is_registered(registered, "smooth_trimline"),
         "op_refine_trimline": _is_registered(registered, "refine_trimline"),
         "op_custom_trim_paint": _is_registered(registered, "custom_trim_paint"),
         "op_custom_trim_mask_adjust": _is_registered(registered, "custom_trim_mask_adjust"),

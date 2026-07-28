@@ -581,6 +581,30 @@ def _draw_design(layout, context):
             icon="MOD_SUBSURF",
         )
         row.operator("rigo.clear_trimlines", text="", icon="TRASH")
+        box.separator()
+        box.label(text="Smooth / Straighten", icon="SPHERECURVE")
+        row = box.row(align=True)
+        smooth_whole = row.operator(
+            "rigo.smooth_trimline", text="Smooth All"
+        )
+        smooth_whole.mode = "SMOOTH"
+        smooth_arc = row.operator(
+            "rigo.smooth_trimline", text="Smooth Arc"
+        )
+        smooth_arc.mode = "SMOOTH_ARC"
+        row = box.row(align=True)
+        straighten = row.operator(
+            "rigo.smooth_trimline", text="Straighten Arc"
+        )
+        straighten.mode = "STRAIGHTEN"
+        blend = row.operator(
+            "rigo.smooth_trimline", text="Blend Junction"
+        )
+        blend.mode = "BLEND"
+        box.label(
+            text="Select points first for Arc/Straighten/Blend",
+            icon="INFO",
+        )
         box.label(
             text="Brush locally; Edit shows linked 3-point tangents",
             icon="INFO",

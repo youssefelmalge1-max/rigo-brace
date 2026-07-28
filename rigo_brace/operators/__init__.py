@@ -22,6 +22,7 @@ from . import rivet_ops
 from . import pattern_ops
 from . import trimline_ops
 from . import custom_trim_ops
+from . import trimsmooth_ops
 from . import curve_build_ops
 
 _MODULES = (
@@ -47,6 +48,7 @@ _MODULES = (
     pattern_ops,
     trimline_ops,
     custom_trim_ops,
+    trimsmooth_ops,
     curve_build_ops,
 )
 
