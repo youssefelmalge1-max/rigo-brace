@@ -446,6 +446,64 @@ def _run():
         bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="SMOOTH")
         _gate("hidden trimline is restored by the edit",
               *_visibility(_perimeter()))
+
+        # ---------------- 7 STRAIGHTEN refuses what it cannot straighten
+        # Arc (20,28) wraps the torso: the chord between its ends runs 98.6mm
+        # inside the body, one control was thrown 105.15mm onto a different
+        # part of it, and the brace then failed with non-manifold rim edges -
+        # while surface adherence still read a perfect +1.500mm, so no
+        # adherence check can catch it. The contract is the discriminator: of
+        # seven arcs measured, the arc/chord ratio rose only for this one
+        # (1.9841 -> 2.1780) and fell for every arc that built.
+        scan = bpy.context.scene.rigo_brace.scan_object
+        for lattice in list(bpy.data.objects):
+            if lattice.type == "LATTICE":
+                bpy.data.objects.remove(lattice, do_unlink=True)
+        for modifier in list(scan.modifiers):
+            scan.modifiers.remove(modifier)
+        bpy.ops.rigo.auto_trimline()
+        curve = _perimeter()
+        hash_before = _state_hash(curve)
+        count_before = len(curve.data.splines[0].bezier_points)
+        _select_controls(curve, set(range(20, 29)))
+        # a reported ERROR surfaces as RuntimeError through bpy.ops
+        try:
+            result = bpy.ops.rigo.smooth_trimline(
+                "INVOKE_DEFAULT", mode="STRAIGHTEN"
+            )
+            message = ""
+        except RuntimeError as exc:
+            result, message = {"CANCELLED"}, str(exc).strip()
+        _gate(
+            "Straighten REFUSES a body-wrapping arc",
+            result == {"CANCELLED"} and "wraps the body" in message,
+            f"{result}: {message[:96]}",
+        )
+        curve = _perimeter()
+        _gate(
+            "refusal restores the trimline bit-exactly",
+            _state_hash(curve) == hash_before
+            and len(curve.data.splines[0].bezier_points) == count_before,
+            f"{_state_hash(curve)} vs {hash_before}, "
+            f"{len(curve.data.splines[0].bezier_points)} controls",
+        )
+        try:
+            gen = bpy.ops.rigo.generate_curve_corset()
+            err = ""
+        except RuntimeError as exc:
+            gen, err = {"CANCELLED"}, str(exc).strip().splitlines()[0][:70]
+        _gate("brace still builds after the refusal", gen == {"FINISHED"},
+              f"{gen} {err}")
+
+        # a well-posed arc must still straighten and still build
+        bpy.ops.rigo.auto_trimline()
+        curve = _perimeter()
+        _select_controls(curve, {17, 18, 19, 20, 21})
+        result = bpy.ops.rigo.smooth_trimline(
+            "INVOKE_DEFAULT", mode="STRAIGHTEN"
+        )
+        _gate("Straighten still ACCEPTS a well-posed arc",
+              result == {"FINISHED"}, f"{result}")
     except Exception as error:  # noqa: BLE001
         LINES.append(f"ERROR={error!r}\n{traceback.format_exc()}")
         CHECKS.append(False)

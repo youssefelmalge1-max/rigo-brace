@@ -913,3 +913,62 @@ C2 + 1.2 mm sagitta station refinement, 73 controls. Offset mold and all cutting
 clean; the failure begins during **rim construction**. This is the constraint that made P2
 reject its better-curve variants (junction ratio 0.87 here, versus 1.01 shipped). Not an
 offset-mold defect.
+
+### #45 OPEN — Straighten Arc is ill-posed for a body-wrapping arc (GUARDED, not fixed)
+Path: `trimsmooth_ops._kernel_straighten`.
+
+The kernel removes the arc's lateral bow toward the **chord between its pinned endpoints**.
+That is only a surface operation while the chord stays near the body. Measured on the
+reference design, arc (20,28):
+
+| quantity | value |
+|---|---|
+| chord length | 210.7 mm |
+| chord samples inside the body | 9 of 11, worst **−98.6 mm** |
+| worst control displacement | **105.15 mm** (mean 6.93) |
+| that control's surface adherence afterwards | **+1.500 mm** — perfect |
+| arc/chord ratio | 1.9841 → **2.1780** (got *less* straight) |
+| cutter sample spacing, stage 3 | max 9.31 mm → **58.02 mm** |
+| first invalid stage | **stage 4, `_cut_surface`** → 2 non-manifold edges |
+
+Pinned endpoints held exactly (0.0000 / 0.0001 mm) and no protected landmark moved, so the
+window logic is sound. The kernel is what is wrong: flattening drags the path inside the
+torso and `_redepth` then re-projects each sample onto whatever surface is nearest, landing
+one control 105 mm away on a different part of the body. **Adherence stays perfect, so no
+surface-distance check can detect this** — the trimline looks accepted and only fails later
+at Generate.
+
+Guarded, not repaired: Straighten now measures its own contract (arc/chord ratio must fall)
+and, when it does not, restores the trimline **bit-exactly** and refuses with the measured
+reason. Of seven arcs, the ratio rose only for the catastrophic one and fell for every arc
+that built, so the discriminator is exact on the evidence available. A real fix needs a
+straightening target that is defined **on the surface** (e.g. a geodesic between the pinned
+endpoints) instead of a chord through space.
+
+### #46 OPEN — sub-millimetre trimline edits break the rim, for BOTH Smooth Arc and Straighten
+Path: rim/offset construction. **Not** specific to Straighten, and this is the blocking one.
+
+Same reference design, unedited template builds `FINISHED`. Then, per arc:
+
+| arc | Smooth Arc | Straighten |
+|---|---|---|
+| (17,21) | 1.03 mm → **FAIL rim overlap** | 2.66 mm → OK |
+| (18,20) | 0.13 mm → OK | 0.37 mm → **FAIL rim overlap** |
+| (20,28) | 1.33 mm → OK | 105.15 mm → FAIL non-manifold (#45) |
+| (24,30) | 0.79 mm → OK | 9.02 mm → OK |
+| (10,14) | 0.57 mm → OK | 18.73 mm → **FAIL rim overlap** |
+| (30,36) | 0.81 mm → OK | 22.25 mm → OK |
+| (2,8) | 5.38 mm → OK | 60.35 mm → **FAIL rim overlap** |
+
+A **1.03 mm** Smooth Arc edit destroys a brace that builds unedited, while a 60 mm Straighten
+elsewhere is fine. Failure is not monotonic in edit size and is not confined to one mode, so
+this is the rim/offset stage's narrow stability margin — the same constraint already recorded
+at `trimline_ops:45-52`, which rejected every P2 variant that reshaped the trimline more than
+plain chord-length C2, and the same family as #43 and #44.
+
+Consequence for the tool contract: **Smooth Arc's green battery does not mean Smooth Arc is
+safe.** It is green because it exercises arc (26,30). Any per-mode guard is the wrong shape
+of fix; guaranteeing "never leaves an unbuildable state" requires buildability verification
+that all four modes share, which costs a full generate and is therefore an explicit
+verification step rather than something that can run on every slider tweak. Needs an owner
+decision before implementation.

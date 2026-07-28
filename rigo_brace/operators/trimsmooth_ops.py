@@ -216,6 +216,77 @@ def _redepth(points, edited, source, inverse, matrix, rotation, offset):
     return out
 
 
+def _capture_spline(spline):
+    """Everything needed to put the curve back bit-exactly."""
+    return [
+        (
+            point.co.copy(),
+            point.handle_left.copy(),
+            point.handle_right.copy(),
+            point.handle_left_type,
+            point.handle_right_type,
+        )
+        for point in spline.bezier_points
+    ]
+
+
+def _restore_spline(spline, state):
+    for point, (co, left, right, left_type, right_type) in zip(
+        spline.bezier_points, state
+    ):
+        point.handle_left_type = "FREE"
+        point.handle_right_type = "FREE"
+        point.co = co
+        point.handle_left = left
+        point.handle_right = right
+        point.handle_left_type = left_type
+        point.handle_right_type = right_type
+
+
+def _arc_chord_ratio(points, run):
+    """Arc length over endpoint chord: 1.0 is a straight line.
+
+    This IS the straightening contract, expressed as a number. Straighten's
+    job is to make the selected arc read straighter, so this ratio must fall.
+    """
+    arc = sum(
+        (points[run[index + 1]] - points[run[index]]).length
+        for index in range(len(run) - 1)
+    )
+    chord = (points[run[-1]] - points[run[0]]).length
+    return arc / chord if chord > 1.0e-12 else math.inf
+
+
+def _chord_penetration_mm(points, run, scan):
+    """How deep the endpoint chord runs INSIDE the body, in mm.
+
+    Reported in the refusal message so the orthotist understands why: an arc
+    that wraps the torso has a chord that tunnels through it, and flattening
+    onto that chord is not a surface operation at all.
+    """
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        from mathutils.bvhtree import BVHTree
+
+        bvh = BVHTree.FromObject(scan, depsgraph)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    inverse = scan.matrix_world.inverted()
+    rotation = scan.matrix_world.to_3x3()
+    first, last = points[run[0]], points[run[-1]]
+    worst = 0.0
+    for step in range(21):
+        probe = first + (last - first) * (step / 20.0)
+        location, normal, _index, _distance = bvh.find_nearest(inverse @ probe)
+        if location is None:
+            continue
+        signed = (probe - (scan.matrix_world @ location)).dot(
+            (rotation @ normal).normalized()
+        )
+        worst = min(worst, signed)
+    return -worst * 1000.0
+
+
 def _keep_trimline_visible(context, curve):
     """Never let an edit leave the edited line undrawn.
 
@@ -374,9 +445,12 @@ class RIGO_OT_smooth_trimline(Operator):
         items=(
             ("SMOOTH", "Smooth Entire", "Fair the whole trimline"),
             ("SMOOTH_ARC", "Smooth Arc", "Fair only the selected arc"),
-            ("STRAIGHTEN", "Straighten Arc",
-             "Make the selected arc read straight from the current view "
-             "while still following the body"),
+            ("STRAIGHTEN", "Straighten Arc (experimental)",
+             "EXPERIMENTAL. Make the selected arc read straight from the "
+             "current view while still following the body. Verify the brace "
+             "generates before accepting the design: on some arcs a "
+             "straightened trimline still fails the rim check at Generate "
+             "(issue #46, which also affects Smooth Arc)"),
             ("BLEND", "Blend Junction",
              "Fair the transition around the selected point"),
         ),
@@ -518,6 +592,23 @@ class RIGO_OT_smooth_trimline(Operator):
         dense, per = _dense_path(spline, matrix)
         count = len(dense)
         n_ctrl = len(spline.bezier_points)
+        # Straighten is the one mode that can fail its own contract, so it
+        # carries a rollback snapshot. Taken before any mutation.
+        rollback = (
+            _capture_spline(spline) if self.mode == "STRAIGHTEN" else None
+        )
+        arc_run_controls = (
+            _cyclic_run(n_ctrl, self.arc_start % n_ctrl, self.arc_end % n_ctrl)
+            if self.mode == "STRAIGHTEN" and self.arc_start >= 0
+            else None
+        )
+        ratio_before = (
+            _arc_chord_ratio(
+                [matrix @ p.co for p in spline.bezier_points], arc_run_controls
+            )
+            if arc_run_controls
+            else None
+        )
 
         # ---- window
         if self.mode == "SMOOTH" or self.arc_start < 0:
@@ -590,6 +681,50 @@ class RIGO_OT_smooth_trimline(Operator):
                     spline, band_run, manual=manual_handle_indices(curve)
                 )
                 curve["rigo_trim_handle_model"] = "C2_BANDED"
+
+        # ---- Straighten must satisfy its own contract or not happen at all
+        #
+        # `_kernel_straighten` removes the arc's lateral bow toward the CHORD
+        # between its pinned endpoints. That is only a surface operation while
+        # the chord stays near the body. For an arc that wraps the torso the
+        # chord tunnels straight through it - measured 210.7 mm long with 9 of
+        # 11 samples inside the body, worst -98.6 mm - so flattening drags the
+        # path inside and the depth re-imposition then re-projects each sample
+        # onto whatever surface is nearest, which moved one control 105.15 mm
+        # to a completely different part of the body. Adherence still reads a
+        # perfect +1.500 mm afterwards, so no surface-distance check can catch
+        # it; the brace then fails to build with non-manifold rim edges.
+        #
+        # The discriminator is the contract itself: Straighten's job is to make
+        # the arc read straighter, and arc/chord ratio is that statement as a
+        # number. Measured over seven arcs, the ratio rose in exactly one - the
+        # catastrophic one (1.9841 -> 2.1780) - and fell in every arc that
+        # built. So a ratio that does not fall means the operation failed, and
+        # the trimline is restored bit-exactly rather than left in an
+        # apparently accepted state that only fails later at Generate.
+        if rollback is not None and ratio_before is not None:
+            ratio_after = _arc_chord_ratio(
+                [matrix @ p.co for p in spline.bezier_points], arc_run_controls
+            )
+            if ratio_after > ratio_before * (1.0 + 1.0e-6):
+                _restore_spline(spline, rollback)
+                curve.data.update_tag()
+                _keep_trimline_visible(context, curve)
+                penetration = _chord_penetration_mm(
+                    [matrix @ p.co for p in spline.bezier_points],
+                    arc_run_controls,
+                    scan,
+                )
+                self.report(
+                    {"ERROR"},
+                    "Straighten cannot flatten this arc: it wraps the body, so "
+                    f"the straight line between its ends runs {penetration:.0f} "
+                    "mm inside the torso and the arc would get less straight "
+                    f"({ratio_before:.3f} -> {ratio_after:.3f}), not more. The "
+                    "trimline is unchanged. Select a shorter arc that faces "
+                    "you in the current view.",
+                )
+                return {"CANCELLED"}
 
         # ---- adaptive local refinement, gated on MEASURED refit error
         refined_added = 0

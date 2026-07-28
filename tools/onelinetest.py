@@ -40,10 +40,19 @@ from bracefixture import prepare_reference_design  # noqa: E402
 from bl_ext.user_default.rigo_brace.operators import curve_build_ops  # noqa: E402
 
 OUT = r"C:\Projects\Blender Add-on Braces\onelinetest_result.txt"
-# The deliberate display lift: the perimeter is drawn 1.5mm above the skin so
-# it is not buried in the scan. Tangentially the drawn line and the cut must
-# agree far more tightly than that.
-DISPLAY_LIFT_MM = 1.5
+# TOLERANCE. The display lift (1.5mm, the Shrinkwrap ABOVE_SURFACE offset that
+# keeps the drawn line out of the scan) is RADIAL. The footprint comparison
+# drops both curves onto the body first, so the radial component is removed by
+# construction and what remains is purely TANGENTIAL - where along the body the
+# line sits. Using the radial lift as a tangential bound was a category error
+# in the first version of this gate, and it also mis-stated the pass: 1.854mm
+# never was "within 1.5mm".
+#
+# The tangential contract is the project's established one, already enforced by
+# trimgentest as displayed_vs_built_on_body_p95<=1mm / _max<=2mm. This gate
+# uses the same numbers so one contract governs both.
+TANGENTIAL_P95_MM = 1.0
+TANGENTIAL_MAX_MM = 2.0
 TRIES = {"n": 0}
 CHECKS = []
 LINES = []
@@ -157,10 +166,20 @@ def _run():
             point.select_control_point = 20 <= index <= 28
         bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="SMOOTH_ARC")
         _stage("after Smooth Arc", perimeter_only)
+        # a well-posed arc: (20,28) wraps the torso and is now refused (#45)
         for index, point in enumerate(curve.data.splines[0].bezier_points):
-            point.select_control_point = 20 <= index <= 28
+            point.select_control_point = 17 <= index <= 21
         bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="STRAIGHTEN")
         _stage("after Straighten Arc", perimeter_only)
+
+        # and the refusal path must not disturb the display either
+        for index, point in enumerate(curve.data.splines[0].bezier_points):
+            point.select_control_point = 20 <= index <= 28
+        try:
+            bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="STRAIGHTEN")
+        except RuntimeError:
+            pass
+        _stage("after a REFUSED Straighten", perimeter_only)
         _stage("before brace generation", perimeter_only)
 
         # This gate is about what is DRAWN, so it builds from a clean template
@@ -208,11 +227,11 @@ def _run():
         if overlay is not None:
             agreement = _displayed_vs_cutter_mm(perimeter, overlay, scan)
             _gate(
-                "visible line IS the effective cutter path "
-                f"(within the {DISPLAY_LIFT_MM}mm display lift)",
+                "visible line IS the effective cutter path (tangential on the "
+                f"body: p95<={TANGENTIAL_P95_MM}mm, max<={TANGENTIAL_MAX_MM}mm)",
                 agreement is not None
-                and agreement[0] <= DISPLAY_LIFT_MM
-                and agreement[1] <= 2.0 * DISPLAY_LIFT_MM,
+                and agreement[0] <= TANGENTIAL_P95_MM
+                and agreement[1] <= TANGENTIAL_MAX_MM,
                 f"on-body p95={agreement[0]:.3f}mm max={agreement[1]:.3f}mm"
                 if agreement else "not measurable",
             )

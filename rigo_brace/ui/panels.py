@@ -594,7 +594,7 @@ def _draw_design(layout, context):
         smooth_arc.mode = "SMOOTH_ARC"
         row = box.row(align=True)
         straighten = row.operator(
-            "rigo.smooth_trimline", text="Straighten Arc"
+            "rigo.smooth_trimline", text="Straighten Arc *"
         )
         straighten.mode = "STRAIGHTEN"
         blend = row.operator(
@@ -604,6 +604,10 @@ def _draw_design(layout, context):
         box.label(
             text="Select points first for Arc/Straighten/Blend",
             icon="INFO",
+        )
+        box.label(
+            text="* Straighten Arc is experimental — verify Generate",
+            icon="ERROR",
         )
         box.label(
             text="Brush locally; Edit shows linked 3-point tangents",
