@@ -94,6 +94,66 @@ def _bow_mm(curve, i0, i1, view):
     return values[int(0.95 * (len(values) - 1))] * 1000.0, values[-1] * 1000.0
 
 
+def _add_correction_lattice(scan):
+    """A deforming modifier of the kind the Mesh Edit stage really leaves on.
+
+    Anything that moves the body works (derotation SIMPLE_DEFORM, Rigo Smooth,
+    the Bend/Twist/Stretch cage); the lattice is used because it produced the
+    largest measured divergence, 94mm.
+    """
+    data = bpy.data.lattices.new("Gate Lattice")
+    data.points_u = data.points_v = data.points_w = 2
+    lattice = bpy.data.objects.new("Gate Lattice", data)
+    bpy.context.scene.collection.objects.link(lattice)
+    lattice.location = scan.location
+    lattice.scale = (0.6, 0.6, 0.9)
+    modifier = scan.modifiers.new(name="Rigo Correction Lattice", type="LATTICE")
+    modifier.object = lattice
+    for index, point in enumerate(data.points):
+        if index % 2 == 0:
+            point.co_deform.x += 0.35
+    return lattice
+
+
+def _adherence_mm(scan, curve):
+    """Signed distance of every control to the EVALUATED body, in mm."""
+    from mathutils.bvhtree import BVHTree
+
+    bvh = BVHTree.FromObject(scan, bpy.context.evaluated_depsgraph_get())
+    inverse = scan.matrix_world.inverted()
+    rotation = scan.matrix_world.to_3x3()
+    out = []
+    for point in curve.data.splines[0].bezier_points:
+        world = curve.matrix_world @ point.co
+        location, normal, _index, _distance = bvh.find_nearest(inverse @ world)
+        if location is None:
+            continue
+        world_normal = (rotation @ normal).normalized()
+        out.append((world - (scan.matrix_world @ location)).dot(world_normal) * 1000.0)
+    return out
+
+
+def _visibility(curve):
+    """(ok, detail) - is the authoritative trimline actually drawn?"""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = curve.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    verts = len(mesh.vertices) if mesh is not None else 0
+    evaluated.to_mesh_clear()
+    ok = (
+        curve.visible_get()
+        and not curve.hide_get()
+        and not curve.hide_viewport
+        and len(curve.data.splines) == 1
+        and verts > 0
+    )
+    return ok, (
+        f"visible_get={curve.visible_get()} hide_get={curve.hide_get()} "
+        f"hide_viewport={curve.hide_viewport} "
+        f"splines={len(curve.data.splines)} evalverts={verts}"
+    )
+
+
 def _run():
     TRIES["n"] += 1
     if not hasattr(bpy.types, "RIGO_PT_main") and TRIES["n"] < 30:
@@ -327,6 +387,65 @@ def _run():
         )
         _gate("deterministic for identical inputs",
               _state_hash(_perimeter()) == first_hash, first_hash)
+
+        # ---------------- 6 MODIFIED scan: adherence + visibility
+        # The regression the orthotist hit. `_redepth` measured against
+        # `scan.data`, the RAW imported mesh, while the visible body is the
+        # EVALUATED one. With no modifiers the two agree, which is why every
+        # gate above stayed green while one press of Smooth All threw controls
+        # up to 94mm off the body in a real session. Two CONSECUTIVE presses of
+        # each mode, because the report suggested the second invocation.
+        # re-acquire: phase 2's ed.undo invalidated the phase-1 Python handle
+        scan = bpy.context.scene.rigo_brace.scan_object
+        _add_correction_lattice(scan)
+        bpy.context.view_layer.update()
+        bpy.ops.rigo.auto_trimline()
+        curve = _perimeter()
+        _gate(
+            "scan carries a deforming modifier",
+            any(m.type == "LATTICE" for m in scan.modifiers),
+            f"{[m.type for m in scan.modifiers]}",
+        )
+        adherence = _adherence_mm(scan, curve)
+        _gate(
+            "generated trimline sits on the deformed body",
+            0.5 <= min(adherence) and max(adherence) <= 3.0,
+            f"[{min(adherence):+.3f}, {max(adherence):+.3f}]mm",
+        )
+        for press in (1, 2):
+            bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="SMOOTH")
+            curve = _perimeter()
+            adherence = _adherence_mm(scan, curve)
+            inside = sum(1 for d in adherence if d < 0.0)
+            _gate(
+                f"Smooth All x{press}: trimline stays on the deformed body",
+                0.5 <= min(adherence) and max(adherence) <= 3.0,
+                f"[{min(adherence):+.3f}, {max(adherence):+.3f}]mm, "
+                f"{inside}/{len(adherence)} inside the body",
+            )
+            _gate(f"Smooth All x{press}: trimline still drawn",
+                  *_visibility(curve))
+        _select_controls(curve, {26, 27, 28, 29, 30})
+        for press in (1, 2):
+            bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="SMOOTH_ARC")
+            curve = _perimeter()
+            adherence = _adherence_mm(scan, curve)
+            inside = sum(1 for d in adherence if d < 0.0)
+            _gate(
+                f"Smooth Arc x{press}: trimline stays on the deformed body",
+                0.5 <= min(adherence) and max(adherence) <= 3.0,
+                f"[{min(adherence):+.3f}, {max(adherence):+.3f}]mm, "
+                f"{inside}/{len(adherence)} inside the body",
+            )
+            _gate(f"Smooth Arc x{press}: trimline still drawn",
+                  *_visibility(curve))
+            _select_controls(curve, {26, 27, 28, 29, 30})
+        # a hidden perimeter must come back: the edit may not leave the
+        # authoritative line undrawn, and regenerating is not the fix
+        curve.hide_set(True)
+        bpy.ops.rigo.smooth_trimline("INVOKE_DEFAULT", mode="SMOOTH")
+        _gate("hidden trimline is restored by the edit",
+              *_visibility(_perimeter()))
     except Exception as error:  # noqa: BLE001
         LINES.append(f"ERROR={error!r}\n{traceback.format_exc()}")
         CHECKS.append(False)

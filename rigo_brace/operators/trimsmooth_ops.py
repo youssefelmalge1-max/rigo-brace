@@ -161,9 +161,34 @@ def _landmark_zero_zones(points, weights, landmark_samples, ramp_m):
 
 
 def _surface_context(scan):
-    source = design_ops._source_surface(scan.data)
-    inverse = scan.matrix_world.inverted()
-    return source, inverse, scan.matrix_world, scan.matrix_world.to_3x3()
+    """Measure against the body the orthotist actually SEES.
+
+    `scan.data` is the raw imported mesh. The patient scan normally carries
+    modifiers - Rigo Remesh / Rigo Smooth / Rigo Thickness, the derotation
+    SIMPLE_DEFORM, the Bend-Twist-Stretch and correction lattices - so the
+    visible body is the EVALUATED mesh, and every other stage of the trimline
+    system reads it that way (`BVHTree.FromObject(scan, depsgraph)`).
+
+    Reading `scan.data` here re-imposed the standoff against a surface that is
+    not where the body is drawn. Measured, one press of Smooth All: derotation
+    modifier -> controls moved up to 57.0 mm with 20 of 42 ending up INSIDE
+    the torso; correction lattice -> up to 94.0 mm with 14 of 42 inside. That
+    is the trimline the orthotist watched disappear. A scan with no modifiers
+    (the old test fixture) is the one case where raw and evaluated agree,
+    which is why the gates stayed green.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = scan.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    try:
+        # `_source_surface` copies coordinates, normals and triangles into its
+        # own lists and builds the BVH from those, so freeing the temporary
+        # evaluated mesh afterwards is safe.
+        source = design_ops._source_surface(mesh)
+    finally:
+        evaluated.to_mesh_clear()
+    matrix = evaluated.matrix_world.copy()
+    return source, matrix.inverted(), matrix, matrix.to_3x3()
 
 
 def _redepth(points, edited, source, inverse, matrix, rotation, offset):
@@ -189,6 +214,25 @@ def _redepth(points, edited, source, inverse, matrix, rotation, offset):
         gap = (point - (matrix @ hit[0])).dot(normal)
         out.append(point + normal * (offset - gap))
     return out
+
+
+def _keep_trimline_visible(context, curve):
+    """Never let an edit leave the edited line undrawn.
+
+    Deliberately narrower than `_set_design_view(context, "TRIM")`, which the
+    other trimline mutators call: that also hides every other object, which is
+    too blunt for a mid-edit fairing pass. Only the perimeter's own visibility
+    is asserted, plus a return from the brace preview, where the perimeter is
+    hidden by design and an edit to it would be invisible.
+    """
+    curve.hide_viewport = False
+    try:
+        curve.hide_set(False)
+    except RuntimeError:
+        pass  # not linked into this view layer; nothing to assert
+    settings = context.scene.rigo_brace
+    if settings.design_view_mode == "BRACE":
+        design_ops._set_design_view(context, "TRIM")
 
 
 # --------------------------------------------------------------------------
@@ -568,6 +612,7 @@ class RIGO_OT_smooth_trimline(Operator):
         mark_handles_solved(curve)
         curve.data.update_tag()
         mark_brace_dirty(context, "Trimline smoothed/straightened")
+        _keep_trimline_visible(context, curve)
 
         self.__class__._report_lines = [
             f"refit error {error_m*1000:.2f} mm "
