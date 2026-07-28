@@ -895,6 +895,10 @@ Blocks #42. #42 must not begin until B-type offset construction is reliable acro
 clinically supported clearances.
 
 ### #43 OPEN — painted-path low-density boundary-resample fold
+**Reproduced on the CLEAN committed build, 2026-07-29** (no Candidate A present, verified
+in-process): `customtrimtest` fails with `0 open and 2 non-manifold edge(s)` at 84 controls,
+and `candacompare` painted cell fails identically. So this is confirmed pre-existing and
+independent of Candidate A, not merely assumed to be.
 Path: `custom_trim_ops` (painted), which does not involve Add Curve Detail.
 
 | cap | keep-interior | weld | resample | result |
@@ -1030,3 +1034,110 @@ in order of evidence: raise boundary spacing so the ceiling can carry the reques
 (`_rim_target_spacing_m` itself argues for 4x the radius, which a 1.04 mm median spacing does
 not deliver at 1.00 mm), or clamp the request to the achievable ceiling and say so, rather
 than silently delivering ~0.36 mm.
+
+### #47 OPEN — PRODUCT LIMITATION: the delivered trim fillet is not the requested fillet
+Path: `curve_build_ops` rim construction. **Not a defect to be fixed silently — a limitation
+to be stated.**
+
+The rim radius is capped at `_RIM_SPACING_RADIUS_CEILING = 0.35` x local boundary spacing,
+and boundary spacing is itself capped at `_RIM_SPACING_MAX_M = 1.2 mm`. The delivered radius
+is therefore bounded at **~0.42 mm by construction, whatever the orthotist requests**, and on
+the reference design it measures **~0.36 mm against a 1.00 mm request at 100 % of stations**
+(2228/2228 unedited; headroom min -0.811 mm). Measured in `tools/rimmargindbg.py`.
+
+This is already known to the code and is not an accident. `curve_build_ops:43-48` states the
+consequence outright, and the 0.35 ceiling was chosen by a measured sweep across
+0.35/0.5/0.75/1.0/1.5/2.0 on three fixtures — the 6 mm wall reference brace is clean **only**
+at 0.35, and 0.5 already produces 2 overlaps. Thicker walls carry the cap further from the
+surface so neighbouring profiles converge sooner. **Do not raise the ceiling without
+re-running that sweep across wall thicknesses as well as trimlines.**
+
+The brace honestly records what it delivered — `rigo_trim_fillet_requested_mm` versus
+`rigo_trim_fillet_radius_mm` / `_mean_radius_mm` / `_min_radius_mm` — and the Design panel
+already shows "Trim round-over: up to X mm, mean Y mm". So the numbers are truthful; what is
+missing is that the **Trim Fillet Radius control still presents itself as a request that will
+be honoured**, and at the default 1.00 mm it never is.
+
+Required, none of it done:
+1. Never describe the rim stage as delivering a 1.00 mm fillet. It delivers ~0.36 mm.
+2. Surface the clamp at the point of request: show the achievable radius next to the slider,
+   and warn when the request exceeds it, rather than only reporting after the build.
+3. Decide the product answer — either accept a sub-half-millimetre round-over as the
+   clinical reality and re-label the control, or change the rim architecture so a genuine
+   1 mm round-over is achievable (which means raising the spacing cap and re-validating the
+   whole sweep, not relaxing the ceiling alone).
+
+Relationship to #46: the saturated ceiling is WHY the rim stage has no stability margin, but
+it is NOT proven to be what selects which arcs fail — the aggregates do not discriminate
+(see #46). Fixing #47 may or may not fix #46; they are recorded separately for that reason.
+
+#### #46 — LOCAL diagnosis: the rim fan collides with the INNER wall, and nothing repairs that
+
+Confound removed first: every measurement below is on committed code, and the 8-cell
+comparison (`tools/candacompare.py`) shows Candidate A changes **nothing** — same arcs build,
+same overlap counts, same delivered fillet, same failing stage, same rollback. The only
+difference between the two result sets is the label line.
+
+Localised with `tools/rimlocaldbg.py`, failing arc (17,21) vs passing arc (24,30), identical
+settings (fillet 1.00 mm, 8 segments, 4 mm wall, 3 mm offset) and identical source geometry.
+
+**First clean-to-invalid stage: shell construction, after the outer-collision repair has
+finished.** The cut is clean in both cases (2232 / 2234 boundary vertices). Per-call
+intersection counts through `_build_strict_shell`:
+
+| case | pair counts per call | validate |
+|---|---|---|
+| (17,21) FAIL | `[0, 1, 0, 0, 0, 0, **3**]` | 3 local rim overlaps |
+| (24,30) PASS | `[0, **3**, 0, 0, 0, 0, 0]` | OK |
+
+Both cases have transient intersections during shell construction. The repair clears the ones
+it sees — it cleared 3 for the passing case. The failing case then acquires **three new ones
+that the repair never saw**.
+
+**Exact overlapping face pairs, (17,21).** All three share one triangle:
+
+| pair | A | B | face-normal angle | centroid gap |
+|---|---|---|---|---|
+| tri47912 x tri123160 | inner (16293, 24747, 24746) | inner+rim (24746, 26116, 57860) | 16.86° | 1.337 mm |
+| tri47912 x tri134440 | inner, same | inner+rim (26116, 25200, 57853) | 16.90° | 2.562 mm |
+| tri47912 x tri134441 | inner, same | inner+rim (26116, 57853, 57860) | 16.86° | 2.158 mm |
+
+Centroid of A: `(0.16167, 0.04405, 0.31792)`. Provenance is unambiguous and identical for all
+three: **`inner` versus `inner+rim`** — the rim fillet fan intersecting the patient-contact
+inner wall. Not outer-vs-outer, not rim-vs-rim. Vertices 24746 and 26116 recur across the
+cluster, so this is one local fan, not three independent events. The ~17° normal angle means
+the rim profile is **grazing** the inner wall almost tangentially, not crossing it steeply.
+
+**Local geometry at the failure is benign.** Nearest cut-boundary station 1326/2232, 1.18 mm
+away: spacing 1.047 mm, **turn radius 22.9 mm**, turn angle 2.62°, rim ceiling 0.367 mm. That
+is a nearly straight, well-spaced stretch.
+
+**Why aggregates match but outcomes differ.** The classic offset self-overlap condition
+(curvature radius smaller than the fillet radius) is **falsified**: `stations with turn_radius
+< ceiling = 0` in BOTH cases, and the actual failure sits at a 22.9 mm turn radius. The
+discriminator is not curvature, spacing or the ceiling — all of which match. It is whether the
+rim fan, once built, happens to grazingly re-enter the inner wall, and **no stage checks that**.
+
+**Root cause (architectural).** In `curve_build_ops._shell_geometry`:
+
+```
+coordinates, repair = design_ops._paired_coordinates(...)   # walls + OUTER-collision repair
+profiles, radii     = _rim_profiles(coordinates, topology, radius)   # rim fan built AFTER
+faces               = _rounded_shell_faces(topology, profiles)
+```
+
+The only repair (`rigo_outer_collision_*`) runs **before the rim fillet exists** and only
+addresses outer-wall collisions. It is structurally incapable of seeing an inner-vs-rim
+collision, which is the failure that actually occurs. Validation then rejects the whole build.
+
+Candidate fixes, in order of the evidence:
+1. Re-run the intersection repair **after** `_rim_profiles`, against inner+outer+rim together,
+   iterating to a fixed point rather than repairing once against a pre-rim state.
+2. Locally reduce the delivered radius only at stations whose fan intersects the inner wall —
+   cheap, since the radius is already per-station and already clamped far below the request
+   (#47).
+3. Clamp the rim fan's inward excursion so a profile can never re-enter the inner surface.
+
+Not attempted here. The transactional Apply & Verify contract remains required regardless:
+it is what keeps these 8-of-21 failures away from the orthotist, and it is a safety layer, not
+a workaround for this defect.
