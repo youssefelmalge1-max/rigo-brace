@@ -979,3 +979,18 @@ Confidence: high; every claim above is a number from this session.
 Next action: user hands-on check in the real UI; #41/#42 unchanged (the 3.9mm
 refit floor drops out automatically once the trimline follows the persistent
 inner surface).
+
+## Lesson ID: LM-0039
+Date: 2026-07-28
+Source: user report "when I press any button, the trim lines disappears" (Smooth All / Smooth Arc, no brace in the scene)
+Observation: `trimsmooth_ops._surface_context` built its BVH from `scan.data`, the RAW imported mesh, while every other stage of the trimline system reads the EVALUATED mesh via `BVHTree.FromObject(scan, depsgraph)` (trimline_ops 697/912/1189, custom_trim_ops 437/495/551, design_ops 1025). The patient scan normally carries modifiers — Rigo Remesh/Smooth/Thickness, the derotation SIMPLE_DEFORM, the Bend-Twist-Stretch and correction lattices — so `_redepth` re-imposed the 1.5 mm standoff against a surface that is not where the body is drawn. One press of Smooth All: no modifier 5.4 mm max / 0 of 42 controls inside the body; Rigo Smooth 6.1 mm, band broken to +0.2..+6.2 mm; derotation 57.0 mm, 20/42 inside to -43.3 mm; correction lattice 94.0 mm, 14/42 inside, one control +92 mm off.
+Underlying principle: a scan with NO modifiers is the one case where raw and evaluated data agree. A fixture built that way cannot see this entire bug class, and 17/17 gates stayed green over a defect that made the tool unusable on every real case. Any fixture for a stage that measures against the patient body must carry a deforming modifier.
+Clinical implication: the orthotist's authoritative trimline was silently torn off the torso by an editing button, and the only recovery was regenerating — losing the edit.
+Blender / geometry implication: `scan.evaluated_get(depsgraph).to_mesh()` then free with `to_mesh_clear()`; `_source_surface` copies coordinates, normals and triangles into its own lists and builds the BVH from those, so the temporary mesh may be freed immediately. Never read `obj.data` when the visible surface is what is being measured.
+Diagnostic note: the display shrinkwrap re-projects onto the evaluated body, so the object kept reporting healthy — exists, one spline, `hide_get()` False, `evalverts` 12096 — through every press. Three probes checking existence/visibility/evaluated-geometry all came back clean. Only measuring the SIGNED DISTANCE of the controls to the evaluated body exposed it. When something visibly vanishes and the state flags look fine, measure geometry against the reference surface, not object flags. Same class as LM-0001.
+Reusable feature: `_keep_trimline_visible` (assert only the edited object's own visibility plus a return from BRACE preview — narrower than `_set_design_view(context, "TRIM")`, which hides everything else and is too blunt mid-edit); trimsmoothtest phase 6 (deforming lattice on the scan, each mode pressed TWICE consecutively, adherence + inside-count + drawn-state after every press).
+Template update needed: no.
+Test case needed: yes — done, trimsmoothtest.py phase 6; verified red before the fix (5 gates) and green after (28/28).
+Risk: low — 28/28 feature gates plus the six-suite regression green.
+Confidence: high; every number above is measured this session (tools/trimmoddbg.py, tools/trimvisdbg.py).
+Next action: user hands-on check in the real UI after restarting Blender; #41/#42 unchanged.
