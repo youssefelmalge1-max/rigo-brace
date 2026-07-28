@@ -1141,3 +1141,68 @@ Candidate fixes, in order of the evidence:
 Not attempted here. The transactional Apply & Verify contract remains required regardless:
 it is what keeps these 8-of-21 failures away from the orthotist, and it is a safety layer, not
 a workaround for this defect.
+
+#### #46 — post-rim repair prototype: EVIDENCE ONLY, does NOT converge
+
+Order A (production: wall repair -> rim -> validate) versus order B/C (add full-shell
+detection and local post-rim repair, bounded). The pre-rim outer-wall repair was NOT removed.
+`tools/postrimrepairdbg.py`, failing arc (17,21) against passing arc (24,30), identical
+settings and source geometry.
+
+**Baseline, full-shell detection over the finished shell:**
+
+| case | intersections | classes | health |
+|---|---|---|---|
+| (17,21) FAIL | 6 | `inner vs inner+rim` 4, `outer vs outer+rim` 2 | watertight, 0 degenerate, min wall 4.0000 mm |
+| (24,30) PASS | 0 | — | watertight, 0 degenerate, min wall 4.0000 mm |
+
+Note the detector sees **outer-vs-rim collisions too**, not only inner — so a post-rim detector
+must cover every provenance combination, as required.
+
+**Upstream is clean.** Inner wall alone 0 self-intersections; outer wall alone 0;
+inner+outer together, no rim, 0. The rim fan introduces all six.
+
+**DISCRIMINATING CONDITION FOUND.** `_stable_outward_directions` decides frame orientation by
+a GLOBAL majority vote and, by its own docstring, deliberately prevents any single vertex from
+inverting its own frame. Per-station local votes:
+
+| case | stations whose frame points INTO the surface |
+|---|---|
+| (17,21) FAIL | **1 / 2232 — station 26116, vote +0.1514**, itself implicated in the overlaps |
+| (24,30) PASS | **0 / 2234** |
+
+That station builds its fan bulging into the wall, so its first quad folds over the adjacent
+wall triangle. Related: exactly 1/2232 first-fan-points sits BELOW the inner wall in the
+failing case (station 25200, -0.07134 mm) against 0/2234 passing — a neighbouring consequence
+of the same inverted frame.
+
+**FOUR REPAIRS TRIED, ALL FALSIFIED:**
+
+| repair | effect on geometry | intersections |
+|---|---|---|
+| shrink per-station radius x0.6 at implicated stations + neighbours | 98 rim vertices moved, max 0.312 mm, delivered max 0.551 -> 0.502 mm | **6 -> 6, byte-identical set** |
+| lift fan points to 0.05 mm clear of the inner wall | 4 points lifted, max 0.546 mm | **6 -> 6** |
+| bounded fixed point (order C) on either of the above | — | stops on "no progress" at pass 1 |
+| flip the frame at the disagreeing station only | — | **6 -> 12 -> 16, and 18-20 DEGENERATE triangles** |
+
+The radius and clearance repairs fail because `_rim_profile` starts the cap TANGENT to the
+wall and tangency is radius-independent. The frame flip fails because the frame must stay
+CONTINUOUS along the ring: inverting one station tears the fan strip against its neighbours.
+
+In every prototype run the inner and outer walls moved **exactly 0.000000000 mm** and the
+clearance was never touched, so the repair rule's safety property held - it simply did not
+work.
+
+**Conclusion: order B/C as specified does not resolve this defect.** A post-rim detect/repair
+loop is necessary but not sufficient; the defect is in how the rim frame is DERIVED, and the
+correct fix must produce a locally correct frame that is still continuous along the ring
+(for example by propagating orientation along the ring with local re-derivation, rather than
+one global vote plus a post-hoc flip). That is a change to `_stable_outward_directions`, not a
+repair pass, and it is not attempted here.
+
+Per the stated contract, the product answer meanwhile is the transactional one: Apply & Verify
+rejects, restores bit-exactly and keeps the last valid brace. That is already shipped and is
+what the failing 8 of 21 arc cells hit today.
+
+No production change was made, so the full 25-cell + fixture + QA battery was NOT run - there
+is nothing new to validate. #47 unchanged; the rim-radius ceiling was not touched.
