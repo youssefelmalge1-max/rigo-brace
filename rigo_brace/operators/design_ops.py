@@ -386,8 +386,16 @@ def _set_design_view(context, mode):
     if mode == "BRACE":
         if brace is None:
             return False
+        # One authoritative boundary. The build overlay is a DERIVED path: it
+        # is the cutter's own samples lifted clear of the wall, so drawing it
+        # alongside the shell whose edge already IS the trimline puts two
+        # visibly separate boundaries in front of the orthotist (measured
+        # 1.17-2.06 mm off the wall at 4 mm thickness). It is therefore
+        # diagnostic, and needs the explicit non-clinical opt-in as well as
+        # its own toggle.
         show_build_curve = (
             brace.get("rigo_build_method") == "CURVE_EXACT"
+            and settings.diagnostic_overlays
             and settings.show_trim_overlay
         )
         visible = {brace}

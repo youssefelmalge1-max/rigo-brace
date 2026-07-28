@@ -1055,12 +1055,25 @@ class RigoBraceSettings(PropertyGroup):
         default="TRIM",
         options={"HIDDEN"},
     )
-    show_trim_overlay: BoolProperty(
-        name="Trimline Overlay",
+    diagnostic_overlays: BoolProperty(
+        name="Diagnostic Overlays (non-clinical)",
         description=(
-            "Show the built trimline path as a thin line floating clearly "
-            "above the generated brace; off in normal use, the shell edge "
-            "itself is the trimline"
+            "Allow derived construction paths to be drawn for inspection. "
+            "OFF in all clinical use: the orthotist must see exactly one "
+            "authoritative trimline, the boundary where the brace will end. "
+            "Turning this on can draw a second, visibly separate line"
+        ),
+        default=False,
+        update=_update_trim_overlay,
+    )
+    show_trim_overlay: BoolProperty(
+        name="Built Trimline Path",
+        description=(
+            "Diagnostic only, and requires Diagnostic Overlays. Draws the "
+            "cutter's own path as a thin line floating above the generated "
+            "brace. In normal use the shell edge IS the trimline, and this "
+            "line would sit clear of it as a second boundary (measured 1.17-"
+            "2.06 mm off the wall at 4 mm thickness)"
         ),
         default=False,
         update=_update_trim_overlay,

@@ -1033,12 +1033,27 @@ def _run():
             default_view == ["Rigo Corset"],
             str(default_view),
         )
+        # Contract change (owner, 2026-07-28): only ONE authoritative boundary
+        # may be drawn. The build overlay is a DERIVED path lifted clear of the
+        # wall, so alongside the shell - whose edge already is the trimline -
+        # it reads as a second, visibly separate boundary. It is now diagnostic
+        # and needs the explicit non-clinical opt-in, so the overlay toggle
+        # alone must change nothing.
         settings.show_trim_overlay = True
-        overlay_on = _visible_names()
-        lines.append(f"  BRACE view overlay ON: {overlay_on}")
+        clinical = _visible_names()
+        lines.append(f"  BRACE view overlay toggled, diagnostics OFF: {clinical}")
         _gate(
             1,
-            "brace_view_overlay_on",
+            "overlay_toggle_alone_draws_nothing",
+            clinical == ["Rigo Corset"],
+            str(clinical),
+        )
+        settings.diagnostic_overlays = True
+        overlay_on = _visible_names()
+        lines.append(f"  BRACE view overlay ON (diagnostics engaged): {overlay_on}")
+        _gate(
+            1,
+            "brace_view_overlay_on_under_diagnostics",
             overlay_on == ["Rigo Build Trim Perimeter", "Rigo Corset"],
             str(overlay_on),
         )
@@ -1095,6 +1110,15 @@ def _run():
                 built[1] <= 0.002,
                 f"{built[1]*1000:.3f}",
             )
+        settings.diagnostic_overlays = False
+        withdrawn = _visible_names()
+        lines.append(f"  diagnostic opt-in withdrawn: {withdrawn}")
+        _gate(
+            1,
+            "withdrawing_diagnostics_returns_clean",
+            withdrawn == ["Rigo Corset"],
+            str(withdrawn),
+        )
         settings.show_trim_overlay = False
         overlay_off = _visible_names()
         lines.append(f"  BRACE view overlay back OFF: {overlay_off}")
