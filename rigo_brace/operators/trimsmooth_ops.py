@@ -366,18 +366,24 @@ class RIGO_OT_smooth_trimline(Operator):
                     "unless they are inside the arc you selected",
     )
     adaptive_refine: BoolProperty(
-        name="Refine On Apply", default=True,
-        description="Add exact-subdivision controls locally ONLY when the "
-                    "measured refit error exceeds the tolerance",
+        name="Refine On Apply", default=False,
+        description="Add exact-subdivision controls locally when the measured "
+                    "refit error exceeds the tolerance. OFF by default: any "
+                    "surface-following path costs ~4 mm of refit error at 42 "
+                    "controls (issue #41), so leaving this on would refine on "
+                    "every press and immediately exhaust the 168 limit. Turn "
+                    "it on deliberately when you want that extra fidelity",
     )
     refine_tolerance: FloatProperty(
-        name="Refit Tolerance (mm)", default=0.5, min=0.1, max=10.0,
+        name="Refit Tolerance (mm)", default=5.0, min=0.1, max=10.0,
         description="Refine only when the rebuilt curve strays further than "
                     "this from the accepted path. Depth re-imposition makes "
                     "the accepted path hug the body between stations, and the "
-                    "measured cost of carrying that at 42 controls is ~4 mm - "
-                    "so tolerances above that deliberately accept the "
-                    "inter-station sagitta instead of refining (issue #41)",
+                    "measured cost of carrying that at 42 controls is ~4 mm. "
+                    "The default sits ABOVE that floor so ordinary smoothing "
+                    "does NOT change the control count; lower it below ~4 mm "
+                    "only when you want the extra fidelity and accept the "
+                    "denser trimline (issue #41)",
     )
     arc_start: IntProperty(default=-1, options={"HIDDEN"})
     arc_end: IntProperty(default=-1, options={"HIDDEN"})
