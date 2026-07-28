@@ -933,3 +933,49 @@ Confidence: high - every figure above is a measurement from this session.
 Next action: the offset-mold self-intersection (#37) is the shared constraint behind P2's
 rejected variants, the 84-control ceiling, the projection-sigma ceiling and now the
 rejected band constraint. Nothing upstream of it can improve further until it is fixed.
+
+## Lesson ID: LM-0038
+Date: 2026-07-28
+Source: the Smooth/Straighten Trimline feature (d25490c) and the two measured
+dead-ends that preceded it (station fairing, projection-sigma raise).
+Observation: the user-visible "wavy trimline needing manual cleanup" survived
+two plausible automatic fixes, both killed by measurement before build:
+station scatter showed ZERO correlation with scan curvature (r=-0.104) and
+triangle size (r=+0.135) with oscillation wavelength 3.3x the station spacing
+- i.e. anatomy, not noise; and the sigma sweep showed sigma=1.0 already at the
+fidelity optimum (deviation rises in BOTH directions from it), with the exact
+cut re-introducing ~22 points of sign alternation regardless of how clean its
+input was. The correct product answer was the one the user then specified:
+interactive clinical CONTROL (Meshmixer Smooth Boundary analog), not a better
+default.
+Underlying principle: when successive automatic fixes each move the defect's
+apparent location, the requirement may be authorial intent, not automation.
+Measure whether the input is actually noisy before smoothing it - a fair curve
+through anatomy looks identical to noise in a screenshot but has opposite
+correlation statistics.
+Blender/geometry lessons paid for this feature:
+ - a windowed blend needs MILLIMETRE ramps; ramping over one station index
+   made ramp width track local spacing and produced 154-degree path kinks.
+ - depth re-imposition must run at FULL weight on every edited sample;
+   weight-scaled redepth left partially-corrected depth (-0.8mm) in ramps.
+ - after adaptive refinement renumbers controls, pin contracts must be
+   checked by POSITION SURVIVAL, not index (a pure renumbering read as a
+   162mm "drift").
+ - ed.undo from a timer needs window+area+region override AND an undo_push
+   boundary AFTER the edit, or it overshoots to the initial file state.
+ - a refit-error gate must be SELF-CALIBRATING: two hand-guessed "loose"
+   tolerances were both below the edit's true error (9.5mm, 3.9mm), making
+   correct refinement look like a gate failure. The 3.9mm floor of any
+   depth-following edit at 42 controls IS issue #41's inter-station sagitta,
+   now visible as a number in the tool's own report.
+Clinical implication: the orthotist can now straighten the anterior opening
+(bow max 8.54 -> 2.34mm) and fair arcs deliberately, with landmarks pinned,
+edits local, undo bit-exact, and every result buildable (0 intersections at
+both 42 and 168 controls).
+Reusable feature: trimsmooth_ops kernels + adaptive refit-gated refinement;
+trimsmoothtest's self-calibrating tolerance gate pattern.
+Risk: low - 17/17 feature gates plus six-suite regression green.
+Confidence: high; every claim above is a number from this session.
+Next action: user hands-on check in the real UI; #41/#42 unchanged (the 3.9mm
+refit floor drops out automatically once the trimline follows the persistent
+inner surface).
