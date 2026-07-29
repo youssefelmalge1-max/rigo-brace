@@ -1008,17 +1008,33 @@ class RIGO_OT_region_update(Operator):
 
 
 class RIGO_OT_region_style_save(Operator):
-    """Save a committed correction mask as a reusable surface-local style"""
+    """Save the committed correction as a reusable style.
+
+    Stores the footprint outline and the continuous displacement-field grid
+    in a surface-local frame, plus the Amount (mm), Feather and Falloff, the
+    Pressure/Expansion kind and the surface orientation (schema v2), so the
+    style can be re-applied on any compatible body surface.
+    Saving with an existing name updates that style"""
 
     bl_idname = "rigo.region_style_save"
-    bl_label = "Save Committed Style"
+    bl_label = "Save as Reusable Style"
     bl_options = {"REGISTER"}
 
     style_name: StringProperty(name="Style Name", default="My Correction Style")
 
     @classmethod
     def poll(cls, context):
-        return _active_region(_scan(context)) is not None
+        scan = _scan(context)
+        region = _active_region(scan)
+        if region is None:
+            cls.poll_message_set("Create or import a correction region first")
+            return False
+        if not scan.get(_committed_key(region), False):
+            cls.poll_message_set(
+                "Commit the region before saving it as a reusable style"
+            )
+            return False
+        return True
 
     def invoke(self, context, _event):
         return context.window_manager.invoke_props_dialog(self)
@@ -1063,8 +1079,18 @@ class RIGO_OT_region_style_save(Operator):
             snapshot["field"] = _field_from_samples(
                 snapshot["samples"], spacing
             )
+        # Saving under an existing name UPDATES that style (documented in the
+        # tooltip); a new name registers a new library entry.
+        existing = next(
+            (
+                e for e in region_library.load_library()
+                if e.get("label") == label
+            ),
+            None,
+        )
         entry = {
-            "id": region_library.identifier_from_label(label),
+            "id": existing["id"] if existing
+            else region_library.identifier_from_label(label),
             "label": label,
             "kind": region.kind,
             "magnitude_mm": region.magnitude_mm,
@@ -1078,7 +1104,10 @@ class RIGO_OT_region_style_save(Operator):
         }
         region_library.upsert_entry(entry)
         context.scene.rigo_brace.region_style = entry["id"]
-        self.report({"INFO"}, f"Saved style '{label}' for reuse on other scans")
+        verb = "Updated" if existing else "Saved"
+        self.report(
+            {"INFO"}, f"{verb} style '{label}' for reuse on other scans"
+        )
         return {"FINISHED"}
 
 
@@ -1088,6 +1117,17 @@ class RIGO_OT_region_style_import(Operator):
     bl_idname = "rigo.region_style_import"
     bl_label = "Import Style at Cursor"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if _scan(context) is None:
+            cls.poll_message_set("Import and prepare a scan first")
+            return False
+        settings = context.scene.rigo_brace
+        if region_library.get_entry(settings.region_style) is None:
+            cls.poll_message_set("Save or select a reusable style first")
+            return False
+        return True
 
     def execute(self, context):
         scan = _scan(context)
@@ -1158,6 +1198,14 @@ class RIGO_OT_region_style_delete(Operator):
     bl_idname = "rigo.region_style_delete"
     bl_label = "Delete Saved Style"
     bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        settings = context.scene.rigo_brace
+        if region_library.get_entry(settings.region_style) is None:
+            cls.poll_message_set("Save or select a reusable style first")
+            return False
+        return True
 
     def execute(self, context):
         identifier = context.scene.rigo_brace.region_style

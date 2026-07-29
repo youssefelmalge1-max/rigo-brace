@@ -457,11 +457,13 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     settings = bpy.context.scene.rigo_brace
     settings.region_style = style_id
     bpy.context.scene.cursor.location = cursor_world
+    t0 = time.perf_counter()
     try:
         st = bpy.ops.rigo.region_style_import()
     except RuntimeError as exc:
         _gate(f"{tag}.import", False, f"raised {exc}")
         return None
+    t_import = time.perf_counter() - t0
     if st != {"FINISHED"}:
         _gate(f"{tag}.import", False, f"returned {st}")
         return None
@@ -472,8 +474,11 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     nonman0 = _nonmanifold(obj)
     before, before_n, before_fn = _snapshot(obj)
     t0 = time.perf_counter()
-    bpy.ops.rigo.region_apply()
-    dt = time.perf_counter() - t0
+    st_apply = bpy.ops.rigo.region_apply()
+    t_commit = time.perf_counter() - t0
+    if st_apply != {"FINISHED"}:
+        _gate(f"{tag}.commit", False, f"returned {st_apply}")
+        return None
     sign = -1.0 if region.kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
                  region.magnitude_mm, sign, nonman0)
@@ -481,7 +486,10 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     _gate_vaf(tag, m, amount, feather_for_gate, h, skip_amount=not core_required)
     if parity_ref is not None:
         _gate_parity(tag, parity_ref, m)
-    _mark(f"[{tag}] commit_time={dt:.2f}s")
+    m["op_time"] = t_import + t_commit
+    _mark(
+        f"[{tag}] import_time={t_import:.3f}s commit_time={t_commit:.3f}s"
+    )
     return m
 
 
@@ -708,11 +716,13 @@ def _run():
         _delete(obj)
 
         obj = _import_scan(_PATIENT)
-        t0 = time.perf_counter()
         m = _run_import("patient_import_front", obj, state["style_patient"],
                         front_cursor, 15.0, 30.0, parity_ref=m_front)
-        dt = time.perf_counter() - t0
-        _gate("perf", dt <= 2.0, f"import+commit={dt:.2f}s on patient scan")
+        # Contract 9 times the PRODUCT operators (import + commit), not the
+        # test harness's own bmesh/BVH measurement passes around them.
+        op_time = m["op_time"] if m else 99.0
+        _gate("perf", op_time <= 2.0,
+              f"import+commit ops={op_time:.2f}s on patient scan")
         _delete(obj)
 
         # cross-scan import (style authored on Brace Sample)

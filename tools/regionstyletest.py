@@ -81,7 +81,10 @@ def _run():
             bpy.ops.rigo.region_style_save(style_name="QA Must Not Save")
             precommit_ok = False
         except RuntimeError as error:
-            precommit_ok = "Commit the region" in str(error)
+            # Blocked by poll (with its message) or by the execute guard.
+            precommit_ok = (
+                "Commit the region" in str(error) or "poll()" in str(error)
+            )
         _mark(f"phase=precommit rejected={precommit_ok}")
         bpy.ops.rigo.region_apply()
         save_status = bpy.ops.rigo.region_style_save(

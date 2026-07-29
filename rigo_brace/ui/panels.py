@@ -280,14 +280,8 @@ def _draw_guided_box(layout, context):
     col = box.column(align=True)
     col.prop(settings, "region_radius")
     col.operator("rigo.region_add_circle", text="Ready Circular Region", icon="MESH_CIRCLE")
-    box.separator()
-    box.label(text="Reusable Correction Styles", icon="ASSET_MANAGER")
-    box.prop(settings, "region_style", text="")
-    row = box.row(align=True)
-    row.operator("rigo.region_style_import", text="Import at Cursor", icon="IMPORT")
-    row.operator("rigo.region_style_delete", text="", icon="TRASH")
-
     if obj.rigo_regions:
+        box.separator()
         box.template_list(
             "RIGO_UL_regions", "", obj, "rigo_regions",
             obj, "rigo_region_index", rows=2,
@@ -306,10 +300,27 @@ def _draw_guided_box(layout, context):
         row.operator("rigo.region_apply", text="Commit", icon="CHECKMARK")
         row.operator("rigo.region_mirror", text="Mirror", icon="MOD_MIRROR")
         row.operator("rigo.region_remove", text="", icon="TRASH")
-        box.operator(
-            "rigo.region_style_save", text="Save Committed Style…", icon="FILE_TICK"
-        )
         box.label(text="Preview follows local body-surface normals.", icon="INFO")
+
+    # Reusable style library — the save action is ALWAYS visible; when it is
+    # unavailable the button is disabled (hover shows why) and the label below
+    # states the missing step, so the workflow never silently disappears.
+    lib = layout.box()
+    lib.label(text="Reusable Correction Styles", icon="ASSET_MANAGER")
+    lib.operator(
+        "rigo.region_style_save", text="Save as Reusable Style…", icon="FILE_TICK"
+    )
+    active = None
+    if obj.rigo_regions and 0 <= obj.rigo_region_index < len(obj.rigo_regions):
+        active = obj.rigo_regions[obj.rigo_region_index]
+    if active is None:
+        lib.label(text="Create or import a region to save it", icon="INFO")
+    elif not obj.get(f"rigo_committed_{active.surface_mask}", False):
+        lib.label(text="Commit the region to enable saving", icon="INFO")
+    lib.prop(settings, "region_style", text="")
+    row = lib.row(align=True)
+    row.operator("rigo.region_style_import", text="Import at Cursor", icon="IMPORT")
+    row.operator("rigo.region_style_delete", text="", icon="TRASH")
 
 
 def _draw_mesh(layout, context):

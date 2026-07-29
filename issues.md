@@ -1231,3 +1231,26 @@ correctness, determinism, ≤ 2 s). `regiontest`/`regionstyletest`/`selftest` PA
 Limitation: physically infeasible requests (e.g. 15 mm onto the creased armpit noise of
 the sample scan, or 15+15 mm stacked into a ~60 mm-radius body) are REFUSED with an
 actionable message; the scan is restored bit-exactly and the live preview kept.
+
+#### #48 addendum — the library save workflow was invisible/unclear in the panel
+
+User-reported: no discoverable way to save a correction into Reusable Correction Styles.
+Measured in the panel code: the save button only rendered when a region existed (silently
+absent otherwise), sat outside the "Reusable Correction Styles" section under the label
+"Save Committed Style…", was clickable pre-commit only to error, and re-saving a name
+silently created "NAME_2" instead of updating.
+
+Fix: the library box now always shows "Save as Reusable Style…" (disabled states carry a
+hover reason via poll_message_set plus an inline label: "Create or import a region to
+save it" / "Commit the region to enable saving"); the tooltip documents what is stored
+(footprint outline, displacement-field grid, Amount mm, Feather/Falloff, kind,
+orientation, schema v2); saving an existing name updates that style; Import/Delete are
+poll-gated with reasons. Clinical flow: paint or place → adjust Amount/Feather/Falloff →
+Create Live Region / Ready Circular Region → Commit → Save as Reusable Style… (name in
+the dialog) → pick in the dropdown → Import at Cursor → trash icon deletes.
+
+UI regression test: `tools/regionuitest.py` drives the real `_draw_guided_box` with a
+recording layout at each workflow state (control emitted + poll state + reason labels)
+and walks create → commit → save → list → update-by-same-name → import → delete through
+the panel's operators. PASS; regionqualtest/regiontest/regionstyletest/selftest PASS
+(perf gate now times the import+commit operators themselves: 0.65 s on the patient scan).
