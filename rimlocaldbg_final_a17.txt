@@ -1,0 +1,29 @@
+CASE a17 arc=(17, 21) [final]  fillet requested=1.00mm segments=8 thickness=4.00mm offset=3.00mm
+  Candidate A in build: True
+  STAGE cut: OK, cut-boundary loop n=2232
+  cut boundary: n=2232 turn_radius min=0.816 p01=5.330mm; turn_angle p99=10.13 max=50.36deg; stations with turn_radius < ceiling=0
+  STAGE shell: built, paired_source_vertices=26123
+  STAGE validate: Trim rim cannot be built safely (3 local rim overlap(s)). Undo the last trim edit or reduce Trim Fillet Radius
+  FIRST CLEAN-TO-INVALID STAGE: validate (shell built, then rejected)
+  triangle_intersection_pairs called 7 times, pair counts per call: [0, 1, 0, 0, 0, 0, 3]
+  FINAL (validation) intersecting triangle pairs: 3
+  offending pair classes:
+      inner vs inner+rim                 3
+
+  OVERLAP 1: tri47912 x tri123160
+      A inner            verts=(16293, 24747, 24746) centroid=(0.16167,0.04405,0.31792)
+      B inner+rim        verts=(24746, 26116, 57860)
+      face-normal angle=16.86deg  centroid gap=1.3366mm
+      nearest cut-boundary station 1326/2232 at 1.183mm: spacing=1.047mm turn_radius=22.935mm turn_angle=2.62deg rim_ceiling=0.367mm
+
+  OVERLAP 2: tri47912 x tri134440
+      A inner            verts=(16293, 24747, 24746) centroid=(0.16167,0.04405,0.31792)
+      B inner+rim        verts=(26116, 25200, 57853)
+      face-normal angle=16.90deg  centroid gap=2.5617mm
+      nearest cut-boundary station 1326/2232 at 1.183mm: spacing=1.047mm turn_radius=22.935mm turn_angle=2.62deg rim_ceiling=0.367mm
+
+  OVERLAP 3: tri47912 x tri134441
+      A inner            verts=(16293, 24747, 24746) centroid=(0.16167,0.04405,0.31792)
+      B inner+rim        verts=(26116, 57853, 57860)
+      face-normal angle=16.86deg  centroid gap=2.1578mm
+      nearest cut-boundary station 1326/2232 at 1.183mm: spacing=1.047mm turn_radius=22.935mm turn_angle=2.62deg rim_ceiling=0.367mm

@@ -1,0 +1,52 @@
+CASE a17 arc=(17, 21) [vote] fillet requested=1.00mm segments=8 thickness=4.00mm
+  MAX_PASSES=6 SHRINK=0.6 NEIGHBOUR_SPAN=2
+
+  ORDER A (production: wall repair -> rim -> validate)
+     intersections=6
+     classes={'inner vs inner+rim': 4, 'outer vs outer+rim': 2}
+     health={'faces': 117762, 'triangles': 135736, 'degenerate_triangles': 0, 'min_triangle_area_mm2': 0.0033878141706367537, 'boundary_edges': 0, 'nonmanifold_edges': 0, 'watertight': True}
+     delivered fillet max=0.5511mm mean=0.3536mm
+     min wall thickness=4.0000mm
+
+  UPSTREAM CHECK (are the walls self-intersecting before the rim exists?)
+     inner wall alone: 0 self-intersections
+     outer wall alone: 0 self-intersections
+     inner+outer together (no rim): 0 intersections
+
+  FRAME DIRECTION CHECK
+     ring length=2232 neighbour-to-neighbour outward sign flips=0
+     stations whose outward is NOT perpendicular to the wall (|dot| > 0.30): 0
+
+  TANGENT-START vs WALL CONCAVITY
+     first fan point vs inner wall: min=-0.07134mm p01=+0.03211mm median=+0.04854mm max=+0.12901mm; BELOW the wall=1/2232
+        implicated station 24499: +0.04988mm
+        implicated station 24500: +0.05371mm
+        implicated station 24501: +0.05186mm
+        implicated station 24746: +0.01862mm
+        implicated station 25200: -0.07134mm
+        implicated station 26116: +0.08267mm
+
+  PER-STATION FRAME VOTE (positive = outward points INTO the surface)
+     stations whose frame points INTO the surface: 1/2232
+        station 26116: vote=+0.1514 <-- IMPLICATED
+
+  ORDER B/C (post-rim detect + local repair)
+     PASS 0: intersections=6 classes={'inner vs inner+rim': 4, 'outer vs outer+rim': 2}
+        stations implicated=[24499, 24500, 24501, 24746, 25200, 26116] recurring vertices=[(24746, 4), (16293, 3), (24747, 3), (26116, 3), (50622, 3), (57860, 2)]
+        repaired stations=6 lifted points=4 max lift=0.54629mm
+        delivered fillet max=0.5511mm mean=0.3536mm  min wall=4.0000mm
+        health={'faces': 117762, 'triangles': 135736, 'degenerate_triangles': 0, 'min_triangle_area_mm2': 0.0033878141706367537, 'boundary_edges': 0, 'nonmanifold_edges': 0, 'watertight': True}
+     PASS 1: intersections=6 classes={'inner vs inner+rim': 4, 'outer vs outer+rim': 2}
+        stations implicated=[24499, 24500, 24501, 24746, 25200, 26116] recurring vertices=[(24746, 4), (26116, 4), (24747, 3), (57860, 3), (50622, 3), (16293, 2)]
+        repaired stations=0 lifted points=0 max lift=0.00000mm
+        delivered fillet max=0.5511mm mean=0.3536mm  min wall=4.0000mm
+        health={'faces': 117762, 'triangles': 135736, 'degenerate_triangles': 0, 'min_triangle_area_mm2': 0.0033878141706367537, 'boundary_edges': 0, 'nonmanifold_edges': 0, 'watertight': True}
+        STOPPED: no progress
+
+  A -> B GEOMETRY DELTA
+     {'moved_vertices': 4, 'inner_max_mm': 0.0, 'inner_rms_mm': 0.0, 'outer_max_mm': 0.0, 'rim_max_mm': 0.5462873650819658, 'rim_rms_mm': 0.004483988145795197, 'vertex_count_before': 67870, 'vertex_count_after': 67870}
+     PATIENT-CONTACT INNER WALL MOVED: False (max 0.000000000mm)
+     OUTER WALL MOVED: False (max 0.000000000mm)
+     stations whose delivered radius was reduced=0/2232
+
+  RESULT: order A intersections=6 -> order B/C intersections=6 in 2 pass(es)

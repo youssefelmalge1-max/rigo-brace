@@ -1,0 +1,11 @@
+========================================================================
+CASE: Rigo Smooth modifier on the scan
+========================================================================
+  scan modifiers: ['SMOOTH']
+  [before Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +1.500mm max=   +1.500mm inside=0/42
+      DRAWN line    : min=   +1.495mm max=   +1.500mm inside=0/1728 (0.0%)
+  control displacement from ONE Smooth All: max=6.08mm mean=1.07mm
+  [after Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +0.228mm max=   +6.171mm inside=0/42
+      DRAWN line    : min=   +1.495mm max=   +1.500mm inside=0/1728 (0.0%)

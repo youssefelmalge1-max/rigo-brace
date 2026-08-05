@@ -1,0 +1,14 @@
+paint_result={'FINISHED'}
+brush_green=True brush_white=True size_ok=True
+mask_attribute=RIGO_CUSTOM_TRIM_MASK black_selected=True painted_vertices=23920
+mask_kernel_ok=True
+custom_result={'FINISHED'} controls=84 surface_error_mm=0.000560
+control_turn_max_deg=51.416165 mean_deg=17.518113
+control_turn_index=9 coordinate=(0.154641, 0.010055, 0.132168)
+sampled_turn_max_deg=10.540363 mean_deg=2.803328
+uv_polygon_crossings=0
+coverage_deg=344.722770
+mask_inside_iou=0.994128 predicted_vertices=23963
+generate_result={'CANCELLED'} boundary=999 nonmanifold=999 components=999 error='Error: Trim rim cannot be built safely (0 open and 2 non-manifold edge(s)). Undo the last trim edit or reduce Trim Fillet Radius; the last valid brace was retained.\n'
+source_vertices=0 mask_precision=0.000000 painted_coverage=0.000000
+PASS=False

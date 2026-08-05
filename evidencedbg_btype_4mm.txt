@@ -1,0 +1,14 @@
+case=btype param=4mm
+path=TEMPLATE trimline on the B-type scan
+trimline controls=42
+generate={'CANCELLED'}
+  error=Error: Trim rim cannot be built safely (0 open and 3 non-manifold edge(s)). Undo the last trim edit or reduce Trim Fillet Radius; the last valid brace
+
+stage                     selfX    verts     tris
+0 offset mold (uncut)         7    44859    89718
+2 keep-interior               0    25079    45375
+3 weld slivers                7    24583    44938
+
+first stage clean -> invalid: 0 offset mold (uncut)
+final-validator overlap classes: none
+reproduces historical failure: YES

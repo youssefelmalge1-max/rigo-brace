@@ -1,0 +1,6 @@
+CASE painted [clean]  requested fillet=1.00mm segments=8 thickness=4.00mm
+  Candidate A present in build: False
+  painted vertices=23920 create={'FINISHED'} controls=84
+  GENERATE built=False error='Error: Trim rim cannot be built safely (0 open and 2 non-manifold edge(s)). Undo'
+  brace=NO BRACE stats={}
+  APPLY -> {'CANCELLED'} 'Error: Trimline edit REJECTED at rim construction: Trim rim cannot be built safely (0 open and 2 non-manifold '

@@ -1,0 +1,32 @@
+projection sigma_mm=0.50 feature_turn_mm=4.00 max_shift_mm=0.400
+generate={'FINISHED'} error=''
+SAFETY: intersections=0 zero_area=0 verts=68023 trim_p95_mm=0.0184 trim_max_mm=2.8447 radius_mean_mm=0.351
+clinical curve samples=2016 projected=2016
+
+1 CLINICAL CURVE (self): n=2016 turn_deg p50=0.564 p95=1.923 max=4.648
+2 PROJECTION onto mold (vs clinical curve): n=2016 |offset|mm p50=0.0077 p95=0.0616 p99=0.1430 max=0.9153
+    neighbour_step_mm p95=0.0528 max=1.0514 | sign_flips=604 (30.0% of points)
+    turn_deg p50=1.03 p95=5.21 max=52.13 | HF_oscillation_rms_mm=0.0312
+    SMOOTH REGIONS ONLY (turnR>5mm, n=1999): turn_p95=4.81deg dev_p95=0.0576mm dev_max=0.9153mm
+
+reference for stages 3-6 = the projected curve
+3 EXACT CUT boundary   : n=3616 |offset|mm p50=0.0000 p95=0.0188 p99=0.0460 max=1.9642
+    neighbour_step_mm p95=0.0246 max=1.2465 | sign_flips=617 (17.1% of points)
+    turn_deg p50=1.03 p95=5.24 max=99.36 | HF_oscillation_rms_mm=0.0274
+    SMOOTH REGIONS ONLY (turnR>5mm, n=3360): turn_p95=3.51deg dev_p95=0.0168mm dev_max=0.2459mm
+4 UNIFORM RESAMPLE     : n=2249 |offset|mm p50=0.0007 p95=0.0189 p99=0.0640 max=1.9642
+    neighbour_step_mm p95=0.0253 max=1.2029 | sign_flips=548 (24.4% of points)
+    turn_deg p50=0.93 p95=4.68 max=92.34 | HF_oscillation_rms_mm=0.0309
+    SMOOTH REGIONS ONLY (turnR>5mm, n=2229): turn_p95=4.31deg dev_p95=0.0169mm dev_max=1.7836mm
+5a AFTER RELAXATION    : n=2249 |offset|mm p50=0.0011 p95=0.0182 p99=0.0645 max=1.9642
+    neighbour_step_mm p95=0.0269 max=1.2029 | sign_flips=818 (36.4% of points)
+    turn_deg p50=0.95 p95=4.50 max=92.20 | HF_oscillation_rms_mm=0.0314
+    SMOOTH REGIONS ONLY (turnR>5mm, n=2229): turn_p95=4.18deg dev_p95=0.0171mm dev_max=1.7801mm
+5b AFTER CUSP PASS     : n=2249 |offset|mm p50=0.0011 p95=0.0182 p99=0.0648 max=1.7910
+    neighbour_step_mm p95=0.0269 max=0.6492 | sign_flips=816 (36.3% of points)
+    turn_deg p50=0.96 p95=4.63 max=50.29 | HF_oscillation_rms_mm=0.0252
+    SMOOTH REGIONS ONLY (turnR>5mm, n=2226): turn_p95=4.20deg dev_p95=0.0169mm dev_max=1.7430mm
+6 FINAL boundary       : n=2249 |offset|mm p50=0.0011 p95=0.0182 p99=0.0648 max=1.7910
+    neighbour_step_mm p95=0.0269 max=0.6492 | sign_flips=816 (36.3% of points)
+    turn_deg p50=0.96 p95=4.63 max=50.29 | HF_oscillation_rms_mm=0.0252
+    SMOOTH REGIONS ONLY (turnR>5mm, n=2226): turn_p95=4.20deg dev_p95=0.0169mm dev_max=1.7430mm

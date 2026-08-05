@@ -1,0 +1,12 @@
+CASE sa17 [canda]  requested fillet=1.00mm segments=8 thickness=4.00mm
+  Candidate A present in build: True
+  BASELINE generate built=True error=''
+  BASELINE brace=67836v/117726f
+  BASELINE fillet requested=1.000mm delivered max=0.502 mean=0.354 min=0.189mm
+  BASELINE rim_overlaps=0
+  BASELINE brace boundary spacing=None
+  EDIT SMOOTH_ARC (17, 21) error=''
+  APPLY -> {'CANCELLED'} state=UNVERIFIED
+  APPLY message='Error: Trimline edit REJECTED at rim construction: Trim rim cannot be built safely (3 local rim overlap(s)). U'
+  ROLLBACK bit-exact=True
+  brace after=67836v/117726f untouched=True

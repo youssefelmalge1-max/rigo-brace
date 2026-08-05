@@ -1,0 +1,7 @@
+variant=baseline
+  controls=42 spacing 24.5-132.3mm (5.4x)
+  junction_ratio=9.70 (jump 54.5 / base 5.62)
+  display-vs-raw p95=2.389 max=11.768mm corner_drift=0.0000mm self_gap=23.29mm turn p95=2.32 max=6.37deg
+  generate={'FINISHED'} 
+  corset: verts=68067 intersections=0 zero_area=0 trim p95=0.0293 max=2.5715mm fillet=0.350mm
+  DISPLAY vs BUILT total p95=4.500 max=4.539mm | tangential p95=0.094 max=0.570mm

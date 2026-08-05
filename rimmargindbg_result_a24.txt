@@ -1,0 +1,6 @@
+requested fillet radius=1.00mm segments=8 thickness=4.00mm
+  SMOOTH_ARC (24, 30)
+     boundary n=2234  spacing mm min=0.367 p05=0.776 median=1.040 max=1.479
+     rim ceiling (0.35 x spacing) vs requested 1.00mm: headroom min=-0.872mm p05=-0.729mm; stations BELOW the request=2234/2234
+     boundary curvature radius mm: min=0.817 p01=5.184 p05=15.176; stations tighter than the fillet radius=1/2234
+     build verdict: OK

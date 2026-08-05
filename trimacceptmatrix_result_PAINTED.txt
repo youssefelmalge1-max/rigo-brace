@@ -1,0 +1,6 @@
+  [PASS] painted trimline is created: {'FINISHED'}, 23920 painted vertices
+  [PASS] painted source is recorded: CUSTOM_PAINT
+  painted controls=84
+  [PASS] painted SMOOTH: accepted edit is stamped VERIFIED: state=VERIFIED
+  [PASS] painted SMOOTH_ARC: accepted edit is stamped VERIFIED: state=VERIFIED
+PASS=True

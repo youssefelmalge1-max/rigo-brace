@@ -1,0 +1,11 @@
+========================================================================
+CASE: correction LATTICE on the scan
+========================================================================
+  scan modifiers: ['LATTICE']
+  [before Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +1.500mm max=   +1.500mm inside=0/42
+      DRAWN line    : min=   +1.047mm max=   +1.500mm inside=0/1728 (0.0%)
+  control displacement from ONE Smooth All: max=93.95mm mean=29.97mm
+  [after Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=  -30.372mm max=  +92.175mm inside=14/42
+      DRAWN line    : min=   +1.383mm max=   +1.500mm inside=0/1728 (0.0%)

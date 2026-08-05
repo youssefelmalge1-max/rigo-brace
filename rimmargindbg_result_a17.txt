@@ -1,0 +1,6 @@
+requested fillet radius=1.00mm segments=8 thickness=4.00mm
+  SMOOTH_ARC (17, 21)
+     boundary n=2232  spacing mm min=0.356 p05=0.768 median=1.044 max=1.739
+     rim ceiling (0.35 x spacing) vs requested 1.00mm: headroom min=-0.876mm p05=-0.731mm; stations BELOW the request=2232/2232
+     boundary curvature radius mm: min=0.816 p01=5.199 p05=15.252; stations tighter than the fillet radius=1/2232
+     build verdict: FAIL Trim rim cannot be built safely (3 local rim overlap(s)). Un

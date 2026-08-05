@@ -1,0 +1,7 @@
+variant=c2
+  controls=42 spacing 24.5-132.3mm (5.4x)
+  junction_ratio=1.01 (jump 1.7 / base 1.68)
+  display-vs-raw p95=1.704 max=9.940mm corner_drift=0.0000mm self_gap=13.70mm turn p95=1.92 max=4.65deg
+  generate={'FINISHED'} 
+  corset: verts=67836 intersections=0 zero_area=0 trim p95=0.0195 max=2.8448mm fillet=0.354mm
+  DISPLAY vs BUILT total p95=4.500 max=4.507mm | tangential p95=0.083 max=0.832mm

@@ -1,0 +1,4 @@
+tag=p3
+corset verts=67836 hash=c314823eaf18dd5f
+visible_in_brace_view=['Rigo Corset']
+visible_in_trim_view=['A type model', 'Rigo Trim Perimeter']

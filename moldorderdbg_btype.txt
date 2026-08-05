@@ -1,0 +1,43 @@
+fixture=btype
+fairing iterations=5
+
+=== clearance 2.00mm ===
+  PRODUCTION TODAY: displace=3 selfX -> after fairing=0 selfX
+  ORDER A displace->repair->fair: 3 -> 0 after repair (1 passes, 7 verts) -> 0 AFTER FAIRING
+  ORDER B displace->fair->repair: 0 -> 0 (0 passes, 0 verts)
+    order A: 7 verts in 1 region(s); moved max=1.7318mm; outside regions max=1.73e+00mm
+      clearance in repaired verts: min=1.9531 max=2.7010mm (requested 2.00) inward_loss=0.0469mm outward_float=0.7010mm
+      BEFORE full n=89718  aspect p95=2.28 p99=3.14 max=117.43 | min_area=6.528e-08 degen=0 | edge 0.5094-9.57mm
+      AFTER  full n=89718  aspect p95=2.23 p99=3.04 max=39.03 | min_area=1.912e-07 degen=0 | edge 0.7202-7.59mm
+      BEFORE incid n=21     aspect p95=5.48 p99=5.48 max=7.63 | min_area=5.118e-07 degen=0 | edge 0.6325-5.99mm
+      AFTER  incid n=21     aspect p95=3.71 p99=3.71 max=4.73 | min_area=6.495e-07 degen=0 | edge 0.7202-5.32mm
+      BEFORE region n=7      aspect p95=5.48 p99=5.48 max=7.63 | min_area=5.118e-07 degen=0 | edge 0.6325-5.14mm
+      AFTER  region n=7      aspect p95=3.71 p99=3.71 max=4.73 | min_area=6.495e-07 degen=0 | edge 0.7202-4.74mm
+      unaffected  n=89697  aspect p95=2.23 p99=3.04 max=39.03 | min_area=1.912e-07 degen=0 | edge 1.0364-7.59mm
+      hash=57b9faa832c9
+    order B: NO-OP
+
+=== clearance 3.00mm ===
+  PRODUCTION TODAY: displace=8 selfX -> after fairing=4 selfX
+  ORDER A displace->repair->fair: 8 -> 0 after repair (2 passes, 14 verts) -> 0 AFTER FAIRING
+  ORDER B displace->fair->repair: 4 -> 0 (1 passes, 7 verts)
+    order A: 14 verts in 2 region(s); moved max=1.8708mm; outside regions max=1.87e+00mm
+      clearance in repaired verts: min=2.8738 max=4.0212mm (requested 3.00) inward_loss=0.1262mm outward_float=1.0212mm
+      BEFORE full n=89718  aspect p95=2.29 p99=3.18 max=222.78 | min_area=3.486e-08 degen=0 | edge 0.3150-10.53mm
+      AFTER  full n=89718  aspect p95=2.24 p99=3.06 max=41.55 | min_area=1.817e-07 degen=0 | edge 0.5783-8.30mm
+      BEFORE incid n=46     aspect p95=4.98 p99=5.87 max=6.11 | min_area=5.909e-07 degen=0 | edge 0.6296-7.10mm
+      AFTER  incid n=46     aspect p95=3.91 p99=6.24 max=8.24 | min_area=4.283e-07 degen=0 | edge 0.5783-5.83mm
+      BEFORE region n=13     aspect p95=5.67 p99=5.67 max=5.87 | min_area=5.909e-07 degen=0 | edge 0.6296-5.37mm
+      AFTER  region n=13     aspect p95=6.24 p99=6.24 max=8.24 | min_area=4.283e-07 degen=0 | edge 0.5783-4.56mm
+      unaffected  n=89672  aspect p95=2.24 p99=3.06 max=41.55 | min_area=1.817e-07 degen=0 | edge 0.7407-8.30mm
+      hash=dc59a436db4c
+    order B: 7 verts in 1 region(s); moved max=0.5082mm; outside regions max=0.00e+00mm
+      clearance in repaired verts: min=2.9022 max=3.9984mm (requested 3.00) inward_loss=0.0978mm outward_float=0.9984mm
+      BEFORE full n=89718  aspect p95=2.24 p99=3.07 max=41.55 | min_area=1.590e-07 degen=0 | edge 0.3513-8.30mm
+      AFTER  full n=89718  aspect p95=2.24 p99=3.06 max=41.55 | min_area=1.817e-07 degen=0 | edge 0.4884-8.30mm
+      BEFORE incid n=21     aspect p95=9.70 p99=9.70 max=14.63 | min_area=1.590e-07 degen=0 | edge 0.3513-5.39mm
+      AFTER  incid n=21     aspect p95=4.76 p99=4.76 max=5.81 | min_area=3.652e-07 degen=0 | edge 0.4884-5.39mm
+      BEFORE region n=7      aspect p95=9.70 p99=9.70 max=14.63 | min_area=1.590e-07 degen=0 | edge 0.3513-4.72mm
+      AFTER  region n=7      aspect p95=4.76 p99=4.76 max=5.81 | min_area=3.652e-07 degen=0 | edge 0.4884-4.36mm
+      unaffected  n=89697  aspect p95=2.24 p99=3.06 max=41.55 | min_area=1.817e-07 degen=0 | edge 0.7407-8.30mm
+      hash=dd333417f97f

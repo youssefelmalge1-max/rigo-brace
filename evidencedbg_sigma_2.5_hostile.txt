@@ -1,0 +1,16 @@
+case=sigma param=2.5
+fixture=HOSTILE hairpin (notch + crowded stations)
+path=TEMPLATE trimline, projection sigma=2.50mm (1.0 shipped; 1.5 recorded as breaking the hairpin)
+trimline controls=42
+generate={'FINISHED'}
+
+stage                     selfX    verts     tris
+0 offset mold (uncut)         0    44574    89144
+2 keep-interior               0    27804    51649
+3 weld slivers                0    27421    51266
+4 boundary resample           0    26043    49888
+
+first stage clean -> invalid: NONE (clean throughout)
+final-validator overlap classes: none
+outer-wall repair: initial=0 remaining=0 verts=67458
+reproduces historical failure: NO

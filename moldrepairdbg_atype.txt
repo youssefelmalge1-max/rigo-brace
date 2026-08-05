@@ -1,0 +1,15 @@
+fixture=atype
+repair = relax colliding offset DIRECTIONS only (design_ops._repair_outer_offset_directions mechanism); offset LENGTH always exactly the requested clearance
+
+clearance  0.10mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=9add2e7f4310 verts=44574
+clearance  0.50mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=cd4bae2f7eb1 verts=44574
+clearance  1.00mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=eae3513f3ed2 verts=44574
+clearance  2.00mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=1f7314f29c53 verts=44574
+clearance  3.00mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=9aeaa905c3cf verts=44574
+clearance  5.00mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=31537315e052 verts=44574

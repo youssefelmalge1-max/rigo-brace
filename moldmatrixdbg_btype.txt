@@ -1,0 +1,37 @@
+fixture=btype
+stage1 source scan: verts=44859 selfX=0 | real fairing iterations=5
+
+=== clearance 0.10mm ===
+  stage2 raw displaced selfX=0 | stage3 REAL faired selfX=0 | stage4 detection=clean
+  stage5 repaired selfX=0 touched=0 written=0 actually_moved=0 max_move=0.0000mm | outside written set: max=0.00e+00mm
+  stage6 no-op=YES hash c55621c44ba5 -> c55621c44ba5 | aspect 74.49 -> 74.49 degen 0 -> 0 min_area 8.665e-08 -> 8.665e-08
+  stage7 generate={'CANCELLED'} verts=0 Error: Trim rim cannot be built safely (0 open and 4 non-manifold edge(s)). Undo the last trim edit 
+
+=== clearance 0.50mm ===
+  stage2 raw displaced selfX=0 | stage3 REAL faired selfX=0 | stage4 detection=clean
+  stage5 repaired selfX=0 touched=0 written=0 actually_moved=0 max_move=0.0000mm | outside written set: max=0.00e+00mm
+  stage6 no-op=YES hash 949c89e1aabb -> 949c89e1aabb | aspect 92.44 -> 92.44 degen 0 -> 0 min_area 7.347e-08 -> 7.347e-08
+  stage7 generate={'CANCELLED'} verts=0 Error: Trim rim cannot be built safely (0 open and 3 non-manifold edge(s)). Undo the last trim edit 
+
+=== clearance 1.00mm ===
+  stage2 raw displaced selfX=0 | stage3 REAL faired selfX=0 | stage4 detection=clean
+  stage5 repaired selfX=0 touched=0 written=0 actually_moved=0 max_move=0.0000mm | outside written set: max=0.00e+00mm
+  stage6 no-op=YES hash 4d40ef9f0492 -> 4d40ef9f0492 | aspect 79.24 -> 79.24 degen 0 -> 0 min_area 9.548e-08 -> 9.548e-08
+  stage7 generate={'CANCELLED'} verts=0 Error: Trim rim cannot be built safely (0 open and 1 non-manifold edge(s)). Undo the last trim edit 
+
+=== clearance 2.00mm ===
+  stage2 raw displaced selfX=3 | stage3 REAL faired selfX=4 | stage4 detection=FOLD
+  stage5 repaired selfX=0 touched=7 written=7 actually_moved=7 max_move=0.2775mm | outside written set: max=0.00e+00mm
+  stage6 no-op=NO hash 015a97cc7c6e -> 6008bb57083c | aspect 117.40 -> 117.40 degen 0 -> 0 min_area 6.530e-08 -> 6.530e-08
+  stage7 generate={'CANCELLED'} verts=0 Error: Trim rim cannot be built safely (0 open and 1 non-manifold edge(s)). Undo the last trim edit 
+
+=== clearance 3.00mm ===
+  stage2 raw displaced selfX=8 | stage3 REAL faired selfX=7 | stage4 detection=FOLD
+  stage5 repaired selfX=0 touched=14 written=14 actually_moved=14 max_move=0.8198mm | outside written set: max=0.00e+00mm
+  stage6 no-op=NO hash 0db3b6a99dd3 -> 5ae3154cd1a3 | aspect 222.81 -> 222.81 degen 0 -> 0 min_area 3.486e-08 -> 3.486e-08
+  stage7 generate={'CANCELLED'} verts=0 Error: Trim rim cannot be built safely (0 open and 4 non-manifold edge(s)). Undo the last trim edit 
+
+=== clearance 5.00mm ===
+  stage2 raw displaced selfX=176 | stage3 REAL faired selfX=165 | stage4 detection=FOLD
+  stage5 repair FAILED -> The 5.0 mm inner surface folds through itself in 53 place(s) that local repair could not resolve (179 vertices
+  stage7 generate={'CANCELLED'} verts=0 Error: The 5.0 mm inner surface folds through itself in 53 place(s) that local repair could not reso

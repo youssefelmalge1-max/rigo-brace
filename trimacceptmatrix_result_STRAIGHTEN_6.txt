@@ -1,0 +1,5 @@
+  [PASS] baseline brace builds: 
+  baseline brace = 67836v/117726f
+  [PASS] STRAIGHTEN (2, 8): rejection restores the trimline bit-exactly: rejected (Error: Trimline edit REJECTED at rim constru)
+  [PASS] STRAIGHTEN (2, 8): last valid brace untouched: 67836v/117726f vs 67836v/117726f
+PASS=True

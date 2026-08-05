@@ -1,0 +1,28 @@
+CASE a24 arc=(24, 30) [canda]  fillet requested=1.00mm segments=8 thickness=4.00mm offset=3.00mm
+  Candidate A in build: True
+  STAGE cut: OK, cut-boundary loop n=2234
+  cut boundary: n=2234 turn_radius min=0.817 p01=5.345mm; turn_angle p99=10.24 max=50.36deg; stations with turn_radius < ceiling=0
+  STAGE shell: built, paired_source_vertices=26123
+  STAGE validate: OK
+  FIRST CLEAN-TO-INVALID STAGE: none
+  intersecting triangle pairs captured: 3
+  offending pair classes:
+      inner vs inner                     3
+
+  OVERLAP 1: tri47701 x tri49022
+      A inner            verts=(16247, 24500, 24499) centroid=(0.22258,0.13069,0.56831)
+      B inner            verts=(16249, 16250, 24504)
+      face-normal angle=177.48deg  centroid gap=2.0490mm
+      nearest cut-boundary station 2139/2234 at 0.111mm: spacing=1.432mm turn_radius=6.658mm turn_angle=12.35deg rim_ceiling=0.501mm
+
+  OVERLAP 2: tri49022 x tri49024
+      A inner            verts=(16249, 16250, 24504) centroid=(0.22262,0.13181,0.56659)
+      B inner            verts=(24499, 24500, 16249)
+      face-normal angle=0.10deg  centroid gap=1.1059mm
+      nearest cut-boundary station 2141/2234 at 0.921mm: spacing=0.656mm turn_radius=56.238mm turn_angle=0.67deg rim_ceiling=0.229mm
+
+  OVERLAP 3: tri49022 x tri49034
+      A inner            verts=(16249, 16250, 24504) centroid=(0.22262,0.13181,0.56659)
+      B inner            verts=(16247, 24499, 26110)
+      face-normal angle=0.92deg  centroid gap=2.1789mm
+      nearest cut-boundary station 2141/2234 at 0.921mm: spacing=0.656mm turn_radius=56.238mm turn_angle=0.67deg rim_ceiling=0.229mm

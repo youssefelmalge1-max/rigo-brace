@@ -1,0 +1,4 @@
+  [PASS] manual edit recorded: [6, 7, 8]
+  [PASS] manual: accepted edit is stamped VERIFIED: state=VERIFIED
+  [PASS] manual-handle provenance survives acceptance: [6, 7, 8]
+PASS=True

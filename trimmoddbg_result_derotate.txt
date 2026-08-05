@@ -1,0 +1,11 @@
+========================================================================
+CASE: derotation SIMPLE_DEFORM on the scan
+========================================================================
+  scan modifiers: ['SIMPLE_DEFORM']
+  [before Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +1.498mm max=   +1.500mm inside=0/42
+      DRAWN line    : min=   +0.024mm max=   +1.500mm inside=0/1728 (0.0%)
+  control displacement from ONE Smooth All: max=57.00mm mean=15.62mm
+  [after Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=  -43.264mm max=  +43.509mm inside=20/42
+      DRAWN line    : min=   +1.428mm max=   +1.500mm inside=0/1728 (0.0%)

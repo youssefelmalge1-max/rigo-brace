@@ -1,0 +1,4 @@
+  [PASS] baseline brace builds: 
+  baseline brace = 67836v/117726f
+  [PASS] SMOOTH_ARC (20, 28): accepted edit is stamped VERIFIED: state=VERIFIED
+PASS=True

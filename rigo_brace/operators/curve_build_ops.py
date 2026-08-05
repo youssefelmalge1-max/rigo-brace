@@ -1902,6 +1902,7 @@ class RIGO_OT_generate_curve_corset(Operator):
             design_ops._commit_generation(context, snapshot, candidates, settings)
         except (
             CustomTrimMaskError,
+            design_ops.InnerSurfaceFoldError,
             design_ops.OuterWallIntersectionError,
             design_ops.TrimRimQualityError,
             design_ops.TrimPerimeterWindingError,

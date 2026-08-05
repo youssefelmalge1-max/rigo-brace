@@ -1,0 +1,9 @@
+mode=straighten sigma=10.0mm preserve=0.3 influence=30.0mm
+BASELINE: turn p95=1.923 max=4.65deg | alternation=1.4% residual p95=0.161mm | gap p50=+1.49mm | self-gap=13.7mm
+  straighten: chord 230mm, view=front, lateral axis=(-1.00,+0.00,+0.03)
+  in-view lateral bow: before p95=8.16 max=8.54mm -> after p95=3.70 max=4.68mm
+PATH AFTER: turn p95=2.139 max=8.15deg | alternation=1.8% residual p95=0.165mm | gap p50=+1.50mm min=-4.47 max=+11.53mm
+  displacement p50=0.000 p95=2.503 max=5.947mm | pinned-landmark drift=2.6553mm | self-gap=17.5mm
+REBUILT CURVE: controls moved=13/42 turn p95=1.961 max=4.87deg | refit-to-path p95=0.793 max=4.719mm
+GENERATE={'FINISHED'} 
+  intersections=0 zero_area=0 trim p95=0.0197 max=2.8416mm verts=67732

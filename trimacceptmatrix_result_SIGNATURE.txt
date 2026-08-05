@@ -1,0 +1,9 @@
+  [PASS] baseline template verifies: 
+  [PASS] state is VERIFIED after a passing Apply: VERIFIED
+  [PASS] changing corset_thickness makes the stamp STALE: STALE
+  [PASS] changing trim_fillet_radius makes the stamp STALE: STALE
+  [PASS] changing corset_offset makes the stamp STALE: STALE
+  [PASS] restoring the settings makes it VERIFIED again: VERIFIED
+  [PASS] deforming the body makes the stamp STALE: STALE
+  [PASS] an edit clears the stamp: UNVERIFIED
+PASS=True

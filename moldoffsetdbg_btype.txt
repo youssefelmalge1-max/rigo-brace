@@ -1,0 +1,36 @@
+scan='B type model' verts=44859 fairing=5 iterations
+inner surface built by design_ops._prepare_candidate_base: DISPLACE direction=NORMAL strength=clearance, then LaplacianSmooth
+
+CONTROL - the scan itself: 0 self-intersections (89718 triangles). A clean scan should be 0, so anything below is created BY the offset.
+
+=== SELF-INTERSECTIONS OF THE INNER SURFACE, BY CLEARANCE ===
+prediction if the naive normal offset is the mechanism: count rises with clearance and approaches 0 as clearance approaches 0
+
+  clearance  0.10mm ->    0 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+  clearance  0.50mm ->    0 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+  clearance  1.00mm ->    0 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+  clearance  2.00mm ->    4 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+      sites: 0/4 lie in CONCAVE geometry (negative discrete curvature)
+        at (185, 74, 10)mm curvature=+31.0/m ~radius=32.23mm
+        at (185, 75, 9)mm curvature=+48.6/m ~radius=20.59mm
+        at (184, 75, 9)mm curvature=+37.6/m ~radius=26.62mm
+        at (185, 74, 10)mm curvature=+23.0/m ~radius=43.55mm
+      connectivity: 4 pairs form 1 disjoint fold region(s); largest touches 7 vertices
+  clearance  3.00mm ->    7 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+      sites: 6/7 lie in CONCAVE geometry (negative discrete curvature)
+        at (184, 75, 10)mm curvature=-24.1/m ~radius=41.50mm
+        at (184, 74, 10)mm curvature=-42.6/m ~radius=23.48mm
+        at (186, 74, 11)mm curvature=+5.8/m ~radius=172.63mm
+        at (187, 64, 17)mm curvature=-8.9/m ~radius=112.79mm
+        at (187, 65, 18)mm curvature=-17.2/m ~radius=58.12mm
+        at (185, 74, 11)mm curvature=-1.0/m ~radius=986.69mm
+      connectivity: 7 pairs form 2 disjoint fold region(s); largest touches 8 vertices
+  clearance  5.00mm ->  165 self-intersecting triangle pairs (89718 triangles, 44859 verts)
+      sites: 163/165 lie in CONCAVE geometry (negative discrete curvature)
+        at (149, 54, 23)mm curvature=-56.2/m ~radius=17.81mm
+        at (149, 54, 24)mm curvature=-31.4/m ~radius=31.89mm
+        at (151, 56, 24)mm curvature=-39.9/m ~radius=25.09mm
+        at (150, 55, 24)mm curvature=-23.6/m ~radius=42.30mm
+        at (150, 56, 24)mm curvature=-33.5/m ~radius=29.88mm
+        at (151, 58, 24)mm curvature=-16.4/m ~radius=60.93mm
+      connectivity: 165 pairs form 7 disjoint fold region(s); largest touches 89 vertices

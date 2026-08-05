@@ -1,0 +1,53 @@
+=== captured 2026-07-28T07:36:56Z ===
+
+--- git rev-parse HEAD ---
+b19a2808c72d2e1aee5f04ffda9201d291f0f332
+
+--- git log -3 ---
+b19a280 Phase-2 handoff: preserve the uncommitted Candidate A prototype and its baseline
+76a0dc9 #37 Candidate A: triangle-quality baseline and fairing-order evidence
+928c5e5 Candidate A evidence prototype: local offset-direction repair for the mold fold
+
+--- git status --short ---
+ M rigo_brace/operators/curve_build_ops.py
+ M rigo_brace/operators/design_ops.py
+?? diagnostics/
+?? evidencedbg_btype_4mm.txt
+?? evidencedbg_painted_168.txt
+?? evidencedbg_painted_48.txt
+?? evidencedbg_painted_84.txt
+?? evidencedbg_sigma_1.0.txt
+?? evidencedbg_sigma_1.0_hostile.txt
+?? evidencedbg_sigma_1.5.txt
+?? evidencedbg_sigma_1.5_hostile.txt
+?? evidencedbg_sigma_2.5.txt
+?? evidencedbg_sigma_2.5_hostile.txt
+?? moldmatrixdbg_btype.txt
+?? moldoffsetdbg_btype.txt
+?? moldorderdbg_btype.txt
+?? moldrepairdbg_atype.txt
+?? moldrepairdbg_btype.txt
+?? tools/moldmatrixdbg.py
+?? tools/paintcutdbg.py
+?? trimbanddbg_dense.txt
+?? trimbanddbg_hostile.txt
+?? trimbanddbg_reference.txt
+?? trimp2var_baseline.txt
+?? trimp2var_c2.txt
+?? trimp2var_c2r06.txt
+?? trimp2var_c2r12.txt
+?? trimshot_baseline.txt
+?? trimshot_p1.txt
+?? trimshot_p2.txt
+?? trimshot_p3.txt
+?? trimshot_p4.txt
+?? trimshot_p5.txt
+
+--- git diff --stat ---
+warning: in the working copy of 'rigo_brace/operators/curve_build_ops.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'rigo_brace/operators/design_ops.py', LF will be replaced by CRLF the next time Git touches it
+ rigo_brace/operators/curve_build_ops.py |   1 +
+ rigo_brace/operators/design_ops.py      | 147 ++++++++++++++++++++++++++++++++
+ 2 files changed, 148 insertions(+)
+
+--- git diff --stat --cached ---

@@ -1,0 +1,9 @@
+CASE a24 arc=(24, 30) [final]  fillet requested=1.00mm segments=8 thickness=4.00mm offset=3.00mm
+  Candidate A in build: True
+  STAGE cut: OK, cut-boundary loop n=2234
+  cut boundary: n=2234 turn_radius min=0.817 p01=5.345mm; turn_angle p99=10.24 max=50.36deg; stations with turn_radius < ceiling=0
+  STAGE shell: built, paired_source_vertices=26123
+  STAGE validate: OK
+  FIRST CLEAN-TO-INVALID STAGE: none
+  triangle_intersection_pairs called 7 times, pair counts per call: [0, 3, 0, 0, 0, 0, 0]
+  FINAL (validation) intersecting triangle pairs: 0

@@ -1,0 +1,14 @@
+CASE bl24 [clean]  requested fillet=1.00mm segments=8 thickness=4.00mm
+  Candidate A present in build: False
+  BASELINE generate built=True error=''
+  BASELINE brace=67836v/117726f
+  BASELINE fillet requested=1.000mm delivered max=0.502 mean=0.354 min=0.189mm
+  BASELINE rim_overlaps=0
+  BASELINE brace boundary spacing=None
+  EDIT BLEND (24, 30) error=''
+  APPLY -> {'FINISHED'} state=VERIFIED
+  APPLY message=''
+  ROLLBACK bit-exact=False
+  brace after=67836v/117726f untouched=True
+  GENERATE after accept built=True error=''
+  fillet delivered max=0.502 mean=0.354mm rim_overlaps=0

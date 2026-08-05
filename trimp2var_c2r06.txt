@@ -1,0 +1,6 @@
+variant=c2r06
+  refinement: +54 stations at 0.6mm
+  controls=96 spacing 6.2-53.3mm (8.7x)
+  junction_ratio=0.64 (jump 1.4 / base 2.12)
+  display-vs-raw p95=0.406 max=1.241mm corner_drift=0.0000mm self_gap=13.64mm turn p95=2.05 max=11.86deg
+  generate={'CANCELLED'} Error: Requested 4.0 mm wall cannot be generated without outer-wall overlap on this corrected shape. Increase Surface Fairing or r

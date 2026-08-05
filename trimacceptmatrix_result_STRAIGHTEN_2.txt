@@ -1,0 +1,4 @@
+  [PASS] baseline brace builds: 
+  baseline brace = 67836v/117726f
+  [PASS] STRAIGHTEN (20, 28): up-front refusal leaves the curve exact: refused: Error: Straighten cannot flatten this arc: it wr
+PASS=True

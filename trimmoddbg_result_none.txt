@@ -1,0 +1,11 @@
+========================================================================
+CASE: no modifier on the scan (the clean fixture)
+========================================================================
+  scan modifiers: []
+  [before Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +1.500mm max=   +1.500mm inside=0/42
+      DRAWN line    : min=   +0.307mm max=   +1.500mm inside=0/1728 (0.0%)
+  control displacement from ONE Smooth All: max=5.38mm mean=0.49mm
+  [after Smooth All] vs the body the orthotist SEES
+      RAW   controls: min=   +1.500mm max=   +1.501mm inside=0/42
+      DRAWN line    : min=   +0.301mm max=   +1.500mm inside=0/1728 (0.0%)

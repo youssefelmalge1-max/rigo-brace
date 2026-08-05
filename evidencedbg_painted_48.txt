@@ -1,0 +1,16 @@
+case=painted param=48
+path=PAINTED (custom_trim_ops; no Add Curve Detail involved) cap=48 painted_verts=18988
+create trimline from paint={'FINISHED'} 
+trimline controls=48
+generate={'CANCELLED'}
+  error=Error: Trim rim cannot be built safely (5 local rim overlap(s)). Undo the last trim edit or reduce Trim Fillet Radius; the last valid brace was retain
+
+stage                     selfX    verts     tris
+0 offset mold (uncut)         0    44574    89144
+2 keep-interior               1    22786    41752
+3 weld slivers                0    22471    41454
+4 boundary resample           1    21109    40091
+
+first stage clean -> invalid: 2 keep-interior
+final-validator overlap classes: {'inner': 1, 'inner+rim': 1, 'outer+rim': 3}
+reproduces historical failure: YES

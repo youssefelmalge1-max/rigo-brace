@@ -1,0 +1,4 @@
+  [PASS] baseline brace builds: 
+  baseline brace = 67836v/117726f
+  [PASS] BLEND (17, 21): a VERIFIED edit really does Generate: state=VERIFIED generate=OK
+PASS=True

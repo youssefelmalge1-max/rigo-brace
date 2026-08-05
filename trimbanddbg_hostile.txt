@@ -1,0 +1,21 @@
+fixture=hostile sigma_mm=6.0 standoff_mm=0.20
+controls=42
+baseline generate={'FINISHED'}  verts=67459
+protected: 10 stations -> 0/2016 samples excluded
+
+BEFORE (raw evaluated vs BODY): inside 299/2016 (14.83%), inside arc 416.4mm of 2244mm
+    inward mm  p50=+0.000 p95=-1.608 p99=-6.529 max=-8.773
+    outward mm p50=+1.463 p95=+4.082 p99=+10.717 max=+16.338
+    turn_deg p50=0.591 p95=2.064 max=4.74 | min self-gap=13.69mm
+  reference: same curve vs offset mold (liner offset, not a defect): inside 1849/2016 (91.72%), inside arc 2031.1mm of 2244mm
+    inward mm  p50=-1.535 p95=-4.606 p99=-9.528 max=-11.769
+    outward mm p50=-1.535 p95=+1.082 p99=+7.718 max=+13.339
+    turn_deg p50=0.591 p95=2.064 max=4.74 | min self-gap=13.69mm
+
+AFTER  (band-constrained vs BODY): inside 0/2016 (0.00%), inside arc 0.0mm of 2244mm
+    inward mm  p50=+0.000 p95=+0.000 p99=+0.000 max=+0.180
+    outward mm p50=+1.512 p95=+4.082 p99=+10.717 max=+16.338
+    turn_deg p50=0.678 p95=2.277 max=82.99 | min self-gap=13.61mm
+    correction applied: p50=0.0000mm p95=2.5160mm max=8.9753mm; samples touched=952/2016
+    control points moved: 0.000e+00mm (prototype must not touch them)
+    determinism: correction is a closed-form Gaussian over a one-sided field; no iteration count and no ordering dependence

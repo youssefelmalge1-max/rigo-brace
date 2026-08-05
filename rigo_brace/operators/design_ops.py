@@ -194,6 +194,147 @@ def _remove_object_and_orphan_mesh(obj):
         bpy.data.meshes.remove(mesh)
 
 
+class InnerSurfaceFoldError(RuntimeError):
+    """The faired inner brace surface folds and local repair could not clear it."""
+
+    def __init__(self, clearance_mm, remaining, vertices):
+        super().__init__(
+            f"The {clearance_mm:.1f} mm inner surface folds through itself in "
+            f"{remaining} place(s) that local repair could not resolve "
+            f"({vertices} vertices attempted). Reduce Liner Offset or increase "
+            "Surface Fairing; the previous valid brace was retained."
+        )
+        self.remaining = remaining
+
+
+_BASE_REPAIR_MAX_ITERATIONS = 24
+_BASE_REPAIR_BLEND = 0.5
+
+
+def _repair_faired_offset(context, base, scan, settings):
+    """Untangle the FINAL faired inner surface, direction only (#37, Order B).
+
+    Runs only when the faired surface actually folds, so a clean offset - every
+    A-type clearance, and B-type up to 2.0 mm where fairing already resolves it
+    - is a true no-op and the mesh is left bit-identical.
+
+    Only the DIRECTION of each colliding vertex's offset is relaxed toward its
+    neighbours; the LENGTH that fairing produced is carried through unchanged.
+    The requested clearance therefore cannot be silently reduced, and the fold
+    cannot be removed by collapsing the surface toward the patient - the two
+    failure modes that made a naive smoothing repair unacceptable.
+
+    Displace and LaplacianSmooth both preserve topology and vertex order, so
+    index i of the base still corresponds to index i of the scan; that
+    correspondence is asserted rather than assumed.
+    """
+    mesh = base.data
+    mesh.calc_loop_triangles()
+    triangles = [tuple(t.vertices) for t in mesh.loop_triangles]
+    points = [vertex.co.copy() for vertex in mesh.vertices]
+    pairs = triangle_intersection_pairs(points, triangles)
+    report = {
+        "ran": False,
+        "initial": len(pairs),
+        "remaining": len(pairs),
+        "vertices": 0,
+        "iterations": 0,
+    }
+    if not pairs:
+        return report
+    source = [vertex.co.copy() for vertex in scan.data.vertices]
+    if len(source) != len(points):
+        raise InnerSurfaceFoldError(
+            settings.corset_offset, len(pairs), 0
+        )
+    report["ran"] = True
+    offsets = [points[index] - source[index] for index in range(len(points))]
+    lengths = [offset.length for offset in offsets]
+    directions = [
+        offset.normalized() if length > 1.0e-12 else Vector((0.0, 0.0, 1.0))
+        for offset, length in zip(offsets, lengths)
+    ]
+    original = [direction.copy() for direction in directions]
+    adjacency = _vertex_adjacency(len(points), triangles)
+    touched = set()
+    iterations = 0
+
+    def _positions():
+        """Faired positions, with ONLY the touched vertices reconstructed.
+
+        Reconstructing every vertex as source + direction * length sends
+        untouched geometry through a normalize/multiply round-trip that shifts
+        it by floating-point epsilon - measured as 737 of 44859 vertices
+        "moving" when 7 were repaired. The intersection test must also see
+        exactly what will be written, so the untouched entries stay as the
+        faired coordinates themselves.
+        """
+        candidate = list(points)
+        for index in touched:
+            candidate[index] = (
+                source[index] + directions[index] * lengths[index]
+            )
+        return candidate
+
+    while pairs and iterations < _BASE_REPAIR_MAX_ITERATIONS:
+        targets = {
+            index
+            for first, second in pairs
+            for triangle in (first, second)
+            for index in triangles[triangle]
+        }
+        touched.update(targets)
+        previous = [direction.copy() for direction in directions]
+        for index in targets:
+            average = sum(
+                (previous[other] for other in adjacency[index]),
+                previous[index].copy(),
+            )
+            if average.length_squared <= 1.0e-20:
+                continue
+            candidate = previous[index].lerp(
+                average.normalized(), _BASE_REPAIR_BLEND
+            )
+            if candidate.length_squared <= 1.0e-20:
+                continue
+            directions[index] = _limit_direction_change(
+                original[index], candidate.normalized()
+            )
+        iterations += 1
+        pairs = triangle_intersection_pairs(_positions(), triangles)
+
+    report["remaining"] = len(pairs)
+    report["vertices"] = len(touched)
+    report["iterations"] = iterations
+    if pairs:
+        # Transactional: nothing is written back, so the caller's failure path
+        # restores the previous valid state rather than committing a partly
+        # repaired inner surface.
+        raise InnerSurfaceFoldError(
+            settings.corset_offset, len(pairs), len(touched)
+        )
+    # Write back only vertices whose direction genuinely changed. `touched`
+    # collects every vertex of every colliding triangle, some of which the
+    # bounded blend left unmoved; writing those too would fail the locality
+    # gate for no benefit.
+    changed = [
+        index
+        for index in sorted(touched)
+        if (directions[index] - original[index]).length_squared > 0.0
+    ]
+    for index in changed:
+        mesh.vertices[index].co = (
+            source[index] + directions[index] * lengths[index]
+        )
+    mesh.update()
+    report["written"] = len(changed)
+    base["rigo_base_fold_written"] = len(changed)
+    base["rigo_base_fold_initial"] = report["initial"]
+    base["rigo_base_fold_vertices"] = report["vertices"]
+    base["rigo_base_fold_iterations"] = report["iterations"]
+    return report
+
+
 def _prepare_candidate_base(context, scan, settings):
     """Copy and fair the scan, removing the private copy on any failure."""
     base = None
@@ -225,6 +366,12 @@ def _prepare_candidate_base(context, scan, settings):
             smoothing.use_volume_preserve = True
             smoothing.use_normalized = True
             _apply(context, base, "Shell Fairing")
+
+        # #37 Order B: detect on the FINAL faired surface and repair only if it
+        # still folds. Placed after fairing because fairing already resolves
+        # the shallower folds by itself, so repairing earlier would intervene
+        # where production has no defect.
+        _repair_faired_offset(context, base, scan, settings)
         prepared = True
         return base
     finally:

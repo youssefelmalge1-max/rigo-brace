@@ -1,0 +1,6 @@
+mode=whole_hi sigma=20.0mm preserve=0.3 influence=30.0mm
+BASELINE: turn p95=1.923 max=4.65deg | alternation=1.4% residual p95=0.161mm | gap p50=+1.49mm | self-gap=13.7mm
+PATH AFTER: turn p95=3.106 max=52.29deg | alternation=3.4% residual p95=0.130mm | gap p50=+1.50mm min=-0.71 max=+2.42mm
+  displacement p50=0.865 p95=4.782 max=10.453mm | pinned-landmark drift=0.0000mm | self-gap=15.7mm
+REBUILT CURVE: controls moved=33/42 turn p95=1.853 max=4.49deg | refit-to-path p95=3.139 max=9.504mm
+GENERATE=skipped (metrics-only mode)

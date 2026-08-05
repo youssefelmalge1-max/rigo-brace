@@ -1,0 +1,24 @@
+fixture=btype
+repair = relax colliding offset DIRECTIONS only (design_ops._repair_outer_offset_directions mechanism); offset LENGTH always exactly the requested clearance
+
+clearance  0.10mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=d5233e958bf0 verts=44859
+clearance  0.50mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=e577f9317e34 verts=44859
+clearance  1.00mm: selfX 0 -> 0 in 0 passes
+    NO-OP: nothing to repair; hash=f28695abee6f verts=44859
+clearance  2.00mm: selfX 3 -> 0 in 1 passes
+    repaired 7 verts of 44859 (0.0156%) in 1 connected region(s), largest 7 verts
+    vertex movement: max=0.2775mm rms=0.1829mm | outside repair regions: max=0.00e+00mm
+    delivered clearance in repaired regions: min=1.9807mm max=1.9990mm (requested 2.00mm) -> inward loss 0.0193mm, outward float 0.0000mm
+    quality: aspect_max=117.43 inverted=0 min_area=6.528e-08 verts=44859 (unchanged) hash=7dc541d84d2f
+clearance  3.00mm: selfX 8 -> 0 in 2 passes
+    repaired 14 verts of 44859 (0.0312%) in 2 connected region(s), largest 8 verts
+    vertex movement: max=0.8195mm rms=0.4613mm | outside repair regions: max=0.00e+00mm
+    delivered clearance in repaired regions: min=2.8881mm max=2.9965mm (requested 3.00mm) -> inward loss 0.1119mm, outward float 0.0000mm
+    quality: aspect_max=222.78 inverted=0 min_area=3.486e-08 verts=44859 (unchanged) hash=9dc1a466f917
+clearance  5.00mm: selfX 174 -> 54 in 24 passes
+    repaired 184 verts of 44859 (0.4102%) in 6 connected region(s), largest 149 verts
+    vertex movement: max=2.1644mm rms=1.0805mm | outside repair regions: max=0.00e+00mm
+    delivered clearance in repaired regions: min=4.5315mm max=5.0000mm (requested 5.00mm) -> inward loss 0.4685mm, outward float 0.0000mm
+    quality: aspect_max=287.48 inverted=0 min_area=2.773e-08 verts=44859 (unchanged) hash=37e4aa344231
