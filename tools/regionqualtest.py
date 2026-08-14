@@ -40,6 +40,8 @@ _GATES = {}
 _STYLE_LABELS = (
     "QA Gate Scan Style", "QA Gate Scan Style5",
     "QA Gate Flat Style", "QA Gate Patient Style",
+    "QA W2 Mirror Style", "QA W2 Source Style",
+    "QA W2 HS Style", "QA W2 Size Style",
 )
 
 
@@ -1016,6 +1018,267 @@ def _run():
             f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},{ro._FOLD_PRE_DOT})",
         )
 
+    def wave2_mirror_case():
+        # Wave 2: mirror derives from the undisplaced snapshot via the
+        # field path (no Voronoi collapse, no displaced-geometry sampling),
+        # maps sided labels, and pairing metadata survives into styles.
+        import json as _json
+
+        obj = _import_scan(_SCAN)
+        me = obj.data
+        bpy.context.scene.cursor.location = obj.matrix_world @ me.vertices[9000].co
+        settings.region_radius = 30.0
+        settings.region_magnitude = 8.0
+        settings.region_kind = "PRESSURE"
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add_circle()
+        src = obj.rigo_regions[obj.rigo_region_index]
+        src.anatomical_label = "AXILLA_L"
+        n_src = len(_group_weights(obj, src.surface_mask))
+        bpy.ops.rigo.region_apply()
+        bpy.ops.rigo.region_mirror()
+        mir = obj.rigo_regions[obj.rigo_region_index]
+        w_m = _group_weights(obj, mir.surface_mask)
+        snap_present = obj.get("rigo_style_src_" + mir.surface_mask) is not None
+        adj = _adjacency(me)
+        holes = sum(
+            1 for i in set(w_m) | {n for i in w_m for n in adj[i]}
+            if w_m.get(i, 0.0) < 0.1
+            and sum(1 for n in adj[i] if w_m.get(n, 0.0) > 0.5) >= 3
+        )
+        _gate(
+            "mirror.field_transfer",
+            snap_present and holes == 0
+            and 0.5 * n_src <= len(w_m) <= 1.8 * n_src,
+            f"src={n_src} mir={len(w_m)} holes={holes} snapshot={snap_present}",
+        )
+        _gate(
+            "mirror.provenance",
+            mir.kind == "EXPANSION" and mir.anatomical_label == "AXILLA_R"
+            and mir.label_auto_mapped and mir.mirrored_from == src.name
+            and mir.opposing_region == 0
+            and obj.rigo_regions[0].opposing_region == obj.rigo_region_index,
+            f"kind={mir.kind} label={mir.anatomical_label} "
+            f"auto={mir.label_auto_mapped} from={mir.mirrored_from!r}",
+        )
+        fp = {i for i, w in w_m.items() if w > 1e-5}
+        pre_dih = _dihedral_map(obj, fp)
+        pre_cross = _cross_intersections(obj, fp)
+        nonman0 = _nonmanifold(obj)
+        before, before_n, before_fn = _snapshot(obj)
+        st = bpy.ops.rigo.region_apply()
+        if st == {"FINISHED"}:
+            m = _measure("mirror_commit", obj, before, before_n, before_fn,
+                         pre_dih, w_m, 8.0, 1.0, nonman0, pre_cross)
+            _gate(
+                "mirror.commit_validity",
+                m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
+                and m["folds"] == 0 and m["new_cross"] == 0
+                and m["holes"] == 0 and m["count_ok"]
+                and 0.9 * 8.0 <= m["core_med"] <= 1.1 * 8.0,
+                f"core={m['core_med']:.2f}",
+            )
+        else:
+            _gate("mirror.commit_validity", False, f"commit returned {st}")
+        st = bpy.ops.rigo.region_style_save(style_name="QA W2 Mirror Style")
+        e_m = lib.get_entry(settings.region_style)
+        cm = (e_m or {}).get("clinical") or {}
+        _gate(
+            "mirror.style_save",
+            st == {"FINISHED"} and e_m.get("field") is not None
+            and cm.get("mirrored_from") == src.name
+            and cm.get("paired") is True
+            and cm.get("counterpart_kind") == "PRESSURE"
+            and cm.get("label_auto_mapped") is True,
+            f"clinical={sorted(cm)}",
+        )
+        obj.rigo_region_index = 0
+        bpy.ops.rigo.region_style_save(style_name="QA W2 Source Style")
+        e_s = lib.get_entry(settings.region_style)
+        cs = (e_s or {}).get("clinical") or {}
+        offset_x = abs((cs.get("counterpart_center_offset_mm") or [0, 0, 0])[0])
+        _gate(
+            "pairing.metadata",
+            cs.get("paired") is True and cs.get("counterpart_kind") == "EXPANSION"
+            and cs.get("anatomical_label") == "AXILLA_L"
+            and offset_x > 10.0
+            and (e_s.get("max_geodesic_mm") or 0.0) > 15.0,
+            f"offset_x={offset_x:.1f}mm geo={e_s.get('max_geodesic_mm')}",
+        )
+        # Midline labels are never auto-mapped.
+        obj.rigo_regions[0].anatomical_label = "WAISTLINE"
+        obj.rigo_region_index = 0
+        bpy.ops.rigo.region_mirror()
+        mid = obj.rigo_regions[obj.rigo_region_index]
+        _gate(
+            "mirror.midline_label",
+            mid.anatomical_label == "WAISTLINE" and not mid.label_auto_mapped,
+            f"label={mid.anatomical_label} auto={mid.label_auto_mapped}",
+        )
+        _delete(obj)
+
+    def wave2_horseshoe_case():
+        # Wave 2: on-pad anchor + intrinsic trim keep a C-shaped pad whole
+        # through save -> import (was IoU 0.123 / 78% lost).
+        import json as _json
+
+        def c_pad(name):
+            g = _make_grid(name, 0.3, 100, 0.0, 11)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_mode(type="FACE")
+            bpy.ops.mesh.select_all(action="DESELECT")
+            bm = bmesh.from_edit_mesh(g.data)
+            for f in bm.faces:
+                c = f.calc_center_median()
+                r = math.hypot(c.x, c.y) * 1000.0
+                ang = abs(math.degrees(math.atan2(c.y, c.x)))
+                f.select = 45.0 <= r <= 75.0 and ang > 40.0
+            bmesh.update_edit_mesh(g.data)
+            return g
+
+        g = c_pad("QA_W2_HS")
+        settings.region_kind = "PRESSURE"
+        settings.region_magnitude = 5.0
+        settings.region_feather = 10.0
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add()
+        region = g.rigo_regions[g.rigo_region_index]
+        w_auth = _group_weights(g, region.surface_mask)
+        auth_eff = {i for i, w in w_auth.items() if w > 0.05}
+        snap = _json.loads(g["rigo_style_src_" + region.surface_mask])
+        anchor = Vector(snap["anchor_world"])
+        r_anchor = math.hypot(anchor.x, anchor.y) * 1000.0
+        _gate(
+            "horseshoe.anchor_on_pad",
+            40.0 <= r_anchor <= 80.0,
+            f"anchor_r={r_anchor:.1f}mm (pad spans 45-75mm; centroid would "
+            f"sit near 18mm, in the gap)",
+        )
+        bpy.ops.rigo.region_apply()
+        bpy.ops.rigo.region_style_save(style_name="QA W2 HS Style")
+        hs_id = settings.region_style
+        auth_geo = lib.get_entry(hs_id).get("max_geodesic_mm") or 0.0
+        _gate(
+            "horseshoe.intrinsic_size",
+            auth_geo > 100.0,
+            f"max_geodesic={auth_geo:.0f}mm (chart chord extent is only ~75)",
+        )
+        _delete(g)
+        g = _make_grid("QA_W2_HS2", 0.3, 100, 0.0, 11)
+        settings.region_style = hs_id
+        bpy.context.scene.cursor.location = anchor
+        st = bpy.ops.rigo.region_style_import()
+        region = g.rigo_regions[g.rigo_region_index]
+        w_imp = _group_weights(g, region.surface_mask)
+        imp_eff = {i for i, w in w_imp.items() if w > 0.05}
+        iou = len(auth_eff & imp_eff) / max(1, len(auth_eff | imp_eff))
+        _gate(
+            "horseshoe.import_iou",
+            st == {"FINISHED"} and iou >= _T["parity"]["iou_min"],
+            f"IoU={iou:.3f} authored={len(auth_eff)} imported={len(imp_eff)}",
+        )
+        _delete(g)
+
+    def wave2_size_case():
+        # Wave 2: surface-mm size semantics — a flat-authored footprint
+        # keeps its along-the-surface size on curved bodies (independent
+        # test-side geodesic measurement, not the production trim numbers).
+        g = _make_grid("QA_W2_SZ", 0.3, 100, 0.0, 12)
+        seed = _nearest_vertex(g.data, Vector((0, 0, 0)))
+        bpy.context.scene.cursor.location = g.matrix_world @ g.data.vertices[seed].co
+        settings.region_radius = 60.0
+        settings.region_magnitude = 5.0
+        settings.region_kind = "PRESSURE"
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add_circle()
+        bpy.ops.rigo.region_apply()
+        bpy.ops.rigo.region_style_save(style_name="QA W2 Size Style")
+        sz_id = settings.region_style
+        authored = lib.get_entry(sz_id).get("max_geodesic_mm") or 0.0
+        _gate(
+            "size.authored_geodesic",
+            35.0 <= authored <= 60.0,
+            f"authored={authored:.1f}mm (60mm circle; effective w>0.05 "
+            f"footprint ends inside the feather tail)",
+        )
+        _delete(g)
+
+        def cylinder(name, radius):
+            n_theta = max(48, int(2.0 * math.pi * radius / 0.003))
+            n_z = 120
+            dz = 0.003
+            verts, faces = [], []
+            for k in range(n_z):
+                z = (k - n_z * 0.5) * dz
+                for t in range(n_theta):
+                    a = 2.0 * math.pi * t / n_theta
+                    verts.append(
+                        (radius * math.cos(a), radius * math.sin(a), z)
+                    )
+            for k in range(n_z - 1):
+                for t in range(n_theta):
+                    a0 = k * n_theta + t
+                    a1 = k * n_theta + (t + 1) % n_theta
+                    faces.append((a0, a1, a1 + n_theta))
+                    faces.append((a0, a1 + n_theta, a0 + n_theta))
+            mesh = bpy.data.meshes.new(name)
+            mesh.from_pydata(verts, [], faces)
+            mesh.update()
+            body = bpy.data.objects.new(name, mesh)
+            bpy.context.scene.collection.objects.link(body)
+            settings.scan_object = body
+            bpy.context.view_layer.objects.active = body
+            body.select_set(True)
+            return body
+
+        for tag, radius in (("size.r60", 0.06), ("size.r95", 0.095)):
+            cyl = cylinder(f"QA_{tag}", radius)
+            settings.region_style = sz_id
+            bpy.context.scene.cursor.location = Vector((radius, 0.0, 0.0))
+            try:
+                st = bpy.ops.rigo.region_style_import()
+            except RuntimeError as exc:
+                _gate(tag, False, f"raised {exc}")
+                _delete(cyl)
+                continue
+            region = cyl.rigo_regions[cyl.rigo_region_index]
+            w = _group_weights(cyl, region.surface_mask)
+            eff = {i for i, wt in w.items() if wt > 0.05}
+            me2 = cyl.data
+            seed2 = min(
+                eff,
+                key=lambda i: (me2.vertices[i].co - Vector((radius, 0, 0))).length_squared,
+            )
+            neighbors = {}
+            for e in me2.edges:
+                a, b = e.vertices
+                if a in eff and b in eff:
+                    length = (me2.vertices[a].co - me2.vertices[b].co).length
+                    neighbors.setdefault(a, []).append((b, length))
+                    neighbors.setdefault(b, []).append((a, length))
+            import heapq as _heapq
+            dist = {seed2: 0.0}
+            heap = [(0.0, seed2)]
+            while heap:
+                d, i = _heapq.heappop(heap)
+                if d > dist.get(i, 1e30):
+                    continue
+                for j, length in neighbors.get(i, ()):
+                    nd = d + length
+                    if nd < dist.get(j, 1e30):
+                        dist[j] = nd
+                        _heapq.heappush(heap, (nd, j))
+            realized = max(dist.values()) * 1000.0 if dist else 0.0
+            frac = abs(realized - authored) / authored if authored else 1.0
+            _gate(
+                tag,
+                st == {"FINISHED"}
+                and frac <= _T["size"]["surface_tolerance_frac"],
+                f"realized={realized:.1f}mm authored={authored:.1f}mm "
+                f"({frac * 100.0:.1f}% off along the surface)",
+            )
+            _delete(cyl)
+
     def roundtrip_case():
         # Precision contract (#48 hardening item 8): mask weights survive the
         # float32 vertex-group store with their MEMBERSHIP intact (> 0.0),
@@ -1087,6 +1350,9 @@ def _run():
         _safe("flat", flat_cases)
         _safe("oppwall", lambda: oppwall_cases(ro))
         _safe("foldunit", lambda: fold_unit_case(ro))
+        _safe("w2mirror", wave2_mirror_case)
+        _safe("w2horseshoe", wave2_horseshoe_case)
+        _safe("w2size", wave2_size_case)
         _safe("roundtrip", roundtrip_case)
         _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
         failed = [k for k, v in _GATES.items() if not v]

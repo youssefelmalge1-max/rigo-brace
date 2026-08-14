@@ -30,6 +30,7 @@ REQUIRED = {
     "wall": ("clearance_mm", "cross_sheet_new"),
     "fold": ("dot", "pre_dot", "new_folds", "oracle_post_deg",
              "oracle_pre_deg"),
+    "size": ("surface_tolerance_frac",),
 }
 
 

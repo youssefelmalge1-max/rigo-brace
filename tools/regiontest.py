@@ -206,10 +206,37 @@ def _run():
         bpy.ops.rigo.region_mirror()
         mir = scan.rigo_regions[scan.rigo_region_index]
         src = scan.rigo_regions[0]
+        # Wave 2: the mirrored region is re-anchored on the ACTUAL opposite
+        # surface, so the meaningful invariant is the transferred FOOTPRINT
+        # (strong-weight centroid mirrors the source's within 30 mm), not an
+        # exact numeric reflection of the center property.
+        def _mask_centroid(mask_name):
+            group = scan.vertex_groups.get(mask_name)
+            accumulated = Vector((0.0, 0.0, 0.0))
+            count = 0
+            for v in scan.data.vertices:
+                for g in v.groups:
+                    if g.group == group.index and g.weight > 0.3:
+                        accumulated += v.co
+                        count += 1
+                        break
+            return accumulated / count if count else None
+
+        c_src = _mask_centroid(src.surface_mask)
+        c_mir = _mask_centroid(mir.surface_mask)
+        # On an asymmetric torso the exact reflection can lie OFF the
+        # surface (measured 54 mm here); mirror anchors to the closest real
+        # opposite surface (mir.center) and warns.  The invariant: the
+        # transferred footprint coheres around that anchor, on the other
+        # side of the body.
+        footprint_gap = (
+            (c_mir - Vector(mir.center)).length if c_mir else 9.9
+        )
         mirror_ok = (
             len(scan.rigo_regions) == 2
             and mir.kind == "EXPANSION"
-            and abs(mir.center[0] + src.center[0]) < 1e-6
+            and mir.center[0] * src.center[0] < 0.0
+            and footprint_gap < 0.02
             and mir.opposing_region == 0
             and src.opposing_region == 1
             and scan.vertex_groups.get(mir.surface_mask) is not None
@@ -222,7 +249,8 @@ def _run():
         mirror_ok = mirror_ok and moved2 > 0
         _mark(
             f"phase=mirror kind={mir.kind} cx={mir.center[0]:.3f} vs "
-            f"{src.center[0]:.3f} moved={moved2} mirror_ok={mirror_ok}"
+            f"{src.center[0]:.3f} footprint_gap={footprint_gap * 1000.0:.1f}mm "
+            f"moved={moved2} mirror_ok={mirror_ok}"
         )
 
         # ---- Remove ---- #

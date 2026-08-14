@@ -1333,6 +1333,33 @@ round-trip, provenance stamps; region_ops member floor `>= 1e-6` → `> 0.0`. Sc
 undo is explicitly PENDING (ed.undo polls false in timer context; Wave 5 modal harness).
 Battery green: regionqualtest / regiontest / regionstyletest / regionuitest / selftest.
 
-Open: Waves 1–5 (validator v2, mirror/anchor snapshots, field-preserving edit, chart
-guard, remaining evidence). Clinical decisions awaiting the orthotist: paired-style
-storage model; sided-label auto-map on mirror; chord-vs-geodesic mm ruling.
+#### #48 hardening — Wave 1 shipped (2026-08-15, DEC-0043)
+
+Whole-body validity inside the valid-or-refuse transaction: predictive wall-clearance
+rays (core verts, displacement + 3 mm geometric floor vs static faces — refuses
+untouched), post-repair cross-sheet net (footprint-vs-static BVH, baselined, bit-exact
+restore on new crossings), and the fold-collapse predicate (adjacent normals turning
+antiparallel without pre-crease) inside the repair loop. Test oracles independent
+(whole-mesh BVH + dihedral degrees + unit cross-check); contract_constants gate pins
+production constants to the contract block. oppwall_attack (30 mm / 24 mm body) now
+REFUSES (was: FINISHED with 46 unseen crossings); 10 mm feasible commit stays clean.
+Perf 1.44 s (≤ 2 s). Battery green.
+
+#### #48 hardening — Wave 2 shipped (2026-08-15, DEC-0044; orthotist decisions applied)
+
+Mirror derives from the undisplaced snapshot via the field path (241→312 coherent
+verts, was 241→57 Voronoi collapse; own snapshot stored — RC3 door closed), auto-maps
+sided landmarks with `label_auto_mapped` + `mirrored_from` provenance, warns on
+asymmetric-body placement (measured 54 mm off-surface reflection at the flank).
+Styles carry a `clinical` block (label, pairing facts, counterpart offset) — UI shows
+"part of a corrective pair" in dropdown + panel; import restores the label and says
+the counterpart wasn't imported. Sizes are surface-geodesic mm (`max_geodesic_mm`
+over the w>0.05 footprint, ON-PAD anchor): horseshoe import IoU 0.123 → 0.859;
+cross-body-size gates measured +4.9 % (R=60) / +4.8 % (R=95) vs the 12 % contract
+tolerance, warn-never-resize. Painted snapshots now evaluated-consistent (own preview
+excluded). Field plateau 0.99→0.95 (double-resample survival) improved import parity
+everywhere: IoU 0.856→0.977 scan, 0.861→0.909 patient. Battery green.
+
+Open: Wave 3 (field-preserving Edit→Update), Wave 4 (chart-fold refusal, spike
+budget), Wave 5 (undo/save-reopen harness, v1 migration measurement, downstream
+pipeline matrix). The exp-map chart remains DEFERRED.

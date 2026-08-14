@@ -14,6 +14,7 @@ from ..core import (
     LANDMARKS,
     WORKFLOW_TABS,
     brace_ready_for_finishing,
+    region_library,
 )
 from ..core.signatures import brace_has_source_record
 from . import icons
@@ -318,6 +319,14 @@ def _draw_guided_box(layout, context):
     elif not obj.get(f"rigo_committed_{active.surface_mask}", False):
         lib.label(text="Commit the region to enable saving", icon="INFO")
     lib.prop(settings, "region_style", text="")
+    entry = region_library.get_entry(settings.region_style)
+    if entry and (entry.get("clinical") or {}).get("paired"):
+        # Wave 2 decision 1: a style saved from one half of a corrective
+        # pair says so — the pairing is never silently dropped.
+        lib.label(
+            text="Part of a corrective pair — import the counterpart too",
+            icon="LINKED",
+        )
     row = lib.row(align=True)
     row.operator("rigo.region_style_import", text="Import at Cursor", icon="IMPORT")
     row.operator("rigo.region_style_delete", text="", icon="TRASH")

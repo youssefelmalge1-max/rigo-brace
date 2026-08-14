@@ -375,6 +375,15 @@ class RigoCorrectionRegion(PropertyGroup):
         name="Requires Orthotist Review", default=True,
         description="Clinical safety: every correction is reviewed by the orthotist",
     )
+    mirrored_from: StringProperty(
+        name="Mirrored From", default="",
+        description="Name of the region this one was derived from by Mirror",
+    )
+    label_auto_mapped: BoolProperty(
+        name="Label Auto-Mapped", default=False,
+        description="The landmark was mapped left/right automatically by "
+                    "Mirror — review it",
+    )
 
 
 class RigoBraceSettings(PropertyGroup):

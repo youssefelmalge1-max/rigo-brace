@@ -110,8 +110,13 @@ def enum_items(_settings, _context):
         _ENUM_CACHE.clear()
         for entry in _LIBRARY:
             kind = entry.get("kind", "PRESSURE").title()
+            pair = (
+                "; part of a corrective pair"
+                if (entry.get("clinical") or {}).get("paired") else ""
+            )
             _ENUM_CACHE.append(
-                (entry["id"], f"★ {entry['label']}", f"{kind}; orthotist review required")
+                (entry["id"], f"★ {entry['label']}",
+                 f"{kind}{pair}; orthotist review required")
             )
         if not _ENUM_CACHE:
             _ENUM_CACHE.append(("NONE", "No saved styles", "Save a region first"))

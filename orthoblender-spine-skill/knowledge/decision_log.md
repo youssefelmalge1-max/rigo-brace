@@ -1075,3 +1075,43 @@ Measured: oppwall_attack (30 mm into 24 mm body) now REFUSES with bit-exact rest
 clean — no over-refusal; every prior gated case unchanged (folds=0, new_cross=0);
 patient import+commit 0.65 s -> 1.44 s (static BVH + cross-sheet nets), within the
 2 s contract gate. Full battery green.
+
+## DEC-0044 — 2026-08-15 — #48 Wave 2: snapshot anchors, mirror semantics, pairing metadata, surface-mm sizes
+
+Implements the orthotist's three decisions (2026-08-15):
+
+1. PAIRED STYLES: a style stores ONE region plus a `clinical` block that is never
+   silently discarded — anatomical label, paired flag, counterpart kind/label/
+   landmark/amount, counterpart center offset (mm), mirror provenance
+   (`mirrored_from`), label_auto_mapped. Import restores the label, reports "part of
+   a corrective pair — counterpart not imported"; the library dropdown and panel say
+   so too.
+2. MIRROR: rebuilt. The mirrored footprint is derived from the source's UNdisplaced
+   bake-time snapshot through the importer's continuous-field path (chart u -> -u),
+   anchored by projecting the reflected anchor onto the actual opposite surface —
+   never sampled from displaced geometry, never nearest-vertex collapsed (was
+   241 -> 57 unique verts; now 241 -> 312 coherent, holes 0). Sided landmarks
+   auto-map (AXILLA_L <-> AXILLA_R etc.), flagged label_auto_mapped; midline labels
+   untouched; `mirrored_from` records provenance. On asymmetric bodies where the
+   exact reflection lies off-surface (measured 54 mm at the flank patch —
+   tools/mirrordbg.py) the operator warns and anchors to the closest real surface;
+   regiontest's invariant is now footprint-coherence-around-anchor (5.2 mm), not
+   exact numeric reflection.
+3. SIZE SEMANTICS: surface (geodesic) mm are authoritative. Snapshots store
+   `max_geodesic_mm` over the effective (w>0.05) footprint from an ON-PAD anchor
+   (strong-member vertex nearest the centroid — a horseshoe's raw centroid sits in
+   its gap and shifted imports 40 mm); the import trim limit is that intrinsic size
+   x 1.15 (chord fallback for legacy entries); imports WARN beyond 12% realized-size
+   deviation and never silently resize; region.radius_mm reports surface mm.
+   Measured chord-vs-geodesic divergence: +4.9% on R=60 mm, +4.8% on R=95 mm
+   cylinders for a ~52 mm effective footprint (gated at 12%).
+
+Also: painted add/update snapshots now use EVALUATED coords (last mixed-state path),
+with the region's own preview modifier excluded during update snapshots; the field
+core plateau clamp moved 0.99 -> 0.95 so the full amount survives a SECOND resample
+(mirror) — measured side effect: import parity IoU improved 0.856 -> 0.977 (scan),
+0.861 -> 0.909 (patient), rms down, mirror core 90.1%.
+
+Deferred within scope, honestly: chart fold refusal is Wave 4; the exp-map chart
+stays DEFERRED. Battery green (regionqualtest incl. new mirror/pairing/horseshoe/
+size gates, regiontest, regionstyletest, regionuitest, selftest).

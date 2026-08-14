@@ -31,7 +31,8 @@ editing the test.
   "perf": {"import_commit_max_s": 2.0},
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
   "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
-           "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0}
+           "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
+  "size": {"surface_tolerance_frac": 0.12}
 }
 ```
 
@@ -117,6 +118,30 @@ Broken pre-fix references: imported styles `osc_max` 1.9–4.0 mm, spikes>60° u
    not cite them as verified until those tests exist.*
 9. **Performance** — import + commit operators ≤ import_commit_max_s on the patient
    scan.
+10. **Size semantics (Wave 2 decision)** — a style's authoritative size is measured
+   ALONG THE SURFACE (geodesic mm) over its effective footprint (w > 0.05); the
+   tangent chart's chord extent is diagnostic only and never defines the size. Amount
+   stays normal-displacement mm; Feather stays surface mm. The import trim limit is
+   the stored intrinsic size × 1.15 (legacy chord fallback for old entries), so
+   distant lobes of non-convex pads survive. On a curved target the realized surface
+   size must stay within surface_tolerance_frac of the authored size, else the import
+   WARNS (never silently resizes). Measured chord-vs-geodesic divergence for a
+   ~52 mm effective footprint: +3.5 % on an R=60 mm cylinder, +2 % on R=95 mm; the
+   council's ±8–11 % figure applies to footprints approaching the chart's ~90°-of-arc
+   envelope, where the fold guard (Wave 4) refuses before the divergence can lie.
+11. **Non-convex fidelity (Wave 2)** — the snapshot anchor is snapped ONTO the pad
+   (strong-member vertex nearest the weighted centroid; a horseshoe's raw centroid
+   sits in its gap and shifted the imported pattern 40 mm / IoU 0.123 before this),
+   and save→import of a C-shaped pad at its anchor keeps footprint IoU ≥ the parity
+   iou_min.
+12. **Pairing & mirror provenance (Wave 2 decisions 1–2)** — a style stores ONE
+   region plus never-silently-discarded clinical facts: anatomical label, paired
+   flag, counterpart kind/label/landmark/amount, counterpart center offset (mm),
+   mirror provenance (`mirrored_from`), and whether a sided landmark was auto-mapped
+   (only unambiguous L↔R pairs are mapped; midline labels never change). The UI must
+   say when a selected style belonged to a pair. Mirror derives the opposite region
+   from the UNdisplaced snapshot through the importer's continuous-field path — never
+   from displaced geometry, never by nearest-vertex weight collapse.
 
 Every result file opens with a provenance stamp (git commit, date, Blender version).
 

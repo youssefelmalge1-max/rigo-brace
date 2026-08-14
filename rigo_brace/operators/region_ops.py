@@ -162,19 +162,28 @@ def _style_snapshot(scan, weights, coords=None, normals=None,
     normal_matrix = matrix.to_3x3()
     indices = sorted(weights)
     # Frame origin = the point the orthotist anchored the region to (circle
-    # seed / import cursor); painted regions fall back to the weight-weighted
-    # core centroid.  The frame NORMAL must be derived exactly the way the
-    # import side derives it (_target_surface at the anchor) — any other
-    # normal (area mean, weighted mean) shears the projection on creased
-    # surfaces and shifts the imported footprint.
+    # seed / import cursor); painted regions use the strong-member vertex
+    # nearest the weighted centroid.  Snapping ONTO the pad matters for
+    # non-convex footprints: a horseshoe's centroid sits in its gap, and the
+    # import cursor (necessarily on the pad) would shift the whole pattern
+    # by the centroid-to-pad distance (#48 Wave 2, measured 40 mm / IoU
+    # 0.123 before the snap).  The frame NORMAL must be derived exactly the
+    # way the import side derives it (_target_surface at the anchor) — any
+    # other normal shears the projection on creased surfaces.
     if origin_world is None:
-        center = Vector()
+        centroid = Vector()
         total = 0.0
         for i in indices:
             w = max(weights[i], 1e-6)
-            center += (matrix @ coords[i]) * w
+            centroid += (matrix @ coords[i]) * w
             total += w
-        center /= total
+        centroid /= total
+        strong = [i for i in indices if weights[i] >= 0.3] or indices
+        anchor_index = min(
+            strong,
+            key=lambda i: (matrix @ coords[i] - centroid).length_squared,
+        )
+        center = matrix @ coords[anchor_index]
     else:
         center = Vector(origin_world)
     surface_point, normal = _target_surface(scan, center)
@@ -199,15 +208,53 @@ def _style_snapshot(scan, weights, coords=None, normals=None,
         ])
         normal_offsets.append(abs(relative.dot(outward)) * 1000.0)
     spacing = _sample_spacing_mm(scan, set(indices))
+    # Intrinsic size: the farthest EFFECTIVE (w > 0.05) vertex measured
+    # ALONG the surface from the anchor.  This — not the chart's chord
+    # extent — is the style's authoritative size (Wave 2 decision: surface
+    # mm); the import-side trim uses it so distant lobes of non-convex pads
+    # survive, and the import-side size check compares against the same
+    # w > 0.05 definition.
+    effective = {i for i in indices if weights[i] > 0.05} or set(indices)
+    seed = min(
+        effective, key=lambda i: (matrix @ coords[i] - center).length_squared
+    )
     snapshot = {
         "samples": samples,
         "sample_radius_mm": max(1.0, spacing * 1.75),
         "normal_tolerance_mm": max(15.0, max(normal_offsets) + spacing * 2.0),
         "spacing_mm": spacing,
+        "max_geodesic_mm": round(
+            _member_geodesic_max(me, effective, coords, seed), 2
+        ),
+        "anchor_uv": [0.0, 0.0],
+        "anchor_world": [center.x, center.y, center.z],
     }
     if build_field:
         snapshot["field"] = _field_from_samples(samples, spacing)
     return snapshot
+
+
+def _member_geodesic_max(me, member, coords, seed):
+    """Largest edge-walk distance (mm) from ``seed`` inside the member set."""
+    neighbors = {}
+    for edge in me.edges:
+        a, b = edge.vertices
+        if a in member and b in member:
+            length = (coords[a] - coords[b]).length
+            neighbors.setdefault(a, []).append((b, length))
+            neighbors.setdefault(b, []).append((a, length))
+    dist = {seed: 0.0}
+    heap = [(0.0, seed)]
+    while heap:
+        d, i = heapq.heappop(heap)
+        if d > dist.get(i, 1e30):
+            continue
+        for j, length in neighbors.get(i, ()):
+            nd = d + length
+            if nd < dist.get(j, 1e30):
+                dist[j] = nd
+                heapq.heappush(heap, (nd, j))
+    return max(dist.values()) * 1000.0 if dist else 0.0
 
 
 def _store_snapshot(scan, mask, snapshot):
@@ -319,8 +366,12 @@ def _field_from_samples(samples, spacing_mm):
             if nearest > hull_start:
                 t = max(0.0, 1.0 - (nearest - hull_start) / (spacing_mm * 1.3))
                 value *= t * t * (3.0 - 2.0 * t)
-            # Core plateau: the full requested amount must survive resampling.
-            if value >= 0.99:
+            # Core plateau: the full requested amount must survive
+            # resampling — including a SECOND resample (mirror evaluates the
+            # stored field again), where bilinear attenuation of a
+            # one-cell-wide plateau reaches ~5 %.  0.95 absorbs that; the
+            # parity gates (IoU/RMS/profile) verify the outline is unharmed.
+            if value >= 0.95:
                 value = 1.0
             elif value <= 0.005:
                 value = 0.0
@@ -709,23 +760,36 @@ def _weights_from_style(scan, entry, target_world, target_normal, coords):
                 continue
         weights[index] = weight
     weights = _connected_subset(scan, weights, coords, target_world)
-    return _geodesic_trim(scan, weights, coords, target_world, samples)
+    return _geodesic_trim(
+        scan, weights, coords, target_world, samples,
+        entry.get("max_geodesic_mm"),
+    )
 
 
-def _geodesic_trim(scan, weights, coords, target_world, samples):
-    """Soft-trim vertices the authored region could never have reached.
+def _geodesic_trim(scan, weights, coords, target_world, samples,
+                   max_geodesic_mm=None):
+    """Soft-trim vertices the authored region could never have reached, and
+    measure the realized surface size.
 
     The tangent-plane mapping is extrinsic: it happily assigns weights across
     a concave fold to surface 22 mm away in space but 50 mm away along the
     surface.  The authored region (paint or geodesic circle) is intrinsic, so
     the surface path from the cursor, measured inside the footprint, must not
-    exceed the sample span; the excess fades out smoothly, never a cliff.
+    exceed the authored size; the excess fades out smoothly, never a cliff.
+
+    The limit is the style's stored INTRINSIC size (``max_geodesic_mm``,
+    surface mm — Wave 2 decision) so distant lobes of non-convex pads
+    survive; legacy entries fall back to the chart's chord extent.
+    Returns (trimmed weights, realized surface radius in mm).
     """
     if not weights:
-        return weights
-    limit = max(math.hypot(s[0], s[1]) for s in samples) * 1.35 * 0.001
+        return weights, 0.0
+    if max_geodesic_mm:
+        limit = float(max_geodesic_mm) * 1.15 * 0.001
+    else:
+        limit = max(math.hypot(s[0], s[1]) for s in samples) * 1.35 * 0.001
     if limit <= 0.0:
-        return weights
+        return weights, 0.0
     me = scan.data
     matrix = scan.matrix_world
     member = set(weights)
@@ -753,6 +817,7 @@ def _geodesic_trim(scan, weights, coords, target_world, samples):
                 heapq.heappush(heap, (nd, j))
     fade_start = limit * 0.8
     trimmed = {}
+    realized = 0.0
     for i, w in weights.items():
         d = dist.get(i)
         if d is None:
@@ -762,7 +827,9 @@ def _geodesic_trim(scan, weights, coords, target_world, samples):
             w *= t * t * (3.0 - 2.0 * t)
         if w > 0.005:
             trimmed[i] = w
-    return trimmed
+            if w > 0.05 and d > realized:
+                realized = d
+    return trimmed, realized * 1000.0
 
 
 def _scan(context):
@@ -894,7 +961,14 @@ class RIGO_OT_region_add(Operator):
             # Keep zero-falloff boundary vertices as near-zero group members so
             # Edit Selection can reconstruct the original painted face border.
             vg.add([idx], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
-        _store_snapshot(obj, mask, _style_snapshot(obj, weights))
+        # Snapshot against the EVALUATED surface (what the user painted on),
+        # like the circle path — the last raw-vs-evaluated mixed-state path
+        # (#48 Wave 2); falls back to raw coords when a modifier changes the
+        # vertex count.
+        coords_e, normals_e = _evaluated_positions(obj)
+        _store_snapshot(
+            obj, mask, _style_snapshot(obj, weights, coords_e, normals_e)
+        )
 
         region = obj.rigo_regions.add()
         region.name = f"Region {seq}"
@@ -1112,9 +1186,20 @@ class RIGO_OT_region_update(Operator):
             group = obj.vertex_groups.new(name=region.surface_mask)
             for index, weight in weights.items():
                 group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+            # Snapshot the evaluated surface WITHOUT this region's own live
+            # preview — otherwise the update would bake its own displacement
+            # into the authored field (the RC3 failure, via the preview).
+            own_preview = _preview_modifier(obj, region)
+            if own_preview is not None:
+                shown = own_preview.show_viewport
+                own_preview.show_viewport = False
+            coords_e, normals_e = _evaluated_positions(obj)
             _store_snapshot(
-                obj, region.surface_mask, _style_snapshot(obj, weights)
+                obj, region.surface_mask,
+                _style_snapshot(obj, weights, coords_e, normals_e),
             )
+            if own_preview is not None:
+                own_preview.show_viewport = shown
             region.center = centroid
             region.direction = normal
             region.radius_mm = radius_mm
@@ -1129,9 +1214,11 @@ class RIGO_OT_region_style_save(Operator):
     """Save the committed correction as a reusable style.
 
     Stores the footprint outline and the continuous displacement-field grid
-    in a surface-local frame, plus the Amount (mm), Feather and Falloff, the
-    Pressure/Expansion kind and the surface orientation (schema v2), so the
-    style can be re-applied on any compatible body surface.
+    in a surface-local frame, the size along the surface (mm), the Amount
+    (mm), Feather and Falloff, the Pressure/Expansion kind, the surface
+    orientation, and the clinical metadata (landmark, pairing/counterforce
+    facts, mirror provenance) — schema v2 — so the style can be re-applied
+    on any compatible body surface.
     Saving with an existing name updates that style"""
 
     bl_idname = "rigo.region_style_save"
@@ -1206,6 +1293,28 @@ class RIGO_OT_region_style_save(Operator):
             ),
             None,
         )
+        # Clinical metadata (Wave 2 decision 1): one region per style, but
+        # the pairing facts travel with it — never silently discarded.
+        clinical = {
+            "anatomical_label": region.anatomical_label,
+            "paired": False,
+            "mirrored_from": region.mirrored_from,
+            "label_auto_mapped": bool(region.label_auto_mapped),
+        }
+        if 0 <= region.opposing_region < len(scan.rigo_regions):
+            opposing = scan.rigo_regions[region.opposing_region]
+            clinical.update({
+                "paired": True,
+                "role": region.kind,
+                "counterpart_kind": opposing.kind,
+                "counterpart_label": opposing.name,
+                "counterpart_anatomical_label": opposing.anatomical_label,
+                "counterpart_magnitude_mm": opposing.magnitude_mm,
+                "counterpart_center_offset_mm": [
+                    round((opposing.center[k] - region.center[k]) * 1000.0, 1)
+                    for k in range(3)
+                ],
+            })
         entry = {
             "id": existing["id"] if existing
             else region_library.identifier_from_label(label),
@@ -1217,6 +1326,9 @@ class RIGO_OT_region_style_save(Operator):
             "sample_radius_mm": snapshot["sample_radius_mm"],
             "normal_tolerance_mm": snapshot["normal_tolerance_mm"],
             "field": snapshot["field"],
+            "max_geodesic_mm": snapshot.get("max_geodesic_mm"),
+            "anchor_uv": snapshot.get("anchor_uv", [0.0, 0.0]),
+            "clinical": clinical,
             "requires_orthotist_review": True,
             "schema_version": 2,
         }
@@ -1271,10 +1383,25 @@ class RIGO_OT_region_style_import(Operator):
         if target is None:
             self.report({"ERROR"}, "Place the 3D cursor on the scan surface")
             return {"CANCELLED"}
-        weights = _weights_from_style(scan, entry, target, normal, coords)
+        weights, realized_mm = _weights_from_style(
+            scan, entry, target, normal, coords
+        )
         if len(weights) < 3:
             self.report({"ERROR"}, "Saved style does not overlap enough scan vertices")
             return {"CANCELLED"}
+        # Size semantics (Wave 2 decision): surface mm are authoritative.
+        # Warn — never silently resize — when this body realizes the stored
+        # footprint materially larger or smaller along its surface.
+        authored_mm = float(entry.get("max_geodesic_mm") or 0.0)
+        if authored_mm > 0.0 and realized_mm > 0.0:
+            deviation = abs(realized_mm - authored_mm) / authored_mm
+            if deviation > 0.12:
+                self.report(
+                    {"WARNING"},
+                    f"On this body the footprint measures {realized_mm:.0f} mm "
+                    f"along the surface (authored {authored_mm:.0f} mm, "
+                    f"{deviation * 100.0:.0f}% off) — review the size",
+                )
 
         sequence = int(scan.get("rigo_region_seq", 0)) + 1
         scan["rigo_region_seq"] = sequence
@@ -1295,17 +1422,30 @@ class RIGO_OT_region_style_import(Operator):
         region.center = scan.matrix_world.inverted() @ target
         region.direction = inverse_normal.normalized()
         region.magnitude_mm = float(entry["magnitude_mm"])
-        region.radius_mm = max(
+        # Surface mm are the style's size (Wave 2); the chart's chord extent
+        # is only the fallback for legacy entries.
+        region.radius_mm = authored_mm or max(
             (Vector((sample[0], sample[1])).length for sample in entry["samples"]),
             default=0.0,
         )
         region.falloff_type = entry.get("falloff", "SMOOTH")
+        clinical = entry.get("clinical") or {}
+        if clinical.get("anatomical_label"):
+            try:
+                region.anatomical_label = clinical["anatomical_label"]
+            except TypeError:
+                pass
         region.surface_mask = mask
         scan.rigo_region_index = len(scan.rigo_regions) - 1
         _sync_preview(scan, region)
+        pair_note = (
+            " — authored as part of a corrective pair; the counterpart was "
+            "not imported" if clinical.get("paired") else ""
+        )
         self.report(
             {"INFO"},
-            f"Imported '{entry['label']}' as a live region; orthotist review required",
+            f"Imported '{entry['label']}' as a live region; orthotist "
+            f"review required{pair_note}",
         )
         return {"FINISHED"}
 
@@ -1471,6 +1611,17 @@ class RIGO_OT_region_apply(Operator):
         return {"FINISHED"}
 
 
+# Landmarks with an unambiguous left/right counterpart (Wave 2 decision 2).
+# Midline labels (C7, THORACIC_APEX, LUMBAR_APEX, WAISTLINE, NONE) are never
+# auto-changed.
+_SIDED_LABELS = {
+    "ACROMION_L": "ACROMION_R", "SCAPULA_L": "SCAPULA_R",
+    "AXILLA_L": "AXILLA_R", "ILIAC_L": "ILIAC_R", "ASIS_L": "ASIS_R",
+    "PSIS_L": "PSIS_R", "TROCHANTER_L": "TROCHANTER_R",
+}
+_SIDED_LABELS.update({v: k for k, v in list(_SIDED_LABELS.items())})
+
+
 class RIGO_OT_region_mirror(Operator):
     """Create the coupled opposite-side region across the sagittal plane"""
 
@@ -1496,40 +1647,111 @@ class RIGO_OT_region_mirror(Operator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         me = obj.data
-        tree = kdtree.KDTree(len(me.vertices))
-        for v in me.vertices:
-            tree.insert(v.co, v.index)
-        tree.balance()
+        coords, eval_normals = _evaluated_positions(obj)
+        if coords is None:
+            coords = [v.co.copy() for v in me.vertices]
+            eval_normals = [v.normal.copy() for v in me.vertices]
 
-        gi = vg_src.index
+        # Anchor: the source anchor reflected across the sagittal plane,
+        # re-projected onto the actual opposite surface (evaluated state).
+        snapshot = _load_snapshot(obj, src.surface_mask)
+        if snapshot and snapshot.get("anchor_world"):
+            src_anchor = Vector(snapshot["anchor_world"])
+        else:
+            src_anchor = obj.matrix_world @ Vector(src.center)
+        mirrored_anchor = Vector((-src_anchor.x, src_anchor.y, src_anchor.z))
+        target, normal = _target_surface(obj, mirrored_anchor)
+        if target is None:
+            self.report({"ERROR"}, "Could not find the opposite surface")
+            return {"CANCELLED"}
+
+        legacy = False
+        weights_m = {}
+        if snapshot is not None:
+            # Derive the mirrored footprint from the UNdisplaced bake-time
+            # snapshot, evaluated through the same continuous-field path the
+            # importer uses.  Mirroring the frame flips the side axis, so the
+            # chart mirrors as u -> -u.  This replaces the old
+            # nearest-vertex transfer, which sampled the CURRENT (possibly
+            # displaced) surface and collapsed weights onto a fraction of
+            # the vertices (#48 Wave 2: 241 -> 57 unique verts measured).
+            samples_m = [
+                [-s[0], s[1], s[2]] for s in snapshot["samples"]
+            ]
+            spacing = float(
+                snapshot.get(
+                    "spacing_mm",
+                    float(snapshot.get("sample_radius_mm", 3.5)) / 1.75,
+                )
+            )
+            entry_m = {
+                "samples": samples_m,
+                "sample_radius_mm": snapshot.get("sample_radius_mm", 3.0),
+                "normal_tolerance_mm": snapshot.get(
+                    "normal_tolerance_mm", 15.0
+                ),
+                "field": _field_from_samples(samples_m, spacing),
+                "max_geodesic_mm": snapshot.get("max_geodesic_mm"),
+            }
+            weights_m, _realized = _weights_from_style(
+                obj, entry_m, target, normal, coords
+            )
+        if len(weights_m) < 3:
+            # Legacy region without a usable snapshot: fall back to the old
+            # nearest-vertex transfer of the current surface.
+            legacy = True
+            tree = kdtree.KDTree(len(coords))
+            for index, co in enumerate(coords):
+                tree.insert(co, index)
+            tree.balance()
+            gi = vg_src.index
+            for v in me.vertices:
+                w = 0.0
+                for g in v.groups:
+                    if g.group == gi:
+                        w = g.weight
+                        break
+                if w <= 0.0:
+                    continue
+                source_co = coords[v.index]
+                _co, idx, _dist = tree.find(
+                    Vector((-source_co.x, source_co.y, source_co.z))
+                )
+                if idx is not None:
+                    weights_m[idx] = max(weights_m.get(idx, 0.0), w)
+        if len(weights_m) < 3:
+            self.report({"ERROR"}, "Mirroring found no opposite-side surface")
+            return {"CANCELLED"}
+
         seq = int(obj.get("rigo_region_seq", 0)) + 1
         obj["rigo_region_seq"] = seq
         mask = f"RIGO_REGION_{seq:03d}"
         vg_new = obj.vertex_groups.new(name=mask)
-
-        pairs = 0
-        for v in me.vertices:
-            w = 0.0
-            for g in v.groups:
-                if g.group == gi:
-                    w = g.weight
-                    break
-            if w <= 0.0:
-                continue
-            mirrored = Vector((-v.co.x, v.co.y, v.co.z))
-            _co, idx, _dist = tree.find(mirrored)
-            if idx is not None:
-                vg_new.add([idx], w, "REPLACE")
-                pairs += 1
+        for idx, w in weights_m.items():
+            vg_new.add([idx], max(w, _MASK_EDGE_WEIGHT), "REPLACE")
+        # The mirrored region gets its OWN undisplaced snapshot, so saving
+        # it as a style never falls back to displaced-geometry sampling.
+        _store_snapshot(
+            obj, mask, _style_snapshot(
+                obj, weights_m, coords, eval_normals, origin_world=target
+            )
+        )
 
         src_index = obj.rigo_region_index
         new = obj.rigo_regions.add()
         new.name = f"{src.name} (mirror)"
-        new.anatomical_label = "NONE"
+        # Sided landmarks map to their counterpart, flagged for review;
+        # midline labels are copied untouched (Wave 2 decision 2).
+        mapped = _SIDED_LABELS.get(src.anatomical_label)
+        new.anatomical_label = mapped or src.anatomical_label
+        new.label_auto_mapped = mapped is not None
+        new.mirrored_from = src.name
         # The Rigo couple: pressure on one side, expansion room on the other.
         new.kind = "EXPANSION" if src.kind == "PRESSURE" else "PRESSURE"
-        new.center = (-src.center[0], src.center[1], src.center[2])
-        new.direction = (-src.direction[0], src.direction[1], src.direction[2])
+        new.center = obj.matrix_world.inverted() @ target
+        new.direction = (
+            obj.matrix_world.to_3x3().inverted() @ normal
+        ).normalized()
         new.magnitude_mm = src.magnitude_mm
         new.radius_mm = src.radius_mm
         new.falloff_type = src.falloff_type
@@ -1539,7 +1761,24 @@ class RIGO_OT_region_mirror(Operator):
         obj.rigo_region_index = len(obj.rigo_regions) - 1
         _sync_preview(obj, new)
 
-        self.report({"INFO"}, f"{new.name}: {pairs} verts mirrored — review the kind")
+        # On an asymmetric (scoliotic) body the exact mirror position can lie
+        # off-surface; the region is anchored to the closest real surface
+        # instead, and a large gap is flagged for review — never hidden.
+        asym_mm = (target - mirrored_anchor).length * 1000.0
+        if asym_mm > 15.0:
+            self.report(
+                {"WARNING"},
+                f"The opposite surface is {asym_mm:.0f} mm from the exact "
+                "mirror position (asymmetric body) — review the placement",
+            )
+        how = (
+            "legacy nearest-vertex transfer — REVIEW the footprint"
+            if legacy else "derived from the authored field"
+        )
+        self.report(
+            {"INFO"},
+            f"{new.name}: {len(weights_m)} verts ({how}) — review the kind",
+        )
         return {"FINISHED"}
 
 

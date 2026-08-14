@@ -1066,3 +1066,16 @@ were reproduced with independent oracles before any production predicate is writ
 so Wave 1's red fixtures already exist in tools/hardendbg.py. Also: bpy.ops.ed.undo()
 cannot run from app-timer context even with a full temp_override — scripted undo
 coverage needs a modal harness (Wave 5), never claim it casually.
+
+## LM-0043 — Test the footprint, not the metadata; expect asymmetry
+
+Wave 2's mirror rework surfaced a hidden truth: the old mirror test asserted the
+CENTER PROPERTY reflected exactly (metadata, true by construction) while the actual
+footprint could land anywhere — on this scan the exact mirror position is 54 mm off
+the opposite surface because scoliotic bodies are asymmetric by definition. The
+meaningful invariants are: footprint coheres around the real anchored surface point,
+sign of the side flips, links/labels/provenance correct, and the operator WARNS about
+the asymmetry instead of hiding it. Also: when a value is resampled twice (author ->
+field -> mirror), any clamp that "preserves the core" must absorb two attenuations,
+not one — raising the plateau threshold to cover that measurably improved every
+import parity gate, which is the difference between tuning and fixing.
