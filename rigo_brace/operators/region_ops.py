@@ -428,7 +428,10 @@ def _faired_normals(me, weights, mean_edge):
     Unit length, so |displacement| stays exactly amount × weight.
     """
     radius = max(0.006, 2.0 * mean_edge)
-    member = {i for i, w in weights.items() if w >= 1e-6}
+    # Membership is "in the mask" (> 0.0), NOT ">= the 1e-6 floor": vertex
+    # groups store float32, and float32(1e-6) < 1e-6, so floor-valued
+    # boundary vertices would silently fail a >= test (#48 hardening, item 8).
+    member = {i for i, w in weights.items() if w > 0.0}
     # Two-pass zone-restricted adjacency (member + ~2 rings) — building the
     # whole scan's adjacency per commit costs more than the fairing itself.
     ring1 = set(member)
@@ -502,7 +505,7 @@ def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
     Returns the number of faces still defective after the pass.
     """
     me = obj.data
-    member = {i for i, w in weights.items() if w >= 1e-6}
+    member = {i for i, w in weights.items() if w > 0.0}
     if not member:
         return 0
     if affected is None:
@@ -1257,7 +1260,7 @@ class RIGO_OT_region_apply(Operator):
                     weights[vertex.index] = g.weight
                     break
         me = obj.data
-        member = {i for i, w in weights.items() if w >= 1e-6}
+        member = {i for i, w in weights.items() if w > 0.0}
         affected = [
             p for p in me.polygons if any(vi in member for vi in p.vertices)
         ]

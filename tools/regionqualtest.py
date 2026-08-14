@@ -10,8 +10,11 @@ GUI Blender only:
 """
 
 import math
+import os
 import random
 import statistics
+import subprocess
+import sys
 import time
 import traceback
 
@@ -20,6 +23,13 @@ import bmesh
 import importlib
 from mathutils import Vector, kdtree
 from mathutils.bvhtree import BVHTree
+
+# Every numeric gate value comes from the contract's machine-readable block —
+# nowhere else (hardening Wave 0, DEC-0042).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import quality_contract
+
+_T = quality_contract.load()
 
 _OUT = r"C:\Projects\Blender Add-on Braces\regionqualtest_result.txt"
 _SCAN = r"C:\Projects\Blender Add-on Braces\Brace Sample.stl"
@@ -155,7 +165,14 @@ def _mean_edge_mm(me, fp):
 
 
 def _osc_gate_mm(amount_mm, feather_mm, h_mm):
-    return max(1.0, 2.0 * amount_mm * 6.0 / (feather_mm * feather_mm) * h_mm * h_mm)
+    smooth = _T["smooth"]
+    analytic = (
+        2.0 * amount_mm * smooth["osc_profile_coeff"]
+        / (feather_mm * feather_mm) * h_mm * h_mm
+    )
+    # Clamped so the bound can never go vacuous (it reached 40.5 mm at
+    # feather 10): oscillation beyond the amount itself is never legitimate.
+    return max(smooth["osc_floor_mm"], min(analytic, amount_mm))
 
 
 def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
@@ -181,7 +198,7 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     osc_mean = (sum(osc) / len(osc)) if osc else 0.0
 
     rev = 0
-    rev_tol = max(0.2, 0.05 * amount_mm)
+    rev_tol = _T["feather"]["rev_tol_mm"]
     for e in me.edges:
         a, b = e.vertices
         wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
@@ -192,6 +209,22 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
 
     core = [abs(d[i]) for i, w in weights.items() if w > 0.9]
     core_med = statistics.median(core) if core else 0.0
+
+    # Weight-decile profile: mean |d| must rise monotonically with weight
+    # (shape-agnostic form of the contract's transition-profile clause).
+    bins = {}
+    for i, w in weights.items():
+        if w > 0.0:
+            bins.setdefault(min(9, int(w * 10.0)), []).append(abs(d[i]))
+    profile = [sum(v) / len(v) for _k, v in sorted(bins.items())]
+    decile_tol = _T["feather"]["decile_rev_tol_mm"]
+    decile_rev = sum(
+        1 for a, b in zip(profile, profile[1:]) if b < a - decile_tol
+    )
+
+    count_ok = (
+        len(me.vertices) == len(before) and len(me.polygons) == len(before_fn)
+    )
     outside = max(
         (abs(d[v.index]) for v in me.vertices if v.index not in weights),
         default=0.0,
@@ -214,12 +247,15 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     _mark(
         f"[{tag}] verts={len(fp)} core_med={core_med:.2f}/{amount_mm} "
         f"outside={outside:.4f} osc_max={osc_max:.3f} osc_mean={osc_mean:.4f} "
-        f"rev={rev} new_spikes={new_spikes} inverted={inverted} degen={degen} "
-        f"selfx={selfx} holes={holes} nonman_delta={nonman_delta} sign_ok={sign_ok}"
+        f"rev={rev} decile_rev={decile_rev} new_spikes={new_spikes} "
+        f"inverted={inverted} degen={degen} "
+        f"selfx={selfx} holes={holes} nonman_delta={nonman_delta} "
+        f"count_ok={count_ok} sign_ok={sign_ok}"
     )
     return {
         "d": d, "fp": fp, "holes": holes, "osc_max": osc_max,
-        "osc_mean": osc_mean, "rev": rev, "core_med": core_med,
+        "osc_mean": osc_mean, "rev": rev, "decile_rev": decile_rev,
+        "core_med": core_med, "count_ok": count_ok,
         "outside": outside, "new_spikes": new_spikes, "inverted": inverted,
         "degen": degen, "selfx": selfx, "nonman_delta": nonman_delta,
         "sign_ok": sign_ok, "weights": weights, "coords": before,
@@ -229,11 +265,15 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
 def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
               skip_osc=False):
     """Validity + Amount + Feather gate block from the contract."""
+    v = _T["validity"]
     _gate(
         f"{tag}.validity",
-        m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
-        and m["holes"] == 0 and m["nonman_delta"] == 0 and m["sign_ok"],
-        f"selfx={m['selfx']} inv={m['inverted']} holes={m['holes']}",
+        m["selfx"] <= v["selfx"] and m["inverted"] <= v["inverted"]
+        and m["degen"] <= v["degenerate"] and m["holes"] <= v["holes"]
+        and m["nonman_delta"] <= v["nonmanifold_delta"]
+        and m["count_ok"] and m["sign_ok"],
+        f"selfx={m['selfx']} inv={m['inverted']} holes={m['holes']} "
+        f"count_ok={m['count_ok']}",
     )
     if not skip_osc:
         bound = _osc_gate_mm(amount_mm, feather_mm, h_mm)
@@ -245,20 +285,36 @@ def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
     if not skip_amount:
         _gate(
             f"{tag}.amount",
-            0.9 * amount_mm <= m["core_med"] <= 1.1 * amount_mm,
+            _T["amount"]["core_lo"] * amount_mm <= m["core_med"]
+            <= _T["amount"]["core_hi"] * amount_mm,
             f"core_med={m['core_med']:.2f}",
         )
     _gate(
         f"{tag}.feather",
-        m["outside"] <= 0.001 and m["rev"] == 0,
-        f"outside={m['outside']:.4f} rev={m['rev']}",
+        m["outside"] <= _T["feather"]["outside_max_mm"] and m["rev"] == 0
+        and m["decile_rev"] == 0,
+        f"outside={m['outside']:.4f} rev={m['rev']} decile_rev={m['decile_rev']}",
     )
 
 
-def _gate_parity(tag, m_direct, m_import, amount_mm=15.0):
+def _gate_parity(tag, m_direct, m_import, amount_mm, feather_mm, h_mm):
+    par = _T["parity"]
     keys = set(m_direct["d"]) & set(m_import["d"])
     diffs = [abs(m_direct["d"][k] - m_import["d"][k]) for k in keys]
     rms = math.sqrt(sum(x * x for x in diffs) / len(diffs))
+    # Two-part max deviation (contract gate 5): the clinically controlled core
+    # must match tightly; the transition rim may shift laterally by
+    # ~rim_shift_edges edges, which on the profile's peak slope
+    # (1.5 * amount/feather) reads as a depth difference without any real
+    # shape change.
+    core_diffs = [
+        abs(m_direct["d"][k] - m_import["d"][k]) for k in keys
+        if m_direct["weights"].get(k, 0.0) > 0.9
+        and m_import["weights"].get(k, 0.0) > 0.9
+    ]
+    core_maxdd = max(core_diffs) if core_diffs else 0.0
+    rim_maxdd = max(diffs) if diffs else 0.0
+    rim_bound = par["rim_shift_edges"] * h_mm * 1.5 * amount_mm / feather_mm
     # Effective footprints (w > 0.05): near-zero mask skirts are not clinical.
     eff_d = {i for i, w in m_direct["weights"].items() if w > 0.05}
     eff_i = {i for i, w in m_import["weights"].items() if w > 0.05}
@@ -280,14 +336,15 @@ def _gate_parity(tag, m_direct, m_import, amount_mm=15.0):
                 f"w_imp={m_import['weights'].get(i, 0.0):.3f} "
                 f"r_seed={(coords[i] - cd).length * 1000.0:.1f}mm"
             )
-    # Rim tolerance: the transition zone may shift laterally by ~1.5 edges;
-    # the core must match tightly (rms).
     _gate(
         f"{tag}.parity",
-        m_import["osc_max"] <= 1.5 * m_direct["osc_max"] + 0.3
-        and m_import["new_spikes"] <= m_direct["new_spikes"] + 2
-        and iou >= 0.75 and rms <= 0.5 and max(diffs) <= 0.25 * amount_mm,
-        f"IoU={iou:.3f} rms={rms:.3f} maxdd={max(diffs):.2f} "
+        m_import["osc_max"] <= par["osc_factor"] * m_direct["osc_max"]
+        + par["osc_slack_mm"]
+        and m_import["new_spikes"] <= m_direct["new_spikes"] + par["spike_slack"]
+        and iou >= par["iou_min"] and rms <= par["rms_max_mm"]
+        and core_maxdd <= par["core_maxdd_mm"] and rim_maxdd <= rim_bound,
+        f"IoU={iou:.3f} rms={rms:.3f} core_maxdd={core_maxdd:.2f} "
+        f"rim_maxdd={rim_maxdd:.2f}/{rim_bound:.2f} "
         f"osc={m_import['osc_max']:.2f}vs{m_direct['osc_max']:.2f} "
         f"spikes={m_import['new_spikes']}vs{m_direct['new_spikes']}",
     )
@@ -485,7 +542,7 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     h = _mean_edge_mm(obj.data, fp)
     _gate_vaf(tag, m, amount, feather_for_gate, h, skip_amount=not core_required)
     if parity_ref is not None:
-        _gate_parity(tag, parity_ref, m)
+        _gate_parity(tag, parity_ref, m, amount, feather_for_gate, h)
     m["op_time"] = t_import + t_commit
     _mark(
         f"[{tag}] import_time={t_import:.3f}s commit_time={t_commit:.3f}s"
@@ -678,6 +735,38 @@ def _run():
         _gate_cursor_import("eval_consistency", obj, style, visible)
         _delete(obj)
 
+        # contract 7/8: a live topology-changing modifier must make the import
+        # REFUSE with an actionable error and mutate NOTHING.
+        obj = _import_scan(_SCAN)
+        mod = obj.modifiers.new("QA_SUBD", "SUBSURF")
+        mod.levels = 1
+        settings.region_style = style
+        bpy.context.scene.cursor.location = cursor
+        before_pos = {v.index: v.co.copy() for v in obj.data.vertices}
+        n_regions = len(obj.rigo_regions)
+        n_groups = len(obj.vertex_groups)
+        msg = ""
+        try:
+            st = bpy.ops.rigo.region_style_import()
+        except RuntimeError as exc:
+            st = {"CANCELLED"}
+            msg = str(exc)
+        unchanged = (
+            len(obj.rigo_regions) == n_regions
+            and len(obj.vertex_groups) == n_groups
+            and all(
+                (obj.data.vertices[i].co - before_pos[i]).length == 0.0
+                for i in before_pos
+            )
+        )
+        _gate(
+            "import_refusal",
+            st != {"FINISHED"} and unchanged
+            and ("vertex count" in msg or "modifier" in msg),
+            f"status={st} unchanged={unchanged} msg={msg[:80]}",
+        )
+        _delete(obj)
+
         # determinism: identical inputs -> bit-equal weights
         runs = []
         for _ in range(2):
@@ -721,7 +810,7 @@ def _run():
         # Contract 9 times the PRODUCT operators (import + commit), not the
         # test harness's own bmesh/BVH measurement passes around them.
         op_time = m["op_time"] if m else 99.0
-        _gate("perf", op_time <= 2.0,
+        _gate("perf", op_time <= _T["perf"]["import_commit_max_s"],
               f"import+commit ops={op_time:.2f}s on patient scan")
         _delete(obj)
 
@@ -748,12 +837,76 @@ def _run():
             _run_import(tag, g, style_flat, (0.0, 0.0, 0.0), 15.0, 30.0)
             _delete(g)
 
+    def roundtrip_case():
+        # Precision contract (#48 hardening item 8): mask weights survive the
+        # float32 vertex-group store with their MEMBERSHIP intact (> 0.0),
+        # across repeated write/read cycles; library JSON round-trips exactly.
+        g = _make_grid("QA_RT", 0.05, 4, 0.0, 9)
+        vg = g.vertex_groups.new(name="QA_RT_G")
+        values = [0.0, 5e-7, 1e-6, 2e-6, 0.005, 0.0051, 0.99, 1.0]
+        ok = True
+        detail = []
+        stored = {i: v for i, v in enumerate(values)}
+        for _cycle in range(3):
+            for i, v in stored.items():
+                vg.add([i], v, "REPLACE")
+            read = {}
+            for i in stored:
+                for gref in g.data.vertices[i].groups:
+                    if gref.group == vg.index:
+                        read[i] = gref.weight
+                        break
+            for i, v in stored.items():
+                got = read.get(i, 0.0)
+                if v > 0.0 and not got > 0.0:
+                    ok = False
+                    detail.append(f"v={v} lost membership (read {got})")
+                if abs(got - v) > 1e-6 + v * 1e-6:
+                    ok = False
+                    detail.append(f"v={v} drifted to {got}")
+            stored = read
+        entry = {
+            "id": "QA_RT_STYLE", "label": "QA RT Style", "kind": "PRESSURE",
+            "magnitude_mm": 8.0, "falloff": "SMOOTH",
+            "samples": [[0.0, 0.0, 1.0], [3.0, 0.0, 0.5], [0.0, 3.0, 0.5]],
+            "sample_radius_mm": 3.0,
+            "normal_tolerance_mm": 15.0,
+            "field": {"cell_mm": 1.0, "x0": 0.0, "y0": 0.0, "nx": 2, "ny": 1,
+                      "values": values},
+            "requires_orthotist_review": True, "schema_version": 2,
+        }
+        lib.upsert_entry(entry)
+        for _cycle in range(3):
+            back = lib.get_entry("QA_RT_STYLE")
+            if back is None or back["field"]["values"] != values:
+                ok = False
+                detail.append("library JSON drifted")
+                break
+            lib.upsert_entry(dict(back))
+            lib.load_library(force=True)
+        lib.delete_entry("QA_RT_STYLE")
+        _gate("serialization_roundtrip", ok, "; ".join(detail) or "3 cycles clean")
+        _delete(g)
+
     try:
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip() or "unknown"
+        except Exception:  # noqa: BLE001
+            commit = "unknown"
+        _mark(
+            f"provenance commit={commit} date={time.strftime('%Y-%m-%d %H:%M')} "
+            f"blender={bpy.app.version_string}"
+        )
         _mark("phase=start")
         _safe("scan", scan_cases)
         _safe("imports", import_cases)
         _safe("patient", patient_cases)
         _safe("flat", flat_cases)
+        _safe("roundtrip", roundtrip_case)
         _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
         failed = [k for k, v in _GATES.items() if not v]
         _mark(f"failed_gates={failed}")

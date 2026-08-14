@@ -1307,3 +1307,32 @@ exp-map chart, schema v3) were explicitly DEFERRED: the storage format is chart-
 so migration stays open; not justified by current evidence.
 
 No production code was changed by this review.
+
+#### #48 hardening — plan + Wave 0 landed (2026-08-14)
+
+Every backlog item was independently reproduced or precisely bounded before planning
+(`tools/hardendbg.py` → `hardendbg_result.txt`; ERR-0031): opposite-wall pierce commits
+FINISHED with 46 undetected crossings (P0); a pre-creased 80°-rotation fold evades every
+predicate (P0, detector proven: adjacent-normal dot −0.09→−1.00); mirror snapshot bypass
++ 241→57 Voronoi collapse + metadata loss (P1); Edit→Update destroys imported fields
+(weight RMS 0.453, P1); chart folds at 877 collision pairs on R=60 mm/140 mm (P2);
+horseshoe import loses 78 % — root cause is trim AND centroid-anchor-in-the-gap (P1);
+float32(1e-6) < 1e-6 defeats the mask floor (P3, fixed). One council claim was narrowed:
+flat-start adjacent folds ARE caught by the flip test; only creased geometry evades.
+
+The full engineering plan (root causes, corrections, alternatives, acceptance criteria,
+regression matrix, wave order) is `knowledge/hardening_plan_48.md`.
+
+**Wave 0 (contract integrity) + item-8 rider SHIPPED** (DEC-0042): thresholds live only
+in the contract's machine-readable json block (`tools/quality_contract.py` +
+`tools/contractcheck.py` guard it); parity gate replaced by a derived two-part bound
+(plateau ≤1.0 mm — measured 0.35–0.75; rim ≤ slope-derived — measured ≤2.70 vs 4.46);
+IoU back to 0.80; rev tol back to 0.2 mm; osc bound clamped to the amount; new gates:
+count invariance, decile monotonicity, topology-modifier import refusal, serialization
+round-trip, provenance stamps; region_ops member floor `>= 1e-6` → `> 0.0`. Scripted
+undo is explicitly PENDING (ed.undo polls false in timer context; Wave 5 modal harness).
+Battery green: regionqualtest / regiontest / regionstyletest / regionuitest / selftest.
+
+Open: Waves 1–5 (validator v2, mirror/anchor snapshots, field-preserving edit, chart
+guard, remaining evidence). Clinical decisions awaiting the orthotist: paired-style
+storage model; sided-label auto-map on mirror; chord-vs-geodesic mm ruling.

@@ -491,3 +491,32 @@ must take both from the SAME (evaluated) geometry state; never gate surface qual
 max-displacement alone — gate oscillation, dihedral spikes, inversion, self-intersection.
 Files affected: `operators/region_ops.py`, `tools/regionqualtest.py`,
 `tools/regionqualdbg.py`, `tools/regiontest.py`, `tools/regionstyletest.py`.
+
+## ERR-0031 — 2026-08-14 — #48 hardening reproductions (council backlog, all measured)
+
+Probe tools/hardendbg.py (evidence in hardendbg_result.txt @ bdbad85):
+- OPPOSITE WALL (P0): 24 mm-thick body, 30 mm press → commit FINISHED; production
+  footprint-only self-intersection check saw 0 while a whole-mesh oracle found 46
+  crossings into the far wall (pierced 6 mm through). Validator is footprint-local.
+- ADJACENT FOLD (P0): pre-creased wall folded flat by an 80° rotation evades ALL
+  predicates (flip test needs >90°, selfx excludes shared-vertex pairs, not degenerate).
+  Detector proven: adjacent-face normal dot −0.09 → −1.00 (dihedral collapse).
+  Flat-start folds (≥99° rotation) ARE caught — the blind window is creased scans.
+- MIRROR (P1): RIGO_OT_region_mirror stores no snapshot → style save falls back to
+  displaced-geometry sampling (RC3) with a misleading "Older region" warning; the
+  nearest-vertex transfer collapsed 241 source verts to 57 unique targets (Voronoi)
+  while reporting "241 verts mirrored"; anatomical_label reset to NONE; neither label
+  nor opposing_region pairing survives into the saved entry.
+- EDIT→UPDATE (P1): importing a style then Edit Selection → Update Preview (no
+  selection change) rewrote the weights with RMS diff 0.453, 253/346 verts changed,
+  falloff SMOOTH→SHARP from the global panel setting, snapshot overwritten — silent.
+- CHART FOLD (P2): R=60 mm cylinder, 140 mm circle → 877 chart collision pairs
+  (≤1.5 mm apart in 2D, >30 mm apart on-surface); one cell must store two
+  incompatible weights.
+- HORSESHOE (P1): C-shaped pad import IoU 0.123, 78 % of the pad lost — TWO causes:
+  the geodesic trim limit (chart-radius × 1.35 < intrinsic arc length) AND the frame
+  anchor being the weighted centroid, which for a C sits in the gap, so an on-pad
+  cursor shifts the whole pattern ~40 mm. Fixing the trim alone would not fix it.
+- FLOAT32 (P3): float32(1e-6) = 9.9999999747e-07 < 1e-6 → floor-valued verts failed
+  every >= 1e-6 member test while region_edit's > 0.0 included them. Fixed (> 0.0).
+Fix plan for the open items: knowledge/hardening_plan_48.md (Waves 1–5).

@@ -1011,3 +1011,35 @@ geometry state + validity-or-refusal commit (#48).
 Rejected: warn-and-keep-torn-geometry (violates state safety), remesh-as-default
 (destroys clinical fidelity), reducing the requested amount (forbidden by task).
 Cost: import+commit 1.9 s on the 45k-vert patient scan.
+
+## DEC-0042 — 2026-08-14 — #48 hardening: reconciled single-source quality contract (Wave 0)
+
+The council's evidence audit found the written contract and the executable gates had
+drifted (test parity maxdd 0.25×amount vs written 2.5 mm; measured patient 2.70 mm
+violated the written number while passing the test; IoU 0.75 vs 0.80; rev tolerance
+scaled vs fixed; contract cited undo gates that did not exist). Decision, after
+re-measuring every gate (hardening_plan_48.md, Item 1 table):
+
+- All numeric thresholds now live ONLY in a fenced json block inside
+  region_quality_contract.md; tools/quality_contract.py parses it and
+  tools/regionqualtest.py takes every gate value from it; tools/contractcheck.py
+  (plain python, no Blender) fails when the block is missing or incomplete.
+  Divergence is now structurally impossible, not merely detected.
+- Parity maxdd: the old single 2.5 mm number was undevised and measured-wrong. Replaced
+  by a derived two-part gate: plateau (both w>0.9) maxdd ≤ 1.0 mm (measured 0.35–0.75);
+  rim maxdd ≤ rim_shift_edges·h·1.5·amount/feather (lateral resampling shift on the
+  profile's peak slope; measured 0.99–2.70 vs bounds 4.05–4.46). IoU tightened back to
+  the contract's 0.80 (measured 0.856–0.891). Monotonicity tolerance restored to the
+  contract's fixed 0.2 mm (passes — the 0.05×amount scaling was unnecessary).
+- Oscillation bound clamped to min(analytic, amount): the unclamped analytic bound was
+  vacuous (40.5 mm) on painted feather-10 regions.
+- New gates: vertex/face count invariance; weight-decile profile monotonicity;
+  live-topology-modifier import refusal (refuses + mutates nothing, message checked);
+  float32/JSON serialization round-trip over 3 cycles; provenance stamp (git commit,
+  date, Blender version) opens every result file.
+- Scripted undo could NOT be gated: bpy.ops.ed.undo() polls false in timer context even
+  with a full window/screen/area/region override — deferred to Wave 5 (needs a modal
+  harness); the contract states this pending status explicitly instead of citing it.
+
+Rider (item 8): region_ops member tests >= 1e-6 → > 0.0 (float32(1e-6) < 1e-6, proven);
+now matches region_edit's membership. Full battery green after the change.

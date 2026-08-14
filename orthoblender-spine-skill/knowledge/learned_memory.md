@@ -1052,3 +1052,17 @@ tangent-plane radius reaches across concave folds that an intrinsic metric never
 when a footprint must match an authored region, trim by within-footprint graph distance.
 Tangential-only relaxation (delta minus its component along the pre-commit normal) repairs
 folded slivers while preserving the delivered mm amount exactly.
+
+## LM-0042 — Honest gates are cheap once thresholds have one home
+
+Wave 0 of the #48 hardening put every quality threshold into a machine-readable block
+inside the contract document itself; the test parses it, a headless checker guards it.
+Two lessons: (1) a "threshold with a rationale in the chat" is a threshold with no
+rationale — the derivation must live next to the number (the rim-shift bound is now
+derived in the contract, and re-measuring showed the plateau matches to 0.75 mm, so the
+honest gate is TIGHTER than the old drifted one in the zone that matters); (2) probe
+first, gate second — the two P0 validator blind spots (opposite wall, creased fold)
+were reproduced with independent oracles before any production predicate is written,
+so Wave 1's red fixtures already exist in tools/hardendbg.py. Also: bpy.ops.ed.undo()
+cannot run from app-timer context even with a full temp_override — scripted undo
+coverage needs a modal harness (Wave 5), never claim it casually.
