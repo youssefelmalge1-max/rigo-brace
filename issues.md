@@ -1254,3 +1254,56 @@ recording layout at each workflow state (control emitted + poll state + reason l
 and walks create → commit → save → list → update-by-same-name → import → delete through
 the panel's operators. PASS; regionqualtest/regiontest/regionstyletest/selftest PASS
 (perf gate now times the import+commit operators themselves: 0.65 s on the patient scan).
+
+#### #48 expert-council post-implementation review (2026-08-14) — verdict HARDEN, no vetoes
+
+Ten independent lenses reviewed commits 0c8ed76 + a630199 against the code, contract and
+result files. Ratings: procedural-architecture 7, interactive-geometry 7, intrinsic-geometry 7,
+deformation-quality 7, dirty-scan robustness 7, parameterization 7, clinical governor 7
+(NO VETO), Blender-state 8.5 (NO VETO), tolerance audit 8 (NO VETO), evidence audit 6.5.
+Mean 7.2/10. Unanimous verdict: HARDEN — keep the kernel (grid field, snapshot-at-bake,
+transactional valid-or-refuse commit); no lens recommended replacement.
+
+Open hardening backlog (convergent findings, priority order):
+1. GATE INTEGRITY (evidence audit): contract vs test drift — test allows parity maxdd
+   0.25x amount (3.75 mm) and IoU >= 0.75 while the committed contract says 2.5 mm / 0.80;
+   measured patient maxdd 2.70 mm VIOLATES the written contract while passing the test.
+   Amend contract with the rim-shift derivation or tighten the gates; also remove the
+   contract's reference to undo gates that do not exist.
+2. MIRROR PATH (architecture + clinical): RIGO_OT_region_mirror stores no bake-time
+   snapshot (saving a mirrored region falls back to displaced-geometry sampling = RC3
+   resurrected) and style save discards anatomical_label + opposing_region pairing.
+3. EDIT->UPDATE DESTROYS IMPORTED FIELDS (interactive-geometry): Update Preview replaces
+   a field-backed imported region's authored falloff with a generic boundary feather from
+   the global panel setting, silently. Make it field-preserving or explicitly converting.
+4. DETECTION BLIND SPOTS (robustness): validity check is footprint-only (deep press can
+   pierce the opposite body wall undetected) and shared-vertex exclusion + 90-degree flip
+   threshold misses adjacent-face fold-over; the test measures with the same predicate so
+   it cannot catch either. Add a moved-vs-static BVH pass + pair-level baseline +
+   non-shared-edge crossing test, with fixtures.
+5. CHART VALIDITY BOUNDARY (parameterization + intrinsic): no fold/injectivity detection
+   while region_radius up to 150 mm provably folds on torso curvature; geodesic trim
+   assumes star-shaped footprints (horseshoe pads lose distal lobes); chord-mm vs
+   geodesic-mm size semantics across body sizes (+/-8-11%) undocumented and clinically
+   unruled; world-Z frame unstable near vertical normals (3 lenses independently).
+6. GATE VACUUM ON PAINTED COMMITS (deformation): analytic osc bound degenerates (40.5 mm
+   at feather 10) and no absolute spike gate on direct/painted commits — paint15 passed
+   with 14 new >60-degree edges. Clamp the bound (min(bound, amount)) and gate spikes.
+7. RESIDUAL MIXED STATE (Blender-state): painted add/update snapshots use raw coords
+   against an evaluated frame; wrap the commit mutate-repair window in try/except-restore;
+   replace the vertex-count guard with a deform-only modifier whitelist.
+8. SMALL PRECISION ITEMS (tolerance audit): float32 round-trip defeats the 1e-6 mask
+   floor (use > 0.0); area < 1e-12 m^2 is an absolute unit-implicit epsilon (make
+   edge-relative); document the baked-scale invariant region_ops relies on.
+9. MISSING EVIDENCE (release-gating): scripted undo/redo, .blend save/reopen round-trip,
+   genuine legacy-v1 migration deviation, result-file provenance stamps (commit hash),
+   preview/commit direction divergence disclosure, non-convex + thin-wall + near-pole
+   fixtures.
+
+Preview-vs-commit divergence (preview displaces along raw normals, commit along faired)
+was accepted by the council as a known lifecycle trade-off; it is item 9's disclosure +
+a dry-run feasibility warning, not a rework. Kernel-replacement ideas (geodesic-polar
+exp-map chart, schema v3) were explicitly DEFERRED: the storage format is chart-agnostic
+so migration stays open; not justified by current evidence.
+
+No production code was changed by this review.
