@@ -1043,3 +1043,35 @@ re-measuring every gate (hardening_plan_48.md, Item 1 table):
 
 Rider (item 8): region_ops member tests >= 1e-6 → > 0.0 (float32(1e-6) < 1e-6, proven);
 now matches region_edit's membership. Full battery green after the change.
+
+## DEC-0043 — 2026-08-15 — #48 Wave 1: whole-body validity (P0 blind spots closed)
+
+The commit transaction now refuses what the footprint-local checks could not see:
+- PREDICTIVE WALL CLEARANCE: before any mutation, rays from every core (w>0.5) vertex
+  along its faired displacement direction against the body's static (non-footprint)
+  faces; a hit within displacement + 3 mm refuses untouched. 3 mm is a GEOMETRIC
+  collision floor (documented in the contract), not a clinical thickness rule.
+  Ray-based (direction-aware) was chosen over nearest-distance clearance because
+  same-sheet faces near the rim sit legitimately within any lateral margin — distance
+  queries false-positive there, rays do not. Winding-number inside/outside was rejected
+  (open/dirty scans), shrinkwrap clamping was rejected (silently alters the correction,
+  violating valid-or-refuse).
+- CROSS-SHEET NET: after commit+repair, footprint-vs-static BVH intersections
+  (shared-vertex pairs excluded, pre-existing contacts baselined) must be zero, else
+  bit-exact restore + refusal. Catches lateral folds into adjacent sheets that no core
+  ray predicted.
+- FOLD COLLAPSE: adjacent footprint faces whose shared-edge normals turn antiparallel
+  (dot < -0.95) without being pre-creased (pre dot > -0.5) count as defects inside
+  _repair_folds' loop; unrepaired folds refuse. Closes the flip test's <90°-rotation
+  blind window on creased scans (hardendbg adjfold.foldover_creased).
+
+Independence: the test oracle uses a whole-mesh BVH pairing and a dihedral-DEGREE
+measurement (>160° new, was <120°) — different constructions from production; a unit
+fixture cross-checks predicate vs oracle; the contract_constants gate pins the
+production constants to the contract block.
+
+Measured: oppwall_attack (30 mm into 24 mm body) now REFUSES with bit-exact restore
+(was: FINISHED with 46 unseen crossings); oppwall_feasible (10 mm, same body) commits
+clean — no over-refusal; every prior gated case unchanged (folds=0, new_cross=0);
+patient import+commit 0.65 s -> 1.44 s (static BVH + cross-sheet nets), within the
+2 s contract gate. Full battery green.

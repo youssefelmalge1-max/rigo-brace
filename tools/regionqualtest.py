@@ -153,6 +153,37 @@ def _self_intersections(obj, fp):
     return len(hits)
 
 
+def _cross_intersections(obj, fp):
+    """Independent oracle for whole-body validity (Wave 1): footprint faces
+    intersecting ANY non-footprint face of the mesh.
+
+    Deliberately a different construction from the production predicate
+    (whole-mesh tree vs production's static-only tree; global-index pair
+    bookkeeping) so implementation and evidence cannot share a blind spot."""
+    me = obj.data
+    faces = _footprint_faces(me, fp)
+    if not faces:
+        return set()
+    fpset = {p.index for p in faces}
+    verts = [v.co for v in me.vertices]
+    whole = BVHTree.FromPolygons(
+        verts, [tuple(p.vertices) for p in me.polygons], all_triangles=True
+    )
+    fptree = BVHTree.FromPolygons(
+        verts, [tuple(p.vertices) for p in faces], all_triangles=True
+    )
+    pairs = set()
+    for a, b in fptree.overlap(whole):
+        pa = faces[a]
+        pb = me.polygons[b]
+        if pa.index == pb.index or pb.index in fpset:
+            continue
+        if set(pa.vertices) & set(pb.vertices):
+            continue
+        pairs.add((pa.index, pb.index))
+    return pairs
+
+
 def _mean_edge_mm(me, fp):
     total = 0.0
     n = 0
@@ -176,7 +207,7 @@ def _osc_gate_mm(amount_mm, feather_mm, h_mm):
 
 
 def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-             amount_mm, expect_sign, nonman0):
+             amount_mm, expect_sign, nonman0, pre_cross=frozenset()):
     me = obj.data
     adj = _adjacency(me)
     fp = {i for i, w in weights.items() if w > 1e-5}
@@ -236,6 +267,16 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         1 for key, a in post_dih.items()
         if a > 60.0 and pre_dih.get(key, 0.0) <= 45.0
     )
+    # Fold oracle (Wave 1): a shared edge folded nearly shut that was not
+    # even close before — measured in dihedral DEGREES, independent of the
+    # production predicate's normal-dot construction.
+    folds = sum(
+        1 for key, a in post_dih.items()
+        if a > _T["fold"]["oracle_post_deg"]
+        and pre_dih.get(key) is not None
+        and pre_dih[key] < _T["fold"]["oracle_pre_deg"]
+    )
+    new_cross = len(_cross_intersections(obj, fp) - set(pre_cross))
     inverted = sum(
         1 for p in _footprint_faces(me, fp)
         if p.normal.dot(before_fn[p.index]) < 0.0
@@ -249,15 +290,16 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         f"outside={outside:.4f} osc_max={osc_max:.3f} osc_mean={osc_mean:.4f} "
         f"rev={rev} decile_rev={decile_rev} new_spikes={new_spikes} "
         f"inverted={inverted} degen={degen} "
-        f"selfx={selfx} holes={holes} nonman_delta={nonman_delta} "
-        f"count_ok={count_ok} sign_ok={sign_ok}"
+        f"selfx={selfx} folds={folds} new_cross={new_cross} holes={holes} "
+        f"nonman_delta={nonman_delta} count_ok={count_ok} sign_ok={sign_ok}"
     )
     return {
         "d": d, "fp": fp, "holes": holes, "osc_max": osc_max,
         "osc_mean": osc_mean, "rev": rev, "decile_rev": decile_rev,
         "core_med": core_med, "count_ok": count_ok,
         "outside": outside, "new_spikes": new_spikes, "inverted": inverted,
-        "degen": degen, "selfx": selfx, "nonman_delta": nonman_delta,
+        "degen": degen, "selfx": selfx, "folds": folds,
+        "new_cross": new_cross, "nonman_delta": nonman_delta,
         "sign_ok": sign_ok, "weights": weights, "coords": before,
     }
 
@@ -271,8 +313,11 @@ def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
         m["selfx"] <= v["selfx"] and m["inverted"] <= v["inverted"]
         and m["degen"] <= v["degenerate"] and m["holes"] <= v["holes"]
         and m["nonman_delta"] <= v["nonmanifold_delta"]
+        and m["folds"] <= _T["fold"]["new_folds"]
+        and m["new_cross"] <= _T["wall"]["cross_sheet_new"]
         and m["count_ok"] and m["sign_ok"],
         f"selfx={m['selfx']} inv={m['inverted']} holes={m['holes']} "
+        f"folds={m['folds']} new_cross={m['new_cross']} "
         f"count_ok={m['count_ok']}",
     )
     if not skip_osc:
@@ -401,6 +446,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
     mask = obj.rigo_regions[obj.rigo_region_index].surface_mask
     fp = {i for i, w in weights.items() if w > 1e-5}
     pre_dih = _dihedral_map(obj, fp)
+    pre_cross = _cross_intersections(obj, fp)
     before, before_n, before_fn = _snapshot(obj)
     try:
         st = bpy.ops.rigo.region_apply()
@@ -409,7 +455,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
         _mark(f"[{tag}] refused: {exc}")
     if st == {"FINISHED"}:
         m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
-                     weights, amount, -1.0, nonman0)
+                     weights, amount, -1.0, nonman0, pre_cross)
         _gate(
             f"{tag}.valid_commit",
             m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
@@ -496,6 +542,7 @@ def _run_direct_circle(tag, obj, amount, kind, seed_idx, radius,
     weights = _group_weights(obj, region.surface_mask)
     fp = {i for i, w in weights.items() if w > 1e-5}
     pre_dih = _dihedral_map(obj, fp)
+    pre_cross = _cross_intersections(obj, fp)
     nonman0 = _nonmanifold(obj)
     before, before_n, before_fn = _snapshot(obj)
     if not commit:
@@ -503,7 +550,7 @@ def _run_direct_circle(tag, obj, amount, kind, seed_idx, radius,
     bpy.ops.rigo.region_apply()
     sign = -1.0 if kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-                 amount, sign, nonman0)
+                 amount, sign, nonman0, pre_cross)
     h = _mean_edge_mm(me, fp)
     _gate_vaf(tag, m, amount, feather_for_gate or radius, h)
     return m, weights
@@ -528,6 +575,7 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     weights = _group_weights(obj, region.surface_mask)
     fp = {i for i, w in weights.items() if w > 1e-5}
     pre_dih = _dihedral_map(obj, fp)
+    pre_cross = _cross_intersections(obj, fp)
     nonman0 = _nonmanifold(obj)
     before, before_n, before_fn = _snapshot(obj)
     t0 = time.perf_counter()
@@ -538,7 +586,7 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
         return None
     sign = -1.0 if region.kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-                 region.magnitude_mm, sign, nonman0)
+                 region.magnitude_mm, sign, nonman0, pre_cross)
     h = _mean_edge_mm(obj.data, fp)
     _gate_vaf(tag, m, amount, feather_for_gate, h, skip_amount=not core_required)
     if parity_ref is not None:
@@ -558,6 +606,9 @@ def _run():
     settings = bpy.context.scene.rigo_brace
     lib = importlib.import_module(
         "bl_ext.user_default.rigo_brace.core.region_library"
+    )
+    ro = importlib.import_module(
+        "bl_ext.user_default.rigo_brace.operators.region_ops"
     )
     t_all = time.perf_counter()
 
@@ -617,10 +668,11 @@ def _run():
             if gated:
                 fp = {i for i, w in weights.items() if w > 1e-5}
                 pre_dih = _dihedral_map(obj, fp)
+                pre_cross = _cross_intersections(obj, fp)
                 before, before_n, before_fn = _snapshot(obj)
                 bpy.ops.rigo.region_apply()
                 m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
-                             weights, 15.0, -1.0, nonman0)
+                             weights, 15.0, -1.0, nonman0, pre_cross)
                 _gate_vaf(tag, m, 15.0, 10.0, _mean_edge_mm(obj.data, fp))
             else:
                 _commit_valid_or_refuse(tag, obj, 15.0, 10.0, weights, nonman0)
@@ -684,10 +736,12 @@ def _run():
             if gated:
                 fp = {i for i, w in weights.items() if w > 1e-5}
                 pre_dih = _dihedral_map(obj, fp)
+                pre_cross = _cross_intersections(obj, fp)
                 before, before_n, before_fn = _snapshot(obj)
                 bpy.ops.rigo.region_apply()
                 m = _measure(f"{tag}_b", obj, before, before_n, before_fn,
-                             pre_dih, weights, amount, -1.0, nonman0)
+                             pre_dih, weights, amount, -1.0, nonman0,
+                             pre_cross)
                 _gate(
                     f"{tag}_b.validity",
                     m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
@@ -837,6 +891,131 @@ def _run():
             _run_import(tag, g, style_flat, (0.0, 0.0, 0.0), 15.0, 30.0)
             _delete(g)
 
+    def oppwall_cases(ro):
+        # Wave 1 P0 red fixture (from hardendbg): a 24 mm-thick body.
+        # 30 mm must REFUSE with the scan untouched; 10 mm (10+3 < 24) must
+        # commit cleanly — proving the guard does not over-refuse.
+        settings2 = bpy.context.scene.rigo_brace
+
+        def build(name):
+            bm = bmesh.new()
+            bmesh.ops.create_uvsphere(
+                bm, u_segments=96, v_segments=64, radius=1.0
+            )
+            for vtx in bm.verts:
+                vtx.co.x *= 0.09
+                vtx.co.y *= 0.012
+                vtx.co.z *= 0.09
+            bmesh.ops.triangulate(bm, faces=bm.faces)
+            mesh = bpy.data.meshes.new(name)
+            bm.to_mesh(mesh)
+            bm.free()
+            body = bpy.data.objects.new(name, mesh)
+            bpy.context.scene.collection.objects.link(body)
+            settings2.scan_object = body
+            bpy.context.view_layer.objects.active = body
+            body.select_set(True)
+            return body
+
+        for tag, amount, expect_commit in (
+            ("oppwall_attack", 30.0, False),
+            ("oppwall_feasible", 10.0, True),
+        ):
+            obj = build(f"QA_{tag}")
+            me = obj.data
+            top = max(me.vertices, key=lambda vtx: vtx.co.y)
+            bpy.context.scene.cursor.location = obj.matrix_world @ top.co
+            settings2.region_radius = 25.0
+            settings2.region_magnitude = amount
+            settings2.region_kind = "PRESSURE"
+            settings2.region_falloff = "SMOOTH"
+            bpy.ops.rigo.region_add_circle()
+            region = obj.rigo_regions[obj.rigo_region_index]
+            weights = _group_weights(obj, region.surface_mask)
+            fp = {i for i, w in weights.items() if w > 1e-5}
+            pre_dih = _dihedral_map(obj, fp)
+            pre_cross = _cross_intersections(obj, fp)
+            nonman0 = _nonmanifold(obj)
+            before, before_n, before_fn = _snapshot(obj)
+            msg = ""
+            try:
+                st = bpy.ops.rigo.region_apply()
+            except RuntimeError as exc:
+                st = {"CANCELLED"}
+                msg = str(exc)
+            if expect_commit:
+                ok_commit = st == {"FINISHED"}
+                if ok_commit:
+                    m = _measure(tag, obj, before, before_n, before_fn,
+                                 pre_dih, weights, amount, -1.0, nonman0,
+                                 pre_cross)
+                    _gate_vaf(tag, m, amount, 25.0,
+                              _mean_edge_mm(me, fp))
+                else:
+                    _gate(tag, False, f"over-refused: {msg[:90]}")
+            else:
+                restored = all(
+                    (me.vertices[i].co - before[i]).length == 0.0
+                    for i in before
+                )
+                preview = obj.modifiers.get(
+                    f"RIGO_REGION_PREVIEW_{region.surface_mask}"
+                ) is not None
+                _gate(
+                    tag,
+                    st != {"FINISHED"} and restored and preview
+                    and "opposite" in msg,
+                    f"status={st} restored={restored} preview={preview} "
+                    f"msg={msg[:90]}",
+                )
+            _delete(obj)
+
+    def fold_unit_case(ro):
+        # Wave 1 P0: the pre-creased <90°-rotation fold (hardendbg
+        # adjfold.foldover_creased).  The production predicate must flag it,
+        # the independent dihedral-degree oracle must agree, and both must
+        # stay silent on a benign displacement of the same crease.
+        def build(d_post):
+            mesh = bpy.data.meshes.new("QA_FOLDU")
+            mesh.from_pydata(
+                [(0.0, 0.0, 0.0), (0.01, 0.0, 0.0), (0.005, 0.010, 0.0),
+                 (0.005, 0.00087, 0.00996)],
+                [], [(0, 1, 2), (1, 0, 3)],
+            )
+            mesh.update()
+            body = bpy.data.objects.new("QA_FOLDU", mesh)
+            bpy.context.scene.collection.objects.link(body)
+            pre_normals = {p.index: p.normal.copy() for p in mesh.polygons}
+            pre_ang = _dihedral_map(body, {0, 1, 2, 3})
+            mesh.vertices[3].co = Vector(d_post)
+            mesh.update()
+            post_ang = _dihedral_map(body, {0, 1, 2, 3})
+            detected = ro._folded_pairs(mesh, [(0, 1)], pre_normals)
+            _delete(body)
+            return detected, max(pre_ang.values()), max(post_ang.values())
+
+        folded, pre_a, post_a = build((0.005, 0.00995, 0.00087))
+        benign, _pre_b, post_b = build((0.005, -0.001, 0.0105))
+        oracle_flags = (
+            post_a > _T["fold"]["oracle_post_deg"]
+            and pre_a < _T["fold"]["oracle_pre_deg"]
+        )
+        oracle_clean = post_b <= _T["fold"]["oracle_post_deg"]
+        _gate(
+            "fold_predicate_unit",
+            folded == {0, 1} and oracle_flags
+            and not benign and oracle_clean,
+            f"folded={sorted(folded)} pre={pre_a:.0f}deg post={post_a:.0f}deg "
+            f"benign={sorted(benign)} benign_post={post_b:.0f}deg",
+        )
+        _gate(
+            "contract_constants",
+            abs(ro._WALL_CLEARANCE_MM - _T["wall"]["clearance_mm"]) < 1e-9
+            and abs(ro._FOLD_DOT - _T["fold"]["dot"]) < 1e-9
+            and abs(ro._FOLD_PRE_DOT - _T["fold"]["pre_dot"]) < 1e-9,
+            f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},{ro._FOLD_PRE_DOT})",
+        )
+
     def roundtrip_case():
         # Precision contract (#48 hardening item 8): mask weights survive the
         # float32 vertex-group store with their MEMBERSHIP intact (> 0.0),
@@ -906,6 +1085,8 @@ def _run():
         _safe("imports", import_cases)
         _safe("patient", patient_cases)
         _safe("flat", flat_cases)
+        _safe("oppwall", lambda: oppwall_cases(ro))
+        _safe("foldunit", lambda: fold_unit_case(ro))
         _safe("roundtrip", roundtrip_case)
         _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
         failed = [k for k, v in _GATES.items() if not v]

@@ -28,7 +28,10 @@ editing the test.
              "iou_min": 0.80, "rms_max_mm": 0.5,
              "core_maxdd_mm": 1.0, "rim_shift_edges": 1.5},
   "resolution": {"core_med_min_frac": 0.90},
-  "perf": {"import_commit_max_s": 2.0}
+  "perf": {"import_commit_max_s": 2.0},
+  "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
+  "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
+           "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0}
 }
 ```
 
@@ -47,10 +50,25 @@ Broken pre-fix references: imported styles `osc_max` 1.9–4.0 mm, spikes>60° u
 1. **Validity** — new self-intersections = 0; inverted faces = 0; degenerate faces = 0;
    non-manifold edge delta = 0; weight-field holes (w<0.1 vert with ≥3 one-ring
    neighbours w>0.5) = 0; vertex AND face counts unchanged by displacement.
-   *Known predicate limits (P0 hardening Wave 1, measured in `hardendbg_result.txt`):
-   the current check is footprint-local and flip-only — it cannot see opposite-wall
-   piercing or creased adjacent-face fold-over. Until Wave 1 lands, validity is a
-   necessary, NOT sufficient, condition.*
+   **Whole-body validity (Wave 1, P0):**
+   - *Opposite-wall clearance* — before mutating anything, the commit casts rays from
+     every core (w>0.5) vertex along its displacement direction against the body's
+     static (non-footprint) faces; any hit within `displacement + clearance_mm`
+     REFUSES untouched. `clearance_mm` is a geometric collision floor (never press
+     through or within 3 mm of another sheet), NOT a clinical thickness rule; a
+     clinical minimum may later raise it, never lower it.
+   - *Cross-sheet net* — after commit+repair, new footprint-vs-static face
+     intersections (shared-vertex pairs excluded, pre-existing contacts baselined)
+     must equal cross_sheet_new, else refuse-and-restore.
+   - *Fold collapse* — adjacent footprint faces whose shared edge folds closed
+     (normal dot < fold.dot) without being pre-creased (pre dot > fold.pre_dot) are
+     defects the repair must clear, else refuse-and-restore. This closes the flip
+     test's <90°-rotation blind window on creased scans.
+   The TEST oracle for these is independent of the production predicates: footprint
+   faces vs a whole-mesh BVH (different pairing/bookkeeping), and a dihedral-degree
+   measurement (`> oracle_post_deg` new, was `< oracle_pre_deg`) instead of a
+   normal-dot; a unit fixture cross-checks predicate against oracle; the
+   `contract_constants` gate pins the production constants to this block.
 2. **Smoothness** — one-ring displacement oscillation bounded by twice the analytic
    smoothstep curvature of the requested profile, clamped so it can never go vacuous:
    `osc_max ≤ max(osc_floor_mm, min(2 × amount_mm × 6/feather_mm² × h², amount_mm))`

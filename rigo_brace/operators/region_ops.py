@@ -30,6 +30,14 @@ _MASK_EDGE_WEIGHT = 1e-6
 # Undisplaced tangent-frame snapshot of each region, stored on the object at
 # bake time so "Save Committed Style" never samples the deformed surface (#48).
 _SNAPSHOT_PREFIX = "rigo_style_src_"
+# Wave 1 validator floors.  The values are documented and derived in
+# region_quality_contract.md; the regionqualtest `contract_constants` gate
+# fails whenever these drift from the contract's machine-readable block.
+# Clearance is a GEOMETRIC collision floor (never press through or within
+# this distance of another body sheet), not a clinical thickness rule.
+_WALL_CLEARANCE_MM = 3.0
+_FOLD_DOT = -0.95
+_FOLD_PRE_DOT = -0.5
 
 
 def _preview_name(region):
@@ -492,8 +500,114 @@ def _footprint_self_intersections(me, member, faces=None):
     return bad
 
 
+def _static_faces_bvh(me, member):
+    """BVH of the body's faces that hold NO footprint vertex (they never move
+    during a commit).  These are exactly the faces the footprint-local checks
+    cannot see — the opposite body wall, adjacent anatomical sheets (#48
+    Wave 1, P0)."""
+    from mathutils.bvhtree import BVHTree
+
+    faces = [
+        p for p in me.polygons if not any(vi in member for vi in p.vertices)
+    ]
+    if not faces:
+        return None, []
+    used = sorted({vi for p in faces for vi in p.vertices})
+    local = {vi: n for n, vi in enumerate(used)}
+    verts = [me.vertices[vi].co.copy() for vi in used]
+    polys = [tuple(local[vi] for vi in p.vertices) for p in faces]
+    return BVHTree.FromPolygons(verts, polys, all_triangles=True), faces
+
+
+def _wall_blocked_points(me, weights, faired, offset, static_tree):
+    """Count core vertices whose displacement would end through, or within
+    the safety clearance of, another sheet of the body.
+
+    Predictive: rays are cast from the UNdisplaced positions along the actual
+    displacement direction against the static faces only, so the check runs
+    BEFORE any mutation and a refusal leaves the scan untouched.  Only the
+    pressed core (w > 0.5) is tested — rim vertices barely move, and
+    legitimate concave creases near the rim must not trigger refusals.
+    """
+    if static_tree is None:
+        return 0
+    margin = _WALL_CLEARANCE_MM * 0.001
+    sign = 1.0 if offset > 0.0 else -1.0
+    blocked = 0
+    for i, direction in faired.items():
+        if weights.get(i, 0.0) <= 0.5:
+            continue
+        depth = abs(offset) * weights[i]
+        location, _n, _idx, _d = static_tree.ray_cast(
+            me.vertices[i].co, direction * sign, depth + margin
+        )
+        if location is not None:
+            blocked += 1
+    return blocked
+
+
+def _cross_sheet_pairs(me, static_tree, static_faces, affected):
+    """(footprint face, static face) pairs that actually intersect.
+
+    The post-commit safety net behind the predictive ray check: it also
+    catches lateral folds into an adjacent sheet that no core ray predicted.
+    Pairs sharing a vertex (the footprint's own boundary ring) are ignored;
+    pre-existing contacts are baselined out by the caller.
+    """
+    from mathutils.bvhtree import BVHTree
+
+    if static_tree is None or not affected:
+        return set()
+    used = sorted({vi for p in affected for vi in p.vertices})
+    local = {vi: n for n, vi in enumerate(used)}
+    verts = [me.vertices[vi].co.copy() for vi in used]
+    polys = [tuple(local[vi] for vi in p.vertices) for p in affected]
+    moved = BVHTree.FromPolygons(verts, polys, all_triangles=True)
+    pairs = set()
+    for a, b in moved.overlap(static_tree):
+        face_a = affected[a]
+        face_b = static_faces[b]
+        if set(face_a.vertices) & set(face_b.vertices):
+            continue
+        pairs.add((face_a.index, face_b.index))
+    return pairs
+
+
+def _edge_face_pairs(affected):
+    """Adjacent-face index pairs (shared edge) within the footprint faces."""
+    by_edge = {}
+    for p in affected:
+        vs = p.vertices
+        count = len(vs)
+        for k in range(count):
+            a, b = vs[k], vs[(k + 1) % count]
+            key = (b, a) if a > b else (a, b)
+            by_edge.setdefault(key, []).append(p.index)
+    return [tuple(f) for f in by_edge.values() if len(f) == 2]
+
+
+def _folded_pairs(me, fold_pairs, pre_face_normals):
+    """Faces whose shared edge folded closed (normals turned antiparallel)
+    without being folded before the commit.
+
+    This is the flip test's blind window: folding a pre-creased wall flat
+    onto its neighbour rotates each face by LESS than 90°, so
+    `normal.dot(pre) <= 0` never fires, and the shared edge exempts the pair
+    from the self-intersection check (#48 Wave 1, P0 — measured in
+    hardendbg `adjfold.foldover_creased`).
+    """
+    folded = set()
+    for a, b in fold_pairs:
+        if pre_face_normals[a].dot(pre_face_normals[b]) <= _FOLD_PRE_DOT:
+            continue  # already creased shut before us — not ours
+        if me.polygons[a].normal.dot(me.polygons[b].normal) < _FOLD_DOT:
+            folded.add(a)
+            folded.add(b)
+    return folded
+
+
 def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
-                  adjacency, baseline, affected=None):
+                  adjacency, baseline, affected=None, fold_pairs=()):
     """Remove folded, degenerate or self-intersecting slivers after commit.
 
     Slides ONLY the vertices of defective faces (plus one ring, never outside
@@ -520,6 +634,7 @@ def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
             or p.area < 1e-12
         }
         bad |= _footprint_self_intersections(me, member, affected)
+        bad |= _folded_pairs(me, fold_pairs, pre_face_normals)
         return bad - baseline
 
     bad = defective()
@@ -1291,12 +1406,31 @@ class RIGO_OT_region_apply(Operator):
         faired, adjacency = _faired_normals(me, weights, mean_edge)
         sign = -1.0 if region.kind == "PRESSURE" else 1.0
         offset = sign * region.magnitude_mm * 0.001
+
+        # Wave 1 (P0): the footprint-local checks cannot see the far side of
+        # the body.  Predict wall contact BEFORE mutating anything, and
+        # baseline the cross-sheet contact state for the post-commit net.
+        static_tree, static_faces = _static_faces_bvh(me, member)
+        blocked = _wall_blocked_points(me, weights, faired, offset,
+                                       static_tree)
+        if blocked:
+            self.report(
+                {"ERROR"},
+                f"{region.name}: {region.magnitude_mm:.1f} mm would press "
+                f"through or within {_WALL_CLEARANCE_MM:.0f} mm of the "
+                f"opposite body surface ({blocked} points). Reduce the "
+                "amount — nothing was changed",
+            )
+            return {"CANCELLED"}
+        fold_pairs = _edge_face_pairs(affected)
+        pre_cross = _cross_sheet_pairs(me, static_tree, static_faces, affected)
+
         for i in faired:
             me.vertices[i].co += faired[i] * (offset * weights[i])
         me.update()
         remaining = _repair_folds(
             obj, weights, pre_face_normals, pre_vertex_normals, adjacency,
-            baseline, affected,
+            baseline, affected, fold_pairs,
         )
         if remaining:
             # State safety (#48 contract 8): never leave a torn commit.
@@ -1309,6 +1443,21 @@ class RIGO_OT_region_apply(Operator):
                 f"{region.name}: {region.magnitude_mm:.1f} mm folds this area "
                 f"({remaining} faces would tear). Reduce the amount, widen "
                 "the region, or smooth the scan first — nothing was changed",
+            )
+            return {"CANCELLED"}
+        new_cross = (
+            _cross_sheet_pairs(me, static_tree, static_faces, affected)
+            - pre_cross
+        )
+        if new_cross:
+            for i, co in pre_positions.items():
+                me.vertices[i].co = co
+            me.update()
+            self.report(
+                {"ERROR"},
+                f"{region.name}: {region.magnitude_mm:.1f} mm crosses "
+                f"another surface of the body ({len(new_cross)} face "
+                "pairs). Reduce the amount — nothing was changed",
             )
             return {"CANCELLED"}
         obj.modifiers.remove(modifier)

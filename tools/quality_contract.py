@@ -27,6 +27,9 @@ REQUIRED = {
                "rms_max_mm", "core_maxdd_mm", "rim_shift_edges"),
     "resolution": ("core_med_min_frac",),
     "perf": ("import_commit_max_s",),
+    "wall": ("clearance_mm", "cross_sheet_new"),
+    "fold": ("dot", "pre_dot", "new_folds", "oracle_post_deg",
+             "oracle_pre_deg"),
 }
 
 
