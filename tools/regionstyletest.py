@@ -166,9 +166,11 @@ def _run():
         _mark(f"phase=edit selected_faces={selected_faces} edit_ok={edit_ok}")
 
         bpy.ops.rigo.region_apply()
+        # #49: refined commits add vertices; measure over surviving originals.
         committed_max_mm = max(
             (vertex.co - before[vertex.index]).length * 1000.0
             for vertex in target.data.vertices
+            if vertex.index < len(before)
         )
         # Total vector length: the normal component is exactly 8.0 (gated in
         # regionqualtest.py); commit-time fold repair may add a ~1 mm

@@ -379,6 +379,15 @@ class RigoCorrectionRegion(PropertyGroup):
         name="Mirrored From", default="",
         description="Name of the region this one was derived from by Mirror",
     )
+    refined_added: IntProperty(
+        name="Refined Vertices", default=0,
+        description="Vertices added by commit-time wall refinement (#49 "
+                    "provenance: footprint density differs from the raw scan)",
+    )
+    refined_edge_mm: FloatProperty(
+        name="Refined Edge (mm)", default=0.0,
+        description="Target wall edge length used by commit-time refinement",
+    )
     label_auto_mapped: BoolProperty(
         name="Label Auto-Mapped", default=False,
         description="The landmark was mapped left/right automatically by "

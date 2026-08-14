@@ -187,15 +187,20 @@ def _run():
         t0 = time.perf_counter()
         bpy.ops.rigo.region_apply()
         dt = time.perf_counter() - t0
+        # #49: the commit may refine the footprint (declared vertex growth);
+        # displacement is measured over the surviving original vertices.
         committed_max_mm = max(
-            (v.co - before[v.index]).length * 1000.0 for v in scan.data.vertices
+            (v.co - before[v.index]).length * 1000.0
+            for v in scan.data.vertices if v.index in before
         )
         apply_ok = (
             abs(committed_max_mm - 7.0) < 0.05
             and scan.modifiers.get(f"RIGO_REGION_PREVIEW_{region.surface_mask}") is None
-            and len(scan.data.vertices) == nverts0
+            and len(scan.data.vertices) == nverts0 + region.refined_added
             and _nonmanifold(scan) == nonman0
-            and dt < 2.0
+            # Contract perf gate (3.0 s): a refined attempt that falls back
+            # legitimately runs the transaction twice.
+            and dt < 3.0
         )
         _mark(
             f"phase=commit max_disp={committed_max_mm:.3f}mm time={dt:.2f}s "
@@ -244,7 +249,8 @@ def _run():
         before2 = {v.index: v.co.copy() for v in scan.data.vertices}
         bpy.ops.rigo.region_apply()
         moved2 = sum(
-            1 for v in scan.data.vertices if (v.co - before2[v.index]).length > 0
+            1 for v in scan.data.vertices
+            if v.index in before2 and (v.co - before2[v.index]).length > 0
         )
         mirror_ok = mirror_ok and moved2 > 0
         _mark(

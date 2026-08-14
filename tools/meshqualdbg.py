@@ -112,10 +112,17 @@ def _spikes(obj, fp, ref=None):
     bm.free()
     if ref is None:
         return out, sum(1 for a in out.values() if a > 60.0)
-    new = sum(
-        1 for k, a in out.items() if a > 60.0 and ref.get(k, 0.0) <= 45.0
+    # Split honestly: sharpening of PRE-EXISTING edges is commit damage;
+    # >60° on edges born from refinement may simply be the wrinkled scan
+    # sampled finer — report both, never conflate.
+    worsened = sum(
+        1 for k, a in out.items()
+        if a > 60.0 and k in ref and ref[k] <= 45.0
     )
-    return out, new
+    born_sharp = sum(
+        1 for k, a in out.items() if a > 60.0 and k not in ref
+    )
+    return out, (worsened, born_sharp)
 
 
 def _report(tag, q):
@@ -188,7 +195,10 @@ def _case(tag, painted, amount, radius=30.0, feather=10.0, smooth_iters=5):
     _dih, new_spikes = _spikes(obj, fp, dih_pre)
     _report(f"{tag}.post.footprint", q_post)
     _report(f"{tag}.post.wall", qw_post)
-    _mark(f"[{tag}] new_spikes(>60 was<=45)={new_spikes}")
+    _mark(
+        f"[{tag}] spikes: worsened_preexisting={new_spikes[0]} "
+        f"born_sharp_new_edges={new_spikes[1]}"
+    )
 
     # The user's follow-up: smooth the region (Laplacian, like sculpt
     # Smooth) and see whether the stretched wall spikes instead of relaxing.
@@ -205,7 +215,10 @@ def _case(tag, painted, amount, radius=30.0, feather=10.0, smooth_iters=5):
     q_sm = _quality(me, faces, q_pre["lengths"])
     _dih, spikes_sm = _spikes(obj, fp, dih_pre)
     _report(f"{tag}.smoothed.footprint", q_sm)
-    _mark(f"[{tag}] after smooth x{smooth_iters}: new_spikes={spikes_sm}")
+    _mark(
+        f"[{tag}] after smooth x{smooth_iters}: "
+        f"worsened_preexisting={spikes_sm[0]} born_sharp={spikes_sm[1]}"
+    )
     bpy.data.objects.remove(obj, do_unlink=True)
 
 

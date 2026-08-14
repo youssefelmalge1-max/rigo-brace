@@ -1115,3 +1115,44 @@ core plateau clamp moved 0.99 -> 0.95 so the full amount survives a SECOND resam
 Deferred within scope, honestly: chart fold refusal is Wave 4; the exp-map chart
 stays DEFERRED. Battery green (regionqualtest incl. new mirror/pairing/horseshoe/
 size gates, regiontest, regionstyletest, regionuitest, selftest).
+
+## DEC-0045 — 2026-08-15 — #49 steps 3-4: transactional refined commit (two-mode)
+
+Production (region_ops):
+- The commit is now a TEMP-MESH TRANSACTION: me.copy() carries every mask/
+  attribute/selection; refinement + displacement + repair + all validators run on
+  the copy; ONE atomic in-place write (bmesh) on full validity; any failure
+  discards the copy — the patient mesh is untouched by construction (replaces the
+  per-index rollback, which cannot undo topology).
+- ADAPTIVE LOCAL REFINEMENT before displacement: per-edge criterion — an edge
+  splits only when its predicted post-displacement length exceeds 1.4× the
+  sampling its own local slope requires (rows >= 2·atan(g)/0.25 rad across the
+  wall arc); already-dense meshes no-op by construction (gated); genuinely sharp
+  creases (>72°) never refine (pressing walls physically collide there); new-vertex
+  weights re-evaluated via smooth 3D IDW over the surrounding ORIGINAL authored
+  weights (parent interpolation provably keeps the staircase; chart-space fields
+  disagree with authored weights at creases — both measured); quality passes:
+  short-edge collapse (weld new→original), max-min-angle flips (deterministic
+  input order), cap rotation, sliver purge, tangential relax of new verts only.
+- TWO-MODE SEMANTICS: refined attempt first; if repair cannot converge, fall back
+  to the FULLY unrefined commit (pre-#49 bit-behaviour) with a visible WARNING;
+  refuse only if that also fails. No partial refinement, no density seams.
+- Audit items landed: B4 (stale Corset Base deleted at commit), B6 (refuse while
+  Bend/Twist/Stretch live), B7 (verify counters cleared), shape-key refusal,
+  provenance (region.refined_added / refined_edge_mm + report note).
+
+Measured: painted 15/10 staircase fixture with refinement engaged: max edge
+12.9→4.9-6.1 mm, stretch edges >1.5× 128-240→0, aspect max 45.7→7.2, smooth-
+after-commit worsened-preexisting spikes 8→0-1 — the user's staircase/spike
+defect is eliminated wherever refinement engages. KNOWN LIMITATION (honest):
+on the wrinkled sample scan, steep painted walls currently take the warned
+fallback (1-2 seam slivers collapse under fairing-direction divergence and the
+repair refuses them); the patient scan, flats, decimated and dense targets
+refine or no-op cleanly. Next (recorded in issues.md): in-transaction
+post-displacement sliver dissolution to unlock refinement on wrinkled walls.
+
+Evidence layer: BVH-vs-index oracle mode split; refined_declared gate pins the
+vertex delta to provenance; w49 gates (smooth-after-commit workflow, refinement
+determinism bit-equal, overlap-mask field preservation, dense no-op); regiontest
+perf gate aligned to the contract's 3.0 s (a fallback runs the transaction
+twice, measured 2.83 s). Full battery green.

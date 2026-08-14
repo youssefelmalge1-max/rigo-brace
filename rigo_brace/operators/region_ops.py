@@ -22,7 +22,12 @@ from bpy.props import StringProperty
 from bpy.types import Operator
 from mathutils import Vector, kdtree
 
-from ..core import mark_brace_dirty, region_library
+from ..core import (
+    CORSET_BASE_NAME,
+    DEFORM_MODIFIER,
+    mark_brace_dirty,
+    region_library,
+)
 
 
 _PREVIEW_PREFIX = "RIGO_REGION_PREVIEW_"
@@ -657,7 +662,286 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     return folded
 
 
-def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
+def _refine_footprint(temp_me, group_index, offset):
+    """Adaptive local refinement of the footprint on the WORKING mesh (#49).
+
+    Splits only edges whose predicted post-displacement length exceeds the
+    wall's sampling requirement (derived from the authored profile's peak
+    slope and per-edge turning); confined to weighted edges; no-op on
+    already-dense meshes; new-vertex weights of THIS region re-evaluated
+    from the authored field (other regions' masks interpolate through the
+    deform layer).  Returns (verts_added, h_target_mm).
+    """
+    weights = {}
+    for v in temp_me.vertices:
+        for g in v.groups:
+            if g.group == group_index:
+                weights[v.index] = g.weight
+                break
+    if not weights:
+        return 0, 0.0
+    edge_total = 0.0
+    edge_count = 0
+    for e in temp_me.edges:
+        a, b = e.vertices
+        if a in weights or b in weights:
+            edge_total += (
+                temp_me.vertices[a].co - temp_me.vertices[b].co
+            ).length
+            edge_count += 1
+    if not edge_count:
+        return 0, 0.0
+    mean_edge = edge_total / edge_count
+    amount_mm = abs(offset) * 1000.0
+
+    # Per-edge sampling requirement (no global feather guess): the local
+    # wall slope g = |amount|·|Δw|/L sets both the rows the transition
+    # needs (per-edge turning ≤ 0.25 rad) and the wall arc those rows
+    # span; an edge splits ONLY when its predicted post-displacement
+    # length exceeds 1.4× its own requirement.  A mesh already denser
+    # than every local requirement is a no-op by construction — splitting
+    # cannot reduce the stretch RATIO (halving L halves Δw too), it fixes
+    # SAMPLING.
+    def h_required(g):
+        if g < 0.35:
+            return None  # gentle: the mesh carries it at any density
+        rows = max(4, int(math.ceil(2.0 * math.atan(g) / 0.25)))
+        wall_arc_mm = (1.5 * amount_mm / g) * math.sqrt(1.0 + g * g)
+        return max(0.0012, wall_arc_mm / rows * 0.001)
+
+    h_target = mean_edge  # provenance figure: tightest requirement seen
+    floor = 1.1 * mean_edge
+
+    # New-vertex weights come from a smooth 3D IDW over the ORIGINAL
+    # vertices' authored weights.  Parent-edge interpolation provably keeps
+    # the staircase; a chart-space field disagrees with the authored
+    # per-vertex weights exactly at creases (measured: fold-scale weight
+    # jumps).  k-NN IDW in 3D is smooth, exactly consistent with the
+    # surviving original weights, and needs no snapshot (legacy regions
+    # refine too).
+    entries = [
+        (temp_me.vertices[i].co.copy(), w) for i, w in weights.items()
+    ]
+    field_kd = kdtree.KDTree(len(entries))
+    for index, (co, _w) in enumerate(entries):
+        field_kd.insert(co, index)
+    field_kd.balance()
+    support = 2.5 * mean_edge
+    eps2 = (0.35 * mean_edge) ** 2
+
+    def sampler(co_local):
+        numerator = 0.0
+        denominator = 0.0
+        for _co, index, dist in field_kd.find_n(co_local, 6):
+            if dist > support:
+                continue
+            kernel = 1.0 / (dist * dist + eps2)
+            numerator += entries[index][1] * kernel
+            denominator += kernel
+        return numerator / denominator if denominator else 0.0
+
+    bm = bmesh.new()
+    bm.from_mesh(temp_me)
+    deform = bm.verts.layers.deform.verify()
+    added = 0
+    n_start = len(bm.verts)
+    all_new = []
+    for _round in range(4):
+        bm.normal_update()
+        marked = []
+        for e in bm.edges:
+            wa = e.verts[0][deform].get(group_index, 0.0)
+            wb = e.verts[1][deform].get(group_index, 0.0)
+            if wa <= 0.0 and wb <= 0.0:
+                continue
+            # Never refine across a genuinely SHARP crease (>72° dihedral):
+            # pressing walls physically collide there at fine resolution.
+            # Mild scan wrinkles (50–70°) must refine WITH the wall — an
+            # unrefined edge bordering refined neighbours becomes a seam
+            # sliver that collapses under displacement (measured).  A
+            # failed repair still falls back to a fully unrefined commit.
+            faces = e.link_faces
+            if len(faces) == 2 and faces[0].normal.dot(faces[1].normal) < 0.3:
+                continue
+            length = (e.verts[0].co - e.verts[1].co).length
+            if length < 1e-9:
+                continue
+            g = abs(offset) * abs(wa - wb) / length
+            h_req = h_required(g)
+            if h_req is None:
+                continue
+            predicted = math.hypot(length, abs(offset) * abs(wa - wb))
+            if predicted > max(1.4 * h_req, floor):
+                h_target = min(h_target, h_req)
+                marked.append(e)
+        if not marked:
+            break
+        # Single-cut rounds: each round halves the offending edges, then
+        # re-marks with RE-EVALUATED weights — simple, deterministic, and
+        # free of cross-call reference invalidation.  Subdivision never
+        # removes vertices, so the round's new vertices are exactly the
+        # tail of the vertex table.
+        n_before = len(bm.verts)
+        bmesh.ops.subdivide_edges(
+            bm, edges=marked, cuts=1, use_grid_fill=False,
+        )
+        ngons = [f for f in bm.faces if len(f.verts) > 3]
+        if ngons:
+            bmesh.ops.triangulate(bm, faces=ngons)
+        bm.verts.ensure_lookup_table()
+        new_verts = list(bm.verts[n_before:])
+        all_new.extend(new_verts)
+        if sampler is not None:
+            for v in new_verts:
+                dv = v[deform]
+                if group_index in dv or any(
+                    n[deform].get(group_index, 0.0) > 0.0
+                    for e in v.link_edges for n in (e.other_vert(v),)
+                ):
+                    w = sampler(v.co)
+                    if w > 0.0:
+                        dv[group_index] = w
+                    elif group_index in dv:
+                        del dv[group_index]
+        added += len(new_verts)
+
+    if all_new:
+        # Quality pass (mesh-quality lens): splitting alone leaves slivers
+        # whose normals flip unstably under displacement (measured: 0.19 mm
+        # edges, collinear caps at 1e-7 m²).  The classical triad completes
+        # split with COLLAPSE and FLIP — always position-preserving for
+        # original scan vertices.
+        new_set = {v for v in all_new if v.is_valid}
+        short_limit = 0.35 * h_target
+        targetmap = {}
+        for e in bm.edges:
+            a, b = e.verts
+            if (e.calc_length() >= short_limit
+                    or (a not in new_set and b not in new_set)):
+                continue
+            if a in new_set and a not in targetmap and b not in targetmap:
+                targetmap[a] = b  # weld the NEW vert onto its neighbour
+            elif b in new_set and b not in targetmap and a not in targetmap:
+                targetmap[b] = a
+        if targetmap:
+            bmesh.ops.weld_verts(bm, targetmap=targetmap)
+        # Flip toward max-min-angle on every interior edge of the touched
+        # zone (flips change triangulation, never positions).
+        interior = [
+            e for e in bm.edges
+            if len(e.link_faces) == 2 and any(
+                v[deform].get(group_index, 0.0) > 0.0
+                for f in e.link_faces for v in f.verts
+            )
+        ]
+        if interior:
+            # Deterministic input order (sets iterate by pointer): flips
+            # must be bit-reproducible run to run.
+            bm.faces.index_update()
+            seen = set()
+            faces = []
+            for e in interior:
+                for f in e.link_faces:
+                    if f not in seen:
+                        seen.add(f)
+                        faces.append(f)
+            bmesh.ops.beautify_fill(bm, faces=faces, edges=interior)
+        # Cap sweep: a face whose two short edges were split but whose long
+        # edge was not becomes a collinear sliver beautify may refuse to
+        # touch (non-convex quad on a crease) — rotate its long edge
+        # directly; positions never change.
+        new_set = {v for v in new_set if v.is_valid}
+        cap_edges = []
+        for f in bm.faces:
+            if len(f.verts) != 3 or not any(v in new_set for v in f.verts):
+                continue
+            els = [(e.calc_length(), e) for e in f.edges]
+            longest, e_long = max(els, key=lambda t: t[0])
+            area = f.calc_area()
+            if longest > 1e-9 and 2.0 * area / longest < 0.35 * h_target \
+                    and len(e_long.link_faces) == 2:
+                cap_edges.append(e_long)
+        if cap_edges:
+            seen = set()
+            unique = []
+            for e in cap_edges:
+                if e.is_valid and e not in seen:
+                    seen.add(e)
+                    unique.append(e)
+            try:
+                bmesh.ops.rotate_edges(bm, edges=unique, use_ccw=False)
+            except RuntimeError:
+                pass
+        # Sliver purge: any residual refinement-born triangle thinner than
+        # the sampling target has a numerically unstable normal that folds
+        # under displacement (measured: every stubborn fold was such a
+        # sliver).  Collapse its shortest new-vertex edge — deterministic,
+        # never moves an original vertex, repeated until clean.
+        for _purge in range(2):
+            new_set = {v for v in new_set if v.is_valid}
+            targetmap = {}
+            for f in bm.faces:
+                if len(f.verts) != 3:
+                    continue
+                if not any(v in new_set for v in f.verts):
+                    continue
+                els = [(e.calc_length(), e) for e in f.edges]
+                longest = max(length for length, _e in els)
+                if longest < 1e-9 or 2.0 * f.calc_area() / longest \
+                        >= 0.3 * h_target:
+                    continue
+                for _length, e in sorted(els, key=lambda t: t[0]):
+                    va, vb = e.verts
+                    if va in new_set and va not in targetmap \
+                            and vb not in targetmap:
+                        targetmap[va] = vb
+                        break
+                    if vb in new_set and vb not in targetmap \
+                            and va not in targetmap:
+                        targetmap[vb] = va
+                        break
+            if not targetmap:
+                break
+            bmesh.ops.weld_verts(bm, targetmap=targetmap)
+        bm.normal_update()
+        live_new = [v for v in all_new if v.is_valid]
+        for _pass in range(2):
+            moves = []
+            for v in live_new:
+                neighbors = [e.other_vert(v) for e in v.link_edges]
+                if not neighbors:
+                    continue
+                mean = Vector()
+                for n in neighbors:
+                    mean += n.co
+                mean /= len(neighbors)
+                delta = mean - v.co
+                normal = v.normal
+                delta -= normal * delta.dot(normal)
+                moves.append((v, v.co + delta * 0.5))
+            for v, co in moves:
+                v.co = co
+            bm.normal_update()
+        if sampler is not None:
+            for v in live_new:
+                dv = v[deform]
+                if group_index in dv:
+                    w = sampler(v.co)
+                    if w > 0.0:
+                        dv[group_index] = w
+                    else:
+                        del dv[group_index]
+
+    # The weld pass removes some of the counted vertices — the DECLARED
+    # provenance must be the final net growth, exactly.
+    added = len(bm.verts) - n_start
+    bm.to_mesh(temp_me)
+    bm.free()
+    temp_me.update()
+    return added, h_target * 1000.0
+
+
+def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
                   adjacency, baseline, affected=None, fold_pairs=()):
     """Remove folded, degenerate or self-intersecting slivers after commit.
 
@@ -669,10 +953,9 @@ def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
     fix and never count.  Deterministic, bounded, self-terminating.
     Returns the number of faces still defective after the pass.
     """
-    me = obj.data
     member = {i for i, w in weights.items() if w > 0.0}
     if not member:
-        return 0
+        return set()
     if affected is None:
         affected = [
             p for p in me.polygons if any(vi in member for vi in p.vertices)
@@ -688,10 +971,15 @@ def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
         bad |= _folded_pairs(me, fold_pairs, pre_face_normals)
         return bad - baseline
 
+    # (returns the set of still-defective face indices — empty on success)
+
     bad = defective()
-    for _ in range(20):
+    # 40 iterations, not 20: refined footprints (#49) have smaller one-rings,
+    # so each tangential step is proportionally smaller and deep crease folds
+    # need more of them to unwind.  Still bounded, still deterministic.
+    for iteration in range(40):
         if not bad:
-            return 0
+            return set()
         relax = set()
         for p_index in bad:
             for vi in me.polygons[p_index].vertices:
@@ -714,7 +1002,7 @@ def _repair_folds(obj, weights, pre_face_normals, pre_vertex_normals,
             me.vertices[vi].co += delta * 0.5
         me.update()
         bad = defective()
-    return len(bad)
+    return bad
 
 
 def _weights_from_style(scan, entry, target_world, target_normal, coords):
@@ -1507,106 +1795,193 @@ class RIGO_OT_region_apply(Operator):
         if modifier is None:
             self.report({"ERROR"}, "Could not create the region preview")
             return {"CANCELLED"}
+        # #49 audit guards: bmesh write-back would mangle shape keys, and a
+        # live deform segment would bake stale gains onto new vertices.
+        if obj.data.shape_keys is not None:
+            self.report(
+                {"ERROR"},
+                "The scan has shape keys — apply or remove them before "
+                "committing a correction",
+            )
+            return {"CANCELLED"}
+        if obj.modifiers.get(DEFORM_MODIFIER):
+            self.report(
+                {"ERROR"},
+                "Finish or reset the Bend/Twist/Stretch deform before "
+                "committing a correction",
+            )
+            return {"CANCELLED"}
         group = obj.vertex_groups.get(region.surface_mask)
-        weights = {}
-        for vertex in obj.data.vertices:
-            for g in vertex.groups:
-                if g.group == group.index:
-                    weights[vertex.index] = g.weight
-                    break
-        me = obj.data
-        member = {i for i, w in weights.items() if w > 0.0}
-        affected = [
-            p for p in me.polygons if any(vi in member for vi in p.vertices)
-        ]
-        pre_face_normals = {p.index: p.normal.copy() for p in affected}
-        zone = set(member)
-        for p in affected:
-            zone.update(p.vertices)
-        pre_vertex_normals = {i: me.vertices[i].normal.copy() for i in zone}
-        edge_total = 0.0
-        edge_count = 0
-        for edge in me.edges:
-            a, b = edge.vertices
-            if a in member or b in member:
-                edge_total += (me.vertices[a].co - me.vertices[b].co).length
-                edge_count += 1
-        mean_edge = edge_total / edge_count if edge_count else 0.003
-
-        # Pre-existing defects on a dirty scan are not ours to fix or to
-        # block on — baseline them out of the repair verdict.
-        baseline = _footprint_self_intersections(me, member, affected)
-        baseline |= {p.index for p in affected if p.area < 1e-12}
-        pre_positions = {i: me.vertices[i].co.copy() for i in member}
-
-        # Commit analytically along FAIRED normals: |displacement| is exactly
-        # amount × weight (unit directions), matching the preview magnitude,
-        # while the coherent direction field keeps scan creases from
-        # shredding the way raw per-vertex normals do (#48).
-        faired, adjacency = _faired_normals(me, weights, mean_edge)
         sign = -1.0 if region.kind == "PRESSURE" else 1.0
         offset = sign * region.magnitude_mm * 0.001
 
-        # Wave 1 (P0): the footprint-local checks cannot see the far side of
-        # the body.  Predict wall contact BEFORE mutating anything, and
-        # baseline the cross-sheet contact state for the post-commit net.
-        static_tree, static_faces = _static_faces_bvh(me, member)
-        blocked = _wall_blocked_points(me, weights, faired, offset,
-                                       static_tree)
-        if blocked:
-            self.report(
-                {"ERROR"},
-                f"{region.name}: {region.magnitude_mm:.1f} mm would press "
-                f"through or within {_WALL_CLEARANCE_MM:.0f} mm of the "
-                f"opposite body surface ({blocked} points). Reduce the "
-                "amount — nothing was changed",
-            )
-            return {"CANCELLED"}
-        fold_pairs = _edge_face_pairs(affected)
-        pre_cross = _cross_sheet_pairs(me, static_tree, static_faces, affected)
+        # ------------------------------------------------------------------ #
+        # #49 transaction: ALL work happens on a working COPY of the mesh —
+        # refinement, displacement, repair and validation.  The real patient
+        # mesh is written once, atomically, only when everything is valid;
+        # any failure discards the copy and touches nothing.
+        # ------------------------------------------------------------------ #
+        me = obj.data
+        # Two seamless attempts: refined first; if its displacement cannot
+        # be repaired (a crease interaction), fall back to a FULLY
+        # unrefined commit — exactly the pre-#49 behaviour, with a visible
+        # warning — and refuse only if that also fails.  No partial
+        # refinement, no density seams, deterministic.
+        failure = None
+        fell_back = False
+        for attempt in range(2):
+            temp = me.copy()
+            retry = False
+            try:
+                if attempt == 0:
+                    added, refine_mm = _refine_footprint(
+                        temp, group.index, offset
+                    )
+                else:
+                    added, refine_mm = 0, 0.0
+                    fell_back = True
+                weights = {}
+                for vertex in temp.vertices:
+                    for g in vertex.groups:
+                        if g.group == group.index:
+                            weights[vertex.index] = g.weight
+                            break
+                member = {i for i, w in weights.items() if w > 0.0}
+                affected = [
+                    p for p in temp.polygons
+                    if any(vi in member for vi in p.vertices)
+                ]
+                pre_face_normals = {
+                    p.index: p.normal.copy() for p in affected
+                }
+                zone = set(member)
+                for p in affected:
+                    zone.update(p.vertices)
+                pre_vertex_normals = {
+                    i: temp.vertices[i].normal.copy() for i in zone
+                }
+                edge_total = 0.0
+                edge_count = 0
+                for edge in temp.edges:
+                    a, b = edge.vertices
+                    if a in member or b in member:
+                        edge_total += (
+                            temp.vertices[a].co - temp.vertices[b].co
+                        ).length
+                        edge_count += 1
+                mean_edge = edge_total / edge_count if edge_count else 0.003
 
-        for i in faired:
-            me.vertices[i].co += faired[i] * (offset * weights[i])
-        me.update()
-        remaining = _repair_folds(
-            obj, weights, pre_face_normals, pre_vertex_normals, adjacency,
-            baseline, affected, fold_pairs,
-        )
-        if remaining:
-            # State safety (#48 contract 8): never leave a torn commit.
-            # Restore bit-exactly and keep the live preview for adjustment.
-            for i, co in pre_positions.items():
-                me.vertices[i].co = co
-            me.update()
-            self.report(
-                {"ERROR"},
-                f"{region.name}: {region.magnitude_mm:.1f} mm folds this area "
-                f"({remaining} faces would tear). Reduce the amount, widen "
-                "the region, or smooth the scan first — nothing was changed",
-            )
+                # Pre-existing defects on a dirty scan are not ours to fix
+                # or to block on — baseline them out of the repair verdict.
+                baseline = _footprint_self_intersections(
+                    temp, member, affected
+                )
+                baseline |= {p.index for p in affected if p.area < 1e-12}
+
+                # Commit analytically along FAIRED normals: |displacement|
+                # is exactly amount × weight (unit directions), matching
+                # the preview magnitude, while the coherent direction field
+                # keeps scan creases from shredding (#48).
+                faired, adjacency = _faired_normals(temp, weights, mean_edge)
+
+                # Wave 1 (P0): predict wall contact before displacing, and
+                # baseline the cross-sheet state for the post net.
+                static_tree, static_faces = _static_faces_bvh(temp, member)
+                blocked = _wall_blocked_points(
+                    temp, weights, faired, offset, static_tree
+                )
+                if blocked:
+                    failure = (
+                        f"{region.name}: {region.magnitude_mm:.1f} mm would "
+                        f"press through or within "
+                        f"{_WALL_CLEARANCE_MM:.0f} mm of the opposite body "
+                        f"surface ({blocked} points). Reduce the amount — "
+                        "nothing was changed"
+                    )
+                    break
+                fold_pairs = _edge_face_pairs(affected)
+                pre_cross = _cross_sheet_pairs(
+                    temp, static_tree, static_faces, affected
+                )
+
+                for i in faired:
+                    temp.vertices[i].co += faired[i] * (offset * weights[i])
+                temp.update()
+                remaining = _repair_folds(
+                    temp, weights, pre_face_normals, pre_vertex_normals,
+                    adjacency, baseline, affected, fold_pairs,
+                )
+                if remaining:
+                    if added and attempt == 0:
+                        retry = True
+                        continue
+                    failure = (
+                        f"{region.name}: {region.magnitude_mm:.1f} mm folds "
+                        f"this area ({len(remaining)} faces would tear). "
+                        "Reduce the amount, widen the region, or smooth the "
+                        "scan first — nothing was changed"
+                    )
+                    break
+                new_cross = (
+                    _cross_sheet_pairs(
+                        temp, static_tree, static_faces, affected
+                    )
+                    - pre_cross
+                )
+                if new_cross:
+                    failure = (
+                        f"{region.name}: {region.magnitude_mm:.1f} mm "
+                        f"crosses another surface of the body "
+                        f"({len(new_cross)} face pairs). Reduce the amount "
+                        "— nothing was changed"
+                    )
+                    break
+
+                # Valid: one atomic in-place write of the real patient mesh.
+                bm = bmesh.new()
+                bm.from_mesh(temp)
+                bm.to_mesh(me)
+                bm.free()
+                me.validate()
+                me.update()
+                break
+            finally:
+                bpy.data.meshes.remove(temp)
+        if failure is not None or retry:
+            self.report({"ERROR"}, failure or "Correction could not be made valid")
             return {"CANCELLED"}
-        new_cross = (
-            _cross_sheet_pairs(me, static_tree, static_faces, affected)
-            - pre_cross
-        )
-        if new_cross:
-            for i, co in pre_positions.items():
-                me.vertices[i].co = co
-            me.update()
-            self.report(
-                {"ERROR"},
-                f"{region.name}: {region.magnitude_mm:.1f} mm crosses "
-                f"another surface of the body ({len(new_cross)} face "
-                "pairs). Reduce the amount — nothing was changed",
-            )
-            return {"CANCELLED"}
+
         obj.modifiers.remove(modifier)
         obj[_committed_key(region)] = True
+        region.refined_added = added
+        region.refined_edge_mm = refine_mm
+        # Downstream invalidation (#49 audit B4/B7): the cached faired base
+        # would rebuild the brace from the PRE-commit body, and the scan
+        # verify counters describe the old mesh.
+        stale_base = bpy.data.objects.get(CORSET_BASE_NAME)
+        if stale_base is not None:
+            bpy.data.objects.remove(stale_base, do_unlink=True)
+        for key in ("rigo_boundary", "rigo_nonmanifold", "rigo_loose",
+                    "rigo_verify_ok"):
+            if key in obj:
+                del obj[key]
         mark_brace_dirty(context, "Pressure/expansion changed the corrected body")
         verb = "pressed in" if region.kind == "PRESSURE" else "expanded out"
+        if fell_back:
+            self.report(
+                {"WARNING"},
+                f"{region.name}: the refined wall could not be made valid "
+                "near a sharp crease — committed with the scan's own "
+                "sampling there. Smooth the scan first for a finer wall",
+            )
+        refined_note = (
+            f" — wall refined to carry the transition ({added} points, "
+            f"{refine_mm:.1f} mm)" if added else ""
+        )
         self.report(
             {"INFO"},
-            f"{region.name}: committed {verb} {region.magnitude_mm:.1f} mm",
+            f"{region.name}: committed {verb} "
+            f"{region.magnitude_mm:.1f} mm{refined_note}",
         )
         return {"FINISHED"}
 

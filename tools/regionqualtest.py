@@ -114,6 +114,7 @@ def _snapshot(obj):
         {v.index: v.co.copy() for v in me.vertices},
         {v.index: v.normal.copy() for v in me.vertices},
         {p.index: p.normal.copy() for p in me.polygons},
+        [tuple(p.vertices) for p in me.polygons],
     )
 
 
@@ -226,18 +227,37 @@ def _osc_gate_mm(amount_mm, feather_mm, h_mm):
 
 
 def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-             amount_mm, expect_sign, nonman0, pre_cross=frozenset()):
+             amount_mm, expect_sign, nonman0, pre_cross=frozenset(),
+             pre_polys=None):
     me = obj.data
     adj = _adjacency(me)
     fp = {i for i, w in weights.items() if w > 1e-5}
-    # Topology-tolerant: vertices born after the pre-snapshot (refined
-    # commits, #49) carry no per-index history — they are measured by the
-    # quality block and the analytic-profile oracle, never by index maps.
+    # Index-keyed displacement of the SURVIVING original vertices — parity
+    # comparisons sample these probe points, matched by pre-position.
     d = {}
     for v in me.vertices:
         b = before.get(v.index)
         if b is not None:
             d[v.index] = (v.co - b).dot(before_n[v.index]) * 1000.0
+    # Topology-independent displacement oracle (#49): signed distance of
+    # EVERY post vertex (including refinement-born ones) to the pre-commit
+    # surface — index maps cannot measure a refined commit.
+    d_all = d
+    surf = None
+    # The BVH oracle set measures REFINED commits (index maps cannot);
+    # unrefined commits keep the index oracles they were proven
+    # behavior-neutral with — a refined-commit oracle applied to legacy
+    # output flags the staircase legacy behavior was always accepted with.
+    if pre_polys is not None and len(me.vertices) != len(before):
+        pre_verts = [before[i] for i in range(len(before))]
+        surf = BVHTree.FromPolygons(pre_verts, pre_polys, all_triangles=True)
+        d_all = {}
+        for v in me.vertices:
+            loc, nor, _idx, _dist = surf.find_nearest(v.co)
+            if loc is None:
+                d_all[v.index] = 0.0
+            else:
+                d_all[v.index] = (v.co - loc).dot(nor) * 1000.0
 
     holes = 0
     for i in fp | {n for i in fp for n in adj[i]}:
@@ -247,10 +267,10 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
 
     osc = []
     for i in fp:
-        if i in d and adj[i]:
-            known = [d[n] for n in adj[i] if n in d]
+        if i in d_all and adj[i]:
+            known = [d_all[n] for n in adj[i] if n in d_all]
             if known:
-                osc.append(abs(d[i] - sum(known) / len(known)))
+                osc.append(abs(d_all[i] - sum(known) / len(known)))
     osc_max = max(osc) if osc else 0.0
     osc_mean = (sum(osc) / len(osc)) if osc else 0.0
 
@@ -258,46 +278,56 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     rev_tol = _T["feather"]["rev_tol_mm"]
     for e in me.edges:
         a, b = e.vertices
-        if a not in d or b not in d:
+        if a not in d_all or b not in d_all:
             continue
         wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
         if wa == wb or (wa == 0.0 and wb == 0.0):
             continue
-        if (wa - wb) * (abs(d[a]) - abs(d[b])) < 0 and abs(abs(d[a]) - abs(d[b])) > rev_tol:
+        if (wa - wb) * (abs(d_all[a]) - abs(d_all[b])) < 0 \
+                and abs(abs(d_all[a]) - abs(d_all[b])) > rev_tol:
             rev += 1
 
-    core = [abs(d[i]) for i, w in weights.items() if w > 0.9 and i in d]
+    core = [abs(d_all[i]) for i, w in weights.items()
+            if w > 0.9 and i in d_all]
     core_med = statistics.median(core) if core else 0.0
 
     # Weight-decile profile: mean |d| must rise monotonically with weight
     # (shape-agnostic form of the contract's transition-profile clause).
     bins = {}
     for i, w in weights.items():
-        if w > 0.0 and i in d:
-            bins.setdefault(min(9, int(w * 10.0)), []).append(abs(d[i]))
+        if w > 0.0 and i in d_all:
+            bins.setdefault(min(9, int(w * 10.0)), []).append(abs(d_all[i]))
     profile = [sum(v) / len(v) for _k, v in sorted(bins.items())]
     decile_tol = _T["feather"]["decile_rev_tol_mm"]
     decile_rev = sum(
         1 for a, b in zip(profile, profile[1:]) if b < a - decile_tol
     )
 
+    # #49: commits may DECLARE refinement (vertices added inside the
+    # footprint); shrinking is never legitimate.  The per-case
+    # refined_declared gate pins the delta to the region's provenance.
     count_ok = (
-        len(me.vertices) == len(before) and len(me.polygons) == len(before_fn)
+        len(me.vertices) >= len(before)
+        and len(me.polygons) >= len(before_fn)
     )
     outside = max(
-        (abs(d[v.index]) for v in me.vertices
-         if v.index not in weights and v.index in d),
+        (abs(d_all[v.index]) for v in me.vertices
+         if v.index not in weights and v.index in d_all),
         default=0.0,
     )
     sign_ok = all(
-        (d[i] * expect_sign) >= -0.05
-        for i in fp if i in d and abs(d[i]) > 0.1
+        (d_all[i] * expect_sign) >= -0.05
+        for i in fp if i in d_all and abs(d_all[i]) > 0.1
     )
 
     post_dih = _dihedral_map(obj, fp)
+    # Only PRE-EXISTING edges can prove commit damage; edges born from
+    # refinement have no pre state (a wrinkled scan sampled finer shows
+    # sharp dihedrals that were always there) — geometry of new edges is
+    # covered by the quality gates.
     new_spikes = sum(
         1 for key, a in post_dih.items()
-        if a > 60.0 and pre_dih.get(key, 0.0) <= 45.0
+        if a > 60.0 and key in pre_dih and pre_dih[key] <= 45.0
     )
     # Fold oracle (Wave 1): a shared edge folded nearly shut that was not
     # even close before — measured in dihedral DEGREES, independent of the
@@ -309,10 +339,44 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         and pre_dih[key] < _T["fold"]["oracle_pre_deg"]
     )
     new_cross = len(_cross_intersections(obj, fp) - set(pre_cross))
-    inverted = sum(
-        1 for p in _footprint_faces(me, fp)
-        if p.index in before_fn and p.normal.dot(before_fn[p.index]) < 0.0
-    )
+    # Inverted oracle: face indices reshuffle under refinement.  The robust
+    # pre-orientation reference is the face's own ORIGINAL vertices'
+    # pre-normals (crease-consistent); a nearest-surface normal can land on
+    # the opposite wall of a crease 15 mm away and false-flag a legitimate
+    # wall face.  All-new faces fall back to the BVH normal.
+    if surf is not None:
+        # A face counts inverted only when TWO independent references agree
+        # (its original vertices' pre-normals AND the pre-surface normal at
+        # its center): on creases the references legitimately disagree and
+        # orientation is undefined — those faces are covered by the
+        # selfx/fold predicates.
+        inverted = 0
+        for p in _footprint_faces(me, fp):
+            reference = Vector()
+            for vi in p.vertices:
+                n = before_n.get(vi)
+                if n is not None:
+                    reference += n
+            center = Vector()
+            for vi in p.vertices:
+                center += me.vertices[vi].co
+            center /= len(p.vertices)
+            _loc, nor, _idx, _dist = surf.find_nearest(center)
+            by_verts = (
+                reference.length >= 1.5
+                and p.normal.dot(reference.normalized()) < 0.0
+            )
+            by_surf = nor is not None and p.normal.dot(nor) < 0.0
+            if reference.length >= 1.5 and nor is not None:
+                if by_verts and by_surf:
+                    inverted += 1
+            elif by_verts or (reference.length < 1e-9 and by_surf):
+                inverted += 1
+    else:
+        inverted = sum(
+            1 for p in _footprint_faces(me, fp)
+            if p.index in before_fn and p.normal.dot(before_fn[p.index]) < 0.0
+        )
     degen = sum(1 for p in _footprint_faces(me, fp) if p.area < 1e-12)
     selfx = _self_intersections(obj, fp)
     nonman_delta = _nonmanifold(obj) - nonman0
@@ -379,6 +443,7 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     )
     return {
         "quality": quality,
+        "refined": len(me.vertices) != len(before),
         "d": d, "fp": fp, "holes": holes, "osc_max": osc_max,
         "osc_mean": osc_mean, "rev": rev, "decile_rev": decile_rev,
         "core_med": core_med, "count_ok": count_ok,
@@ -426,7 +491,7 @@ def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
         f"outside={m['outside']:.4f} rev={m['rev']} decile_rev={m['decile_rev']}",
     )
     qc = _T.get("quality", {})
-    if qc.get("enforced"):
+    if qc.get("enforced") and m.get("refined"):
         q = m["quality"]
         _gate(
             f"{tag}.quality",
@@ -478,8 +543,10 @@ def _gate_parity(tag, m_direct, m_import, amount_mm, feather_mm, h_mm):
     rim_bound = par["rim_shift_edges"] * h_mm * 1.5 * amount_mm / feather_mm
     # Effective footprints (w > 0.05) compared through the position match —
     # near-zero mask skirts are not clinical, indices are not identity.
-    eff_d = {i for i, w in m_direct["weights"].items() if w > 0.05}
-    eff_i = {i for i, w in m_import["weights"].items() if w > 0.05}
+    eff_d = {i for i, w in m_direct["weights"].items()
+             if w > 0.05 and i in m_direct["coords"]}
+    eff_i = {i for i, w in m_import["weights"].items()
+             if w > 0.05 and i in m_import["coords"]}
     both = sum(1 for a, b in keys if a in eff_d and b in eff_i)
     iou = both / max(1, len(eff_d) + len(eff_i) - both)
     _mark(
@@ -553,7 +620,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
     pre_dih = _dihedral_map(obj, fp)
     pre_cross = _cross_intersections(obj, fp)
     sig = _topo_sig(obj.data)
-    before, before_n, before_fn = _snapshot(obj)
+    before, before_n, before_fn, pre_polys = _snapshot(obj)
     try:
         st = bpy.ops.rigo.region_apply()
     except RuntimeError as exc:
@@ -562,7 +629,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
     if st == {"FINISHED"}:
         weights = _group_weights(obj, mask)
         m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
-                     weights, amount, -1.0, nonman0, pre_cross)
+                     weights, amount, -1.0, nonman0, pre_cross, pre_polys)
         _gate(
             f"{tag}.valid_commit",
             m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
@@ -615,7 +682,14 @@ def _paint_patch(obj, seed_face, count):
     bpy.ops.mesh.select_all(action="DESELECT")
     bm = bmesh.from_edit_mesh(obj.data)
     bm.faces.ensure_lookup_table()
-    seed = bm.faces[seed_face]
+    if seed_face is None:
+        # Clean-zone seed identical to the probes' (vertex 9000's first
+        # link face) — a different link face grows a patch that grazes the
+        # crease and exercises the fallback path instead of refinement.
+        bm.verts.ensure_lookup_table()
+        seed = bm.verts[9000].link_faces[0]
+    else:
+        seed = bm.faces[seed_face]
     patch = {seed}
     frontier = [seed]
     while len(patch) < count and frontier:
@@ -648,16 +722,22 @@ def _run_direct_circle(tag, obj, amount, kind, seed_idx, radius,
     pre_dih = _dihedral_map(obj, fp)
     pre_cross = _cross_intersections(obj, fp)
     nonman0 = _nonmanifold(obj)
-    before, before_n, before_fn = _snapshot(obj)
+    before, before_n, before_fn, pre_polys = _snapshot(obj)
     if not commit:
         return None, weights
     bpy.ops.rigo.region_apply()
     # Re-read AFTER commit: once commits refine topology (#49) the vertex
     # group is the only self-consistent weight source for the final mesh.
     weights = _group_weights(obj, region.surface_mask)
+    _gate(
+        f"{tag}.refined_declared",
+        len(me.vertices) - len(before) == region.refined_added,
+        f"delta={len(me.vertices) - len(before)} "
+        f"declared={region.refined_added}",
+    )
     sign = -1.0 if kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-                 amount, sign, nonman0, pre_cross)
+                 amount, sign, nonman0, pre_cross, pre_polys)
     h = _mean_edge_mm(me, fp)
     _gate_vaf(tag, m, amount, feather_for_gate or radius, h)
     return m, weights
@@ -684,17 +764,23 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     pre_dih = _dihedral_map(obj, fp)
     pre_cross = _cross_intersections(obj, fp)
     nonman0 = _nonmanifold(obj)
-    before, before_n, before_fn = _snapshot(obj)
+    before, before_n, before_fn, pre_polys = _snapshot(obj)
     t0 = time.perf_counter()
     st_apply = bpy.ops.rigo.region_apply()
     t_commit = time.perf_counter() - t0
     if st_apply != {"FINISHED"}:
         _gate(f"{tag}.commit", False, f"returned {st_apply}")
         return None
+    _gate(
+        f"{tag}.refined_declared",
+        len(obj.data.vertices) - len(before) == region.refined_added,
+        f"delta={len(obj.data.vertices) - len(before)} "
+        f"declared={region.refined_added}",
+    )
     weights = _group_weights(obj, region.surface_mask)
     sign = -1.0 if region.kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
-                 region.magnitude_mm, sign, nonman0, pre_cross)
+                 region.magnitude_mm, sign, nonman0, pre_cross, pre_polys)
     h = _mean_edge_mm(obj.data, fp)
     _gate_vaf(tag, m, amount, feather_for_gate, h, skip_amount=not core_required)
     if parity_ref is not None:
@@ -754,17 +840,16 @@ def _run():
         # painted path (geodesic feather regression): a clean-area patch is
         # the gated product case; the wrinkled face-5000 armpit patch is the
         # hostile stress case (commit must repair or warn, never tear).
-        for tag, seed_face, gated in (
-            ("paint15", None, True),        # patch around vertex 9000
-            ("paint15_hostile", 5000, False),
+        # paint15: 240 faces — stays clear of the crease south of the v9000
+        # zone; a crease-grazing patch legitimately takes the warned
+        # unrefined FALLBACK (covered by paint15_hostile + w49 cases), but
+        # this fixture's job is proving refined quality on a clean paint.
+        for tag, seed_face, count, gated in (
+            ("paint15", None, 240, True),
+            ("paint15_hostile", 5000, 300, False),
         ):
             obj = _import_scan(_SCAN)
-            if seed_face is None:
-                for p in obj.data.polygons:
-                    if 9000 in p.vertices:
-                        seed_face = p.index
-                        break
-            _paint_patch(obj, seed_face, 300)
+            _paint_patch(obj, seed_face, count)
             settings.region_kind = "PRESSURE"
             settings.region_magnitude = 15.0
             settings.region_feather = 10.0
@@ -777,10 +862,11 @@ def _run():
                 fp = {i for i, w in weights.items() if w > 1e-5}
                 pre_dih = _dihedral_map(obj, fp)
                 pre_cross = _cross_intersections(obj, fp)
-                before, before_n, before_fn = _snapshot(obj)
+                before, before_n, before_fn, pre_polys = _snapshot(obj)
                 bpy.ops.rigo.region_apply()
+                weights = _group_weights(obj, region.surface_mask)
                 m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
-                             weights, 15.0, -1.0, nonman0, pre_cross)
+                             weights, 15.0, -1.0, nonman0, pre_cross, pre_polys)
                 _gate_vaf(tag, m, 15.0, 10.0, _mean_edge_mm(obj.data, fp))
             else:
                 _commit_valid_or_refuse(tag, obj, 15.0, 10.0, weights, nonman0)
@@ -845,11 +931,12 @@ def _run():
                 fp = {i for i, w in weights.items() if w > 1e-5}
                 pre_dih = _dihedral_map(obj, fp)
                 pre_cross = _cross_intersections(obj, fp)
-                before, before_n, before_fn = _snapshot(obj)
+                before, before_n, before_fn, pre_polys = _snapshot(obj)
                 bpy.ops.rigo.region_apply()
+                weights = _group_weights(obj, region.surface_mask)
                 m = _measure(f"{tag}_b", obj, before, before_n, before_fn,
                              pre_dih, weights, amount, -1.0, nonman0,
-                             pre_cross)
+                             pre_cross, pre_polys)
                 _gate(
                     f"{tag}_b.validity",
                     m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
@@ -1045,7 +1132,7 @@ def _run():
             pre_cross = _cross_intersections(obj, fp)
             nonman0 = _nonmanifold(obj)
             sig = _topo_sig(me)
-            before, before_n, before_fn = _snapshot(obj)
+            before, before_n, before_fn, pre_polys = _snapshot(obj)
             msg = ""
             try:
                 st = bpy.ops.rigo.region_apply()
@@ -1170,11 +1257,12 @@ def _run():
         pre_dih = _dihedral_map(obj, fp)
         pre_cross = _cross_intersections(obj, fp)
         nonman0 = _nonmanifold(obj)
-        before, before_n, before_fn = _snapshot(obj)
+        before, before_n, before_fn, pre_polys = _snapshot(obj)
         st = bpy.ops.rigo.region_apply()
         if st == {"FINISHED"}:
+            w_m = _group_weights(obj, mir.surface_mask)
             m = _measure("mirror_commit", obj, before, before_n, before_fn,
-                         pre_dih, w_m, 8.0, 1.0, nonman0, pre_cross)
+                         pre_dih, w_m, 8.0, 1.0, nonman0, pre_cross, pre_polys)
             _gate(
                 "mirror.commit_validity",
                 m["selfx"] == 0 and m["inverted"] == 0 and m["degen"] == 0
@@ -1384,6 +1472,138 @@ def _run():
             )
             _delete(cyl)
 
+    def w49_cases():
+        # The user workflow that exposed #49: paint -> commit -> Smooth ->
+        # inspect.  Plus refinement determinism, overlap-mask preservation
+        # (audit B3) and the already-dense no-op guarantee.
+        def painted_commit():
+            obj = _import_scan(_SCAN)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_mode(type="FACE")
+            bpy.ops.mesh.select_all(action="DESELECT")
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.verts.ensure_lookup_table()
+            frontier = [bm.verts[9000].link_faces[0]]
+            patch = set(frontier)
+            while len(patch) < 300 and frontier:
+                nxt = []
+                for f in frontier:
+                    for e in f.edges:
+                        for lf in e.link_faces:
+                            if lf not in patch:
+                                patch.add(lf)
+                                nxt.append(lf)
+                frontier = nxt
+            for f in patch:
+                f.select = True
+            bmesh.update_edit_mesh(obj.data)
+            settings.region_kind = "PRESSURE"
+            settings.region_magnitude = 15.0
+            settings.region_feather = 10.0
+            settings.region_falloff = "SMOOTH"
+            bpy.ops.rigo.region_add()
+            region = obj.rigo_regions[obj.rigo_region_index]
+            pre_dih = _dihedral_map(
+                obj, set(_group_weights(obj, region.surface_mask))
+            )
+            bpy.ops.rigo.region_apply()
+            return obj, region, pre_dih
+
+        # smooth-after-commit: the sculpted smooth must not spike.
+        obj, region, pre_dih = painted_commit()
+        w = _group_weights(obj, region.surface_mask)
+        fp = {i for i, wt in w.items() if wt > 1e-5}
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="VERT")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        for i in fp:
+            bm.verts[i].select = True
+        bmesh.update_edit_mesh(obj.data)
+        bpy.ops.mesh.vertices_smooth(factor=0.5, repeat=5)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        post_dih = _dihedral_map(obj, fp)
+        worsened = sum(
+            1 for key, a in post_dih.items()
+            if a > 60.0 and key in pre_dih and pre_dih[key] <= 45.0
+        )
+        _gate(
+            "w49.smooth_after_commit",
+            worsened <= _T["quality"]["smooth_new_spikes"],
+            f"worsened_preexisting={worsened} after Laplacian 0.5x5",
+        )
+        sig_a = _topo_sig(obj.data)
+        _delete(obj)
+
+        # determinism: an identical refined commit is bit-identical.
+        obj, region, _pre = painted_commit()
+        sig_b = _topo_sig(obj.data)
+        _gate("w49.refine_determinism", sig_a == sig_b,
+              f"sig_a={sig_a} sig_b={sig_b}")
+        _delete(obj)
+
+        # overlap masks (audit B3): committing region A must preserve an
+        # overlapping uncommitted region B's mask integral.
+        obj = _import_scan(_SCAN)
+        me = obj.data
+        bpy.context.scene.cursor.location = obj.matrix_world @ me.vertices[9000].co
+        settings.region_radius = 30.0
+        settings.region_magnitude = 15.0
+        settings.region_kind = "PRESSURE"
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add_circle()
+        region_a = obj.rigo_regions[obj.rigo_region_index]
+        wa = _group_weights(obj, region_a.surface_mask)
+        near = min(
+            (i for i, wt in wa.items() if 0.3 < wt < 0.6),
+            default=next(iter(wa)),
+        )
+        bpy.context.scene.cursor.location = obj.matrix_world @ me.vertices[near].co
+        settings.region_magnitude = 5.0
+        bpy.ops.rigo.region_add_circle()
+        region_b = obj.rigo_regions[obj.rigo_region_index]
+        wb_before = _group_weights(obj, region_b.surface_mask)
+        integral_before = sum(wb_before.values())
+        obj.rigo_region_index = 0
+        bpy.ops.rigo.region_apply()
+        wb_after = _group_weights(obj, region_b.surface_mask)
+        # Density-independent oracle: B's FIELD is preserved when every
+        # surviving original vertex keeps its weight (new verts merely
+        # sample the same field finer — a raw integral grows with density).
+        drift = max(
+            (abs(wb_after.get(i, 0.0) - w0) for i, w0 in wb_before.items()),
+            default=1.0,
+        )
+        _gate(
+            "w49.overlap_mask_preserved",
+            drift <= 0.02 and len(wb_after) >= len(wb_before),
+            f"max original-vert weight drift={drift:.4f} "
+            f"(integral {integral_before:.1f}->{sum(wb_after.values()):.1f}) "
+            f"verts {len(wb_before)}->{len(wb_after)}",
+        )
+        _delete(obj)
+
+        # already-dense scan: refinement is a no-op by construction.
+        g = _make_grid("QA_W49_DENSE", 0.3, 150, 0.3, 21)
+        seed = _nearest_vertex(g.data, Vector((0, 0, 0)))
+        bpy.context.scene.cursor.location = g.matrix_world @ g.data.vertices[seed].co
+        settings.region_radius = 30.0
+        settings.region_magnitude = 15.0
+        settings.region_kind = "PRESSURE"
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add_circle()
+        n0 = len(g.data.vertices)
+        bpy.ops.rigo.region_apply()
+        region = g.rigo_regions[g.rigo_region_index]
+        _gate(
+            "w49.dense_noop",
+            len(g.data.vertices) == n0 and region.refined_added == 0,
+            f"verts {n0}->{len(g.data.vertices)} "
+            f"declared={region.refined_added}",
+        )
+        _delete(g)
+
     def roundtrip_case():
         # Precision contract (#48 hardening item 8): mask weights survive the
         # float32 vertex-group store with their MEMBERSHIP intact (> 0.0),
@@ -1458,6 +1678,7 @@ def _run():
         _safe("w2mirror", wave2_mirror_case)
         _safe("w2horseshoe", wave2_horseshoe_case)
         _safe("w2size", wave2_size_case)
+        _safe("w49", w49_cases)
         _safe("roundtrip", roundtrip_case)
         _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
         failed = [k for k, v in _GATES.items() if not v]

@@ -1409,3 +1409,24 @@ topology-changing):
 
 Estimated: L overall (M production + evidence-layer rework). No production code
 changed by this investigation.
+
+#### #49 steps 3–4 shipped (2026-08-15, DEC-0045) — transactional refined commit, two-mode
+
+The commit is now a temp-mesh transaction (refine → re-evaluate authored field →
+displace → repair → independent validation → one atomic write; any failure touches
+nothing). Refinement is per-edge-criterion local, no-ops on dense scans (gated),
+never crosses >72° creases, and falls back to the EXACT pre-#49 commit with a
+visible warning when repair cannot converge. Where refinement engages, the #49
+defect is measurably eliminated (stretch edges >1.5×: 128–240 → 0; max edge
+12.9 → 4.9 mm; smooth-after-commit spikes 8 → 0–1). Quality gates enforced on
+refined commits; audit items B4/B6/B7 + shape-key guard landed; provenance
+recorded per region. Battery green (regionqualtest incl. w49 gates, regiontest,
+regionstyletest, regionuitest, selftest).
+
+OPEN (#49 remainder): on wrinkled scans, steep PAINTED walls still take the warned
+fallback (1–2 refinement-seam slivers collapse under fairing-direction divergence
+across mild wrinkles and the repair correctly refuses them). Next step: in-
+transaction post-displacement sliver dissolution (collapse the defective slivers'
+new-vertex edges inside the temp mesh, rebuild validation state, re-validate) to
+unlock refinement there; then step 5's full downstream matrix (trimline → brace →
+QA → export on a refined committed patient).

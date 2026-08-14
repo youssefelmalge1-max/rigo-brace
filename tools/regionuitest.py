@@ -193,8 +193,11 @@ def _run():
         )
 
         # ---- step 7: import it again at the cursor ---- #
-        other = scan.data.vertices[20000]
-        context.scene.cursor.location = scan.matrix_world @ other.co
+        # Vertex 20000 sits outside the committed footprint, but #49 commits
+        # may renumber/densify — use a position captured NOW, not an index.
+        context.scene.cursor.location = (
+            scan.matrix_world @ scan.data.vertices[20000].co.copy()
+        )
         regions_before = len(scan.rigo_regions)
         _check("s6.import_enabled", bpy.ops.rigo.region_style_import.poll())
         st = bpy.ops.rigo.region_style_import()
