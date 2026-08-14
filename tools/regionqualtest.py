@@ -117,6 +117,23 @@ def _snapshot(obj):
     )
 
 
+def _topo_sig(me):
+    """Topology signature: refusal oracles must prove the WHOLE state is
+    untouched, not only the coordinates of pre-existing indices (#49: a
+    leaked subdivision would otherwise pass a positions-only check)."""
+    edge_hash = 0
+    for e in me.edges:
+        a, b = e.vertices
+        edge_hash = (edge_hash * 1000003 + a * 65599 + b) & 0xFFFFFFFF
+    return (len(me.vertices), len(me.edges), len(me.polygons), edge_hash)
+
+
+def _refusal_untouched(obj, before, sig):
+    return _topo_sig(obj.data) == sig and all(
+        (obj.data.vertices[i].co - before[i]).length == 0.0 for i in before
+    )
+
+
 def _footprint_faces(me, fp):
     return [p for p in me.polygons if any(vi in fp for vi in p.vertices)]
 
@@ -213,9 +230,14 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     me = obj.data
     adj = _adjacency(me)
     fp = {i for i, w in weights.items() if w > 1e-5}
+    # Topology-tolerant: vertices born after the pre-snapshot (refined
+    # commits, #49) carry no per-index history — they are measured by the
+    # quality block and the analytic-profile oracle, never by index maps.
     d = {}
     for v in me.vertices:
-        d[v.index] = (v.co - before[v.index]).dot(before_n[v.index]) * 1000.0
+        b = before.get(v.index)
+        if b is not None:
+            d[v.index] = (v.co - b).dot(before_n[v.index]) * 1000.0
 
     holes = 0
     for i in fp | {n for i in fp for n in adj[i]}:
@@ -225,8 +247,10 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
 
     osc = []
     for i in fp:
-        if adj[i]:
-            osc.append(abs(d[i] - sum(d[n] for n in adj[i]) / len(adj[i])))
+        if i in d and adj[i]:
+            known = [d[n] for n in adj[i] if n in d]
+            if known:
+                osc.append(abs(d[i] - sum(known) / len(known)))
     osc_max = max(osc) if osc else 0.0
     osc_mean = (sum(osc) / len(osc)) if osc else 0.0
 
@@ -234,20 +258,22 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     rev_tol = _T["feather"]["rev_tol_mm"]
     for e in me.edges:
         a, b = e.vertices
+        if a not in d or b not in d:
+            continue
         wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
         if wa == wb or (wa == 0.0 and wb == 0.0):
             continue
         if (wa - wb) * (abs(d[a]) - abs(d[b])) < 0 and abs(abs(d[a]) - abs(d[b])) > rev_tol:
             rev += 1
 
-    core = [abs(d[i]) for i, w in weights.items() if w > 0.9]
+    core = [abs(d[i]) for i, w in weights.items() if w > 0.9 and i in d]
     core_med = statistics.median(core) if core else 0.0
 
     # Weight-decile profile: mean |d| must rise monotonically with weight
     # (shape-agnostic form of the contract's transition-profile clause).
     bins = {}
     for i, w in weights.items():
-        if w > 0.0:
+        if w > 0.0 and i in d:
             bins.setdefault(min(9, int(w * 10.0)), []).append(abs(d[i]))
     profile = [sum(v) / len(v) for _k, v in sorted(bins.items())]
     decile_tol = _T["feather"]["decile_rev_tol_mm"]
@@ -259,10 +285,14 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         len(me.vertices) == len(before) and len(me.polygons) == len(before_fn)
     )
     outside = max(
-        (abs(d[v.index]) for v in me.vertices if v.index not in weights),
+        (abs(d[v.index]) for v in me.vertices
+         if v.index not in weights and v.index in d),
         default=0.0,
     )
-    sign_ok = all((d[i] * expect_sign) >= -0.05 for i in fp if abs(d[i]) > 0.1)
+    sign_ok = all(
+        (d[i] * expect_sign) >= -0.05
+        for i in fp if i in d and abs(d[i]) > 0.1
+    )
 
     post_dih = _dihedral_map(obj, fp)
     new_spikes = sum(
@@ -281,11 +311,58 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     new_cross = len(_cross_intersections(obj, fp) - set(pre_cross))
     inverted = sum(
         1 for p in _footprint_faces(me, fp)
-        if p.normal.dot(before_fn[p.index]) < 0.0
+        if p.index in before_fn and p.normal.dot(before_fn[p.index]) < 0.0
     )
     degen = sum(1 for p in _footprint_faces(me, fp) if p.area < 1e-12)
     selfx = _self_intersections(obj, fp)
     nonman_delta = _nonmanifold(obj) - nonman0
+
+    # First-class mesh-quality metrics (#49): recorded on every commit;
+    # enforced as gates once production refinement lands (contract
+    # quality.enforced flips the switch — single source of truth).
+    stretch = []
+    aspects = []
+    max_edge = 0.0
+    faces_q = _footprint_faces(me, fp)
+    for p in faces_q:
+        vs = p.vertices
+        n = len(vs)
+        el = []
+        for k in range(n):
+            a, b = vs[k], vs[(k + 1) % n]
+            length = (me.vertices[a].co - me.vertices[b].co).length
+            el.append(length)
+            max_edge = max(max_edge, length)
+            if a in before and b in before:
+                pre = (before[a] - before[b]).length
+                if pre > 1e-9:
+                    stretch.append(length / pre)
+        if p.area > 1e-14:
+            longest = max(el)
+            aspects.append(longest * longest / (2.0 * p.area))
+    aspects_pre = []
+    for p in faces_q:
+        vs = p.vertices
+        if not all(i in before for i in vs):
+            continue
+        cos = [before[i] for i in vs]
+        el = [
+            (cos[k] - cos[(k + 1) % len(cos)]).length for k in range(len(cos))
+        ]
+        area2 = (cos[1] - cos[0]).cross(cos[2] - cos[0]).length
+        if area2 > 1e-14:
+            aspects_pre.append(max(el) * max(el) / area2)
+    aspects.sort()
+    aspects_pre.sort()
+    quality = {
+        "stretch_max": max(stretch) if stretch else 0.0,
+        "stretch_gt15": sum(1 for s in stretch if s > 1.5),
+        "aspect_p95": aspects[int(len(aspects) * 0.95)] if aspects else 0.0,
+        "aspect_p95_pre": aspects_pre[int(len(aspects_pre) * 0.95)]
+        if aspects_pre else 0.0,
+        "aspect_gt8": sum(1 for a in aspects if a > 8.0),
+        "max_edge_mm": max_edge * 1000.0,
+    }
 
     _mark(
         f"[{tag}] verts={len(fp)} core_med={core_med:.2f}/{amount_mm} "
@@ -295,7 +372,13 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         f"selfx={selfx} folds={folds} new_cross={new_cross} holes={holes} "
         f"nonman_delta={nonman_delta} count_ok={count_ok} sign_ok={sign_ok}"
     )
+    _mark(
+        f"[{tag}] quality: stretch_max={quality['stretch_max']:.2f} "
+        f">1.5x:{quality['stretch_gt15']} aspect_p95={quality['aspect_p95']:.2f} "
+        f">8:{quality['aspect_gt8']} max_edge={quality['max_edge_mm']:.2f}mm"
+    )
     return {
+        "quality": quality,
         "d": d, "fp": fp, "holes": holes, "osc_max": osc_max,
         "osc_mean": osc_mean, "rev": rev, "decile_rev": decile_rev,
         "core_med": core_med, "count_ok": count_ok,
@@ -342,12 +425,43 @@ def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
         and m["decile_rev"] == 0,
         f"outside={m['outside']:.4f} rev={m['rev']} decile_rev={m['decile_rev']}",
     )
+    qc = _T.get("quality", {})
+    if qc.get("enforced"):
+        q = m["quality"]
+        _gate(
+            f"{tag}.quality",
+            q["stretch_max"] <= qc["stretch_max"]
+            and q["stretch_gt15"] <= qc["stretch_gt15_max"]
+            and (q["aspect_p95_pre"] <= 0.0
+                 or q["aspect_p95"]
+                 <= qc["aspect_p95_factor"] * q["aspect_p95_pre"]),
+            f"stretch={q['stretch_max']:.2f} gt15={q['stretch_gt15']} "
+            f"aspect_p95={q['aspect_p95']:.2f}/{q['aspect_p95_pre']:.2f}",
+        )
+
+
+def _match_by_position(m_a, m_b, tol=1e-6):
+    """Vertex correspondence by UNDISPLACED position, not by index (#49:
+    refined commits renumber vertices; both fixtures share the same base
+    scan, so pre-commit coordinates are the durable identity)."""
+    keys_b = list(m_b["d"])
+    kd = kdtree.KDTree(len(keys_b))
+    for n, i in enumerate(keys_b):
+        kd.insert(m_b["coords"][i], n)
+    kd.balance()
+    match = {}
+    for i in m_a["d"]:
+        _co, n, dist = kd.find(m_a["coords"][i])
+        if n is not None and dist < tol:
+            match[i] = keys_b[n]
+    return match
 
 
 def _gate_parity(tag, m_direct, m_import, amount_mm, feather_mm, h_mm):
     par = _T["parity"]
-    keys = set(m_direct["d"]) & set(m_import["d"])
-    diffs = [abs(m_direct["d"][k] - m_import["d"][k]) for k in keys]
+    match = _match_by_position(m_direct, m_import)
+    keys = list(match.items())
+    diffs = [abs(m_direct["d"][a] - m_import["d"][b]) for a, b in keys]
     rms = math.sqrt(sum(x * x for x in diffs) / len(diffs))
     # Two-part max deviation (contract gate 5): the clinically controlled core
     # must match tightly; the transition rim may shift laterally by
@@ -355,34 +469,23 @@ def _gate_parity(tag, m_direct, m_import, amount_mm, feather_mm, h_mm):
     # (1.5 * amount/feather) reads as a depth difference without any real
     # shape change.
     core_diffs = [
-        abs(m_direct["d"][k] - m_import["d"][k]) for k in keys
-        if m_direct["weights"].get(k, 0.0) > 0.9
-        and m_import["weights"].get(k, 0.0) > 0.9
+        abs(m_direct["d"][a] - m_import["d"][b]) for a, b in keys
+        if m_direct["weights"].get(a, 0.0) > 0.9
+        and m_import["weights"].get(b, 0.0) > 0.9
     ]
     core_maxdd = max(core_diffs) if core_diffs else 0.0
     rim_maxdd = max(diffs) if diffs else 0.0
     rim_bound = par["rim_shift_edges"] * h_mm * 1.5 * amount_mm / feather_mm
-    # Effective footprints (w > 0.05): near-zero mask skirts are not clinical.
+    # Effective footprints (w > 0.05) compared through the position match —
+    # near-zero mask skirts are not clinical, indices are not identity.
     eff_d = {i for i, w in m_direct["weights"].items() if w > 0.05}
     eff_i = {i for i, w in m_import["weights"].items() if w > 0.05}
-    iou = len(eff_d & eff_i) / len(eff_d | eff_i)
-    if m_direct.get("coords"):
-        coords = m_direct["coords"]
-        cd = sum((coords[i] for i in eff_d), Vector()) / len(eff_d)
-        ci = sum((coords[i] for i in eff_i), Vector()) / len(eff_i)
-        _mark(
-            f"[{tag}] parity-diag: |eff_d|={len(eff_d)} |eff_i|={len(eff_i)} "
-            f"centroid_gap={(cd - ci).length * 1000.0:.2f}mm"
-        )
-        extra = sorted(
-            eff_i - eff_d, key=lambda i: -m_import["weights"].get(i, 0.0)
-        )[:6]
-        for i in extra:
-            _mark(
-                f"[{tag}]   extra v{i}: w_dir={m_direct['weights'].get(i, 0.0):.3f} "
-                f"w_imp={m_import['weights'].get(i, 0.0):.3f} "
-                f"r_seed={(coords[i] - cd).length * 1000.0:.1f}mm"
-            )
+    both = sum(1 for a, b in keys if a in eff_d and b in eff_i)
+    iou = both / max(1, len(eff_d) + len(eff_i) - both)
+    _mark(
+        f"[{tag}] parity-diag: |eff_d|={len(eff_d)} |eff_i|={len(eff_i)} "
+        f"matched={len(keys)} both_eff={both}"
+    )
     _gate(
         f"{tag}.parity",
         m_import["osc_max"] <= par["osc_factor"] * m_direct["osc_max"]
@@ -449,6 +552,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
     fp = {i for i, w in weights.items() if w > 1e-5}
     pre_dih = _dihedral_map(obj, fp)
     pre_cross = _cross_intersections(obj, fp)
+    sig = _topo_sig(obj.data)
     before, before_n, before_fn = _snapshot(obj)
     try:
         st = bpy.ops.rigo.region_apply()
@@ -456,6 +560,7 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
         st = {"CANCELLED"}
         _mark(f"[{tag}] refused: {exc}")
     if st == {"FINISHED"}:
+        weights = _group_weights(obj, mask)
         m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
                      weights, amount, -1.0, nonman0, pre_cross)
         _gate(
@@ -467,13 +572,10 @@ def _commit_valid_or_refuse(tag, obj, amount, feather, weights, nonman0):
             f"selfx={m['selfx']} inv={m['inverted']} core={m['core_med']:.2f}",
         )
     else:
-        restored = all(
-            (obj.data.vertices[i].co - before[i]).length == 0.0
-            for i in before
-        )
+        restored = _refusal_untouched(obj, before, sig)
         preview = obj.modifiers.get(f"RIGO_REGION_PREVIEW_{mask}") is not None
         _gate(f"{tag}.refuse_safe", restored and preview,
-              f"bit_exact_restore={restored} preview_kept={preview}")
+              f"untouched_incl_topology={restored} preview_kept={preview}")
 
 
 def _make_grid(name, size_m, divisions, jitter_frac, seed):
@@ -550,6 +652,9 @@ def _run_direct_circle(tag, obj, amount, kind, seed_idx, radius,
     if not commit:
         return None, weights
     bpy.ops.rigo.region_apply()
+    # Re-read AFTER commit: once commits refine topology (#49) the vertex
+    # group is the only self-consistent weight source for the final mesh.
+    weights = _group_weights(obj, region.surface_mask)
     sign = -1.0 if kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
                  amount, sign, nonman0, pre_cross)
@@ -586,6 +691,7 @@ def _run_import(tag, obj, style_id, cursor_world, amount, feather_for_gate,
     if st_apply != {"FINISHED"}:
         _gate(f"{tag}.commit", False, f"returned {st_apply}")
         return None
+    weights = _group_weights(obj, region.surface_mask)
     sign = -1.0 if region.kind == "PRESSURE" else 1.0
     m = _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
                  region.magnitude_mm, sign, nonman0, pre_cross)
@@ -938,6 +1044,7 @@ def _run():
             pre_dih = _dihedral_map(obj, fp)
             pre_cross = _cross_intersections(obj, fp)
             nonman0 = _nonmanifold(obj)
+            sig = _topo_sig(me)
             before, before_n, before_fn = _snapshot(obj)
             msg = ""
             try:
@@ -948,6 +1055,7 @@ def _run():
             if expect_commit:
                 ok_commit = st == {"FINISHED"}
                 if ok_commit:
+                    weights = _group_weights(obj, region.surface_mask)
                     m = _measure(tag, obj, before, before_n, before_fn,
                                  pre_dih, weights, amount, -1.0, nonman0,
                                  pre_cross)
@@ -956,10 +1064,7 @@ def _run():
                 else:
                     _gate(tag, False, f"over-refused: {msg[:90]}")
             else:
-                restored = all(
-                    (me.vertices[i].co - before[i]).length == 0.0
-                    for i in before
-                )
+                restored = _refusal_untouched(obj, before, sig)
                 preview = obj.modifiers.get(
                     f"RIGO_REGION_PREVIEW_{region.surface_mask}"
                 ) is not None

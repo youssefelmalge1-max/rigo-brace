@@ -32,9 +32,20 @@ editing the test.
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
   "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
-  "size": {"surface_tolerance_frac": 0.12}
+  "size": {"surface_tolerance_frac": 0.12},
+  "quality": {"enforced": false, "stretch_max": 1.5, "stretch_gt15_max": 0,
+              "aspect_p95_factor": 1.15, "min_rows_across_feather": 4,
+              "growth_max_faces_factor": 2.5, "smooth_new_spikes": 0}
 }
 ```
+
+Mesh-quality metrics (#49) are measured and logged on EVERY gated commit now;
+`quality.enforced` flips to true together with the local-refinement commit — the
+current kernel measurably fails them (paint15: 128 edges stretched >1.5×), so
+enforcing them first would be gate theatre. Thresholds derive from the measured
+healthy control (circle15: stretch 1.30, 0 edges >1.5×, aspect_p95 ratio 1.02)
+vs the defect fixture (paint15: stretch 2.39, ratio 1.44). The smoothness bound's
+`h` is defined as the post-commit mean footprint edge.
 
 ## Measured clean controls (baseline)
 
