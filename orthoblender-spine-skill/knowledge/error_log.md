@@ -520,3 +520,19 @@ Probe tools/hardendbg.py (evidence in hardendbg_result.txt @ bdbad85):
 - FLOAT32 (P3): float32(1e-6) = 9.9999999747e-07 < 1e-6 → floor-valued verts failed
   every >= 1e-6 member test while region_edit's > 0.0 included them. Fixed (> 0.0).
 Fix plan for the open items: knowledge/hardening_plan_48.md (Waves 1–5).
+
+## ERR-0032 — 2026-08-15 — #49 commit under-samples the correction wall (staircase, smooth-then-spike)
+
+User-reported with screenshots; measured by tools/meshqualdbg.py. The commit moves
+vertices but never adds any: at 3.9 mm edges a 15 mm press over a 10 mm feather
+crosses ~2.5 vertex rows. Wall edges stretch to 2.39x (analytic prediction
+sqrt(1+(1.5·A/F)^2)=2.46 — matches), max edge 7.4→12.9 mm, aspect>4 faces 12→44,
+8 new >60° dihedrals; sculpt-Smooth afterwards cannot fix it (no DOFs across the
+wall) and worsens stretch to 2.86. circle15 (30 mm radius) is the healthy control
+(stretch 1.30). Every current quality gate passes this defect — triangle quality is
+measured nowhere in regionqualtest.py. Council verdict (6 lenses, no vetoes on the
+fix family): HARDEN — predictive, footprint-confined, edge-selective subdivision
+inside a dry-run bmesh transaction, new-vertex weights RE-EVALUATED from the
+authored field (parent interpolation provably keeps the staircase), displacement
+math unchanged. Full verdict in issues.md; implementation awaiting orthotist
+approval (topology-changing commit).

@@ -1363,3 +1363,49 @@ everywhere: IoU 0.856→0.977 scan, 0.861→0.909 patient. Battery green.
 Open: Wave 3 (field-preserving Edit→Update), Wave 4 (chart-fold refusal, spike
 budget), Wave 5 (undo/save-reopen harness, v1 migration measurement, downstream
 pipeline matrix). The exp-map chart remains DEFERRED.
+
+### #49 OPEN — committed pressure walls are under-sampled (staircase rims; smoothing spikes)
+
+Measured (tools/meshqualdbg.py, 2026-08-15): the commit displaces existing vertices
+only; 15 mm over a 10 mm feather on the 3.9 mm-edge scan leaves ~2.5 vertex rows in
+the wall — edges stretch to 2.39x (analytic 2.46), max edge 12.9 mm, aspect>4 faces
+12→44, 8 new >60° dihedrals; sculpt-Smooth cannot repair (no geometry to move) and
+spikes on creases. All current gates pass the defect: triangle quality is ungated.
+
+Expert-council verdict (2026-08-15, six lenses — representation, local remeshing,
+deformation quality, Blender-state, clinical governor, reliability): **HARDEN,
+unanimous fix family, no vetoes** (one scoped veto: never subdivide the real mesh
+before validation).
+
+Agreed fix architecture (pending orthotist approval — the commit becomes
+topology-changing):
+1. DRY-RUN TRANSACTION: build a bmesh working copy; refine + displace + repair +
+   validate inside it; write to the real mesh only when valid (atomic); refusal
+   touches nothing — strictly stronger than today's positions-only restore.
+   Strict ordering: refine BEFORE capturing any index-keyed state.
+2. PREDICTIVE, SELF-LIMITING REFINEMENT: split footprint edges whose predicted
+   post-commit length/turning exceeds bounds derived from the authored profile
+   (target ≈ >=4–10 rows across the feather depending on amount/feather; no-op on
+   already-dense meshes; growth budget + locality: mask+1-ring only).
+3. RE-EVALUATE new-vertex weights from the authored field (geodesic feather /
+   circle falloff / chart field) — NEVER parent-interpolate (interpolation keeps
+   the staircase polyline; deformation lens proof). Other regions' masks DO
+   interpolate via the deform layer (their fields are not being committed).
+4. Optional polish (measure first): band-restricted edge flips + tangential
+   relaxation if aspect gates still fail after splitting.
+5. Clinical governor conditions (NO VETO): automatic at commit, one undo step,
+   visible note; footprint-confined, position-preserving; wall within 1.0 mm of
+   the authored amount×weight profile; effective feather width within 10 %;
+   plateau never shrinks; outside-mask untouched; provenance records refined:true
+   + resulting edge length; density difference disclosed on export.
+6. RELIABILITY PRECONDITION: rewrite the evidence layer FIRST and prove it
+   behavior-neutral on the current kernel — count_change gate re-scoped
+   (unchanged outside footprint; declared refinement inside), position-based
+   parity oracles (BVH surface deviation, not index maps), topology-inclusive
+   refusal hash, fold-oracle coverage of subdivided edges, new quality gates
+   (stretch max ≤1.5x / 0 edges beyond, aspect p95 ≤1.15x pre, ≥4 rows across
+   feather, growth ≤2.5x faces, smooth-after-commit regression: 0 new spikes),
+   downstream trimline/brace run on a refined committed scan.
+
+Estimated: L overall (M production + evidence-layer rework). No production code
+changed by this investigation.
