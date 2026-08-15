@@ -355,7 +355,20 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         # (its original vertices' pre-normals AND the pre-surface normal at
         # its center): on creases the references legitimately disagree and
         # orientation is undefined — those faces are covered by the
-        # selfx/fold predicates.
+        # selfx/fold predicates.  ALL-NEW faces (#49b) have no vertex
+        # reference and the BVH surface normal alone is unreliable over
+        # wrinkles (nearest pre-surface point lands on another fold flank —
+        # measured up to 2 mm displacement misread), so their second
+        # confirmation is a REAL fold against an edge-neighbour (< −0.5):
+        # a genuinely inverted patch cannot exist without one — its rim
+        # faces carry original vertices and its boundary must fold.
+        nbr_faces = {}
+        for p in _footprint_faces(me, fp):
+            vs = p.vertices
+            for k in range(len(vs)):
+                a, b = vs[k], vs[(k + 1) % len(vs)]
+                key = (a, b) if a < b else (b, a)
+                nbr_faces.setdefault(key, []).append(p.index)
         inverted = 0
         for p in _footprint_faces(me, fp):
             reference = Vector()
@@ -376,7 +389,19 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
             if reference.length >= 1.5 and nor is not None:
                 if by_verts and by_surf:
                     inverted += 1
-            elif by_verts or (reference.length < 1e-9 and by_surf):
+            elif reference.length < 1e-9 and by_surf:
+                vs = p.vertices
+                folded_nbr = False
+                for k in range(len(vs)):
+                    a, b = vs[k], vs[(k + 1) % len(vs)]
+                    key = (a, b) if a < b else (b, a)
+                    for q in nbr_faces.get(key, ()):
+                        if q != p.index and me.polygons[q].normal.dot(
+                                p.normal) < -0.5:
+                            folded_nbr = True
+                if folded_nbr:
+                    inverted += 1
+            elif by_verts:
                 inverted += 1
     else:
         inverted = sum(
@@ -437,7 +462,6 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     wall_viol = 0
     seen_pairs = set()
     wall_edges = []
-    pre_lens = []
     for p in faces_q:
         vs = p.vertices
         n = len(vs)
@@ -449,11 +473,7 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
             seen_pairs.add(key)
             pre_len = (before[a] - before[b]).length
             if pre_len > 1e-9:
-                pre_lens.append(pre_len)
                 wall_edges.append((a, b, pre_len))
-    mean_pre_mm = (
-        sum(pre_lens) / len(pre_lens) * 1000.0 if pre_lens else 0.0
-    )
     margin = _T["quality"]["wall_sampling_margin"]
     wall_exceed = 0.0
     for a, b, pre_len in wall_edges:
@@ -468,7 +488,11 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         h_req = max(
             1.2, (1.5 * amount_mm / g) * math.sqrt(1.0 + g * g) / rows
         )
-        bound = max(1.4 * h_req, 1.1 * mean_pre_mm)
+        # ABSOLUTE bound (#49b): a mean-edge floor here blinded the oracle
+        # on coarse scans (decim030 shipped a 21.5 mm wall edge with 0
+        # violations) — the sampling requirement must not scale with the
+        # scan's own coarseness.
+        bound = 1.4 * h_req
         post_mm = (me.vertices[a].co - me.vertices[b].co).length * 1000.0
         wall_exceed = max(wall_exceed, post_mm / bound)
         if post_mm > margin * bound:
@@ -976,13 +1000,28 @@ def _run():
         _run_import("import_moved", obj, style, tuple(moved), 15.0, 30.0)
         _delete(obj)
 
-        for tag, ratio in (("import_decim065", 0.65), ("import_decim030", 0.30)):
+        # decim015 (#49b): the coarse-patient-scan class from the orthotist's
+        # screenshots — a mean-edge floor in the refinement criterion used to
+        # leave these walls at scan density (21.5 mm edges on decim030, zero
+        # violations flagged by the equally-floored oracle).  Refinement must
+        # ENGAGE here and the floorless wall-sampling gate must hold.
+        for tag, ratio, must_refine in (
+            ("import_decim065", 0.65, False), ("import_decim030", 0.30, False),
+            ("import_decim015", 0.15, True),
+        ):
             obj = _import_scan(_SCAN)
             mod = obj.modifiers.new("QA_DEC", "DECIMATE")
             mod.ratio = ratio
             bpy.context.view_layer.objects.active = obj
             bpy.ops.object.modifier_apply(modifier=mod.name)
             _run_import(tag, obj, style, cursor, 15.0, 30.0)
+            if must_refine:
+                region = obj.rigo_regions[obj.rigo_region_index]
+                _gate(
+                    f"{tag}.refined_commit",
+                    region.refined_added > 0,
+                    f"refined_added={region.refined_added}",
+                )
             _delete(obj)
 
         # repeated import onto already-committed geometry (screenshot case).

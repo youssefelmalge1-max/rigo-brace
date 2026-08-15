@@ -1453,6 +1453,26 @@ PASS=True): refined A-model patient (+99 verts) → trimline → curve corset
 oppwall refusal leaves a byte-identical scan whose downstream failure
 signature equals the untouched control's exactly (same 32 liner folds).
 
+#### #49b shipped (2026-08-15, DEC-0047) — coarse scans refine too; smooth-vs-preview warned
+
+Orthotist screenshots showed the staircase SURVIVING on a coarse patient scan
+and "Smooth (whole mesh)" doing nothing to the region. Council verdict HARDEN
+(council_49b_coarse_scans.md): the refinement split floor (1.1× the scan's own
+mean edge, mirrored in the oracle) made the input triangulation the ceiling of
+output quality — deleted from both; the sampling requirement is absolute. The
+user-density fixture (decim 0.15) now refines and passes every gate; dense
+no-ops unchanged; density robustness restored. The smooth mystery: live region
+DISPLACE previews re-displace on top of the smoothed base — rigo.smooth now
+applies from the head of the stack and WARNS that corrected areas take their
+final smooth shape at commit. Inverted oracle extended to dual-confirmation
+for all-new faces (surface reference + real neighbour fold).
+
+OPEN follow-ups: (a) preview fidelity — the DISPLACE preview still shows the
+coarse staircase that the commit no longer produces; consider a
+density-honest preview (subdivided evaluated geometry) so the orthotist sees
+at author time what commit will build. (b) import_decim065 commit measured
+3.9 s (ungated case).
+
 ### #50 OPEN — pre-existing brace-generator failures surfaced by #49 step 5 (NOT #49 regressions)
 
 Discovered while validating downstream, all with ZERO regions involved,

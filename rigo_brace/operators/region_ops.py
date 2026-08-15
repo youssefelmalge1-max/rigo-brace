@@ -702,19 +702,22 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
     # wall slope g = |amount|·|Δw|/L sets both the rows the transition
     # needs (per-edge turning ≤ 0.25 rad) and the wall arc those rows
     # span; an edge splits ONLY when its predicted post-displacement
-    # length exceeds 1.4× its own requirement.  A mesh already denser
-    # than every local requirement is a no-op by construction — splitting
-    # cannot reduce the stretch RATIO (halving L halves Δw too), it fixes
-    # SAMPLING.
+    # length exceeds 1.4× its own requirement.  The requirement is
+    # ABSOLUTE (mm, from amount and turning): a mesh already denser than
+    # every local requirement is a no-op by construction — and a COARSE
+    # scan must be refined down to the same requirement, never to its own
+    # coarseness (#49b: a mean-edge floor here made the input
+    # triangulation the ceiling of output quality — the staircase
+    # survived verbatim on coarse scans).  Splitting cannot reduce the
+    # stretch RATIO (halving L halves Δw too), it fixes SAMPLING.
     def h_required(g):
         if g < 0.35:
-            return None  # gentle: the mesh carries it at any density
+            return None  # gentle turning: a ramp at any density, no shelf
         rows = max(4, int(math.ceil(2.0 * math.atan(g) / 0.25)))
         wall_arc_mm = (1.5 * amount_mm / g) * math.sqrt(1.0 + g * g)
         return max(0.0012, wall_arc_mm / rows * 0.001)
 
     h_target = mean_edge  # provenance figure: tightest requirement seen
-    floor = 1.1 * mean_edge
 
     # New-vertex weights come from a smooth 3D IDW over the ORIGINAL
     # vertices' authored weights.  Parent-edge interpolation provably keeps
@@ -775,7 +778,7 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
             if h_req is None:
                 continue
             predicted = math.hypot(length, abs(offset) * abs(wa - wb))
-            if predicted > max(1.4 * h_req, floor):
+            if predicted > 1.4 * h_req:
                 h_target = min(h_target, h_req)
                 marked.append(e)
         if not marked:

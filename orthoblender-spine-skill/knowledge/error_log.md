@@ -551,3 +551,17 @@ battery, which is why it went unnoticed. Evidence: tools/corsetparamdbg.py,
 tools/downstreamscout.py, downstreamtest_result.txt (control cases).
 Lesson: keep at least one downstream smoke case in the routine battery -
 tools/downstreamtest.py now plays that role with comparative-control gates.
+
+## ERR-0034 (2026-08-15) - refinement floor proportional to scan mean edge disabled #49 on coarse scans
+
+Symptom: committed library pressure staircases on coarse patient scans
+despite #49 (user screenshots); whole-mesh Smooth appears to do nothing to
+the region. Cause 1: floor = 1.1 x mean_edge in _refine_footprint (and its
+oracle mirror) - a density-relative floor on an absolute sampling
+requirement. Lesson (Botsch charter, verbatim trigger): a surface tool must
+not change materially because the same shape was triangulated differently -
+never scale a QUALITY threshold by the input's own coarseness. Cause 2:
+live-region DISPLACE previews regenerate displacement on top of a smoothed
+base - "smoothing did nothing" was mechanically correct observation, fixed
+with an explicit WARNING + modifier-order fix. See DEC-0047 /
+council_49b_coarse_scans.md.

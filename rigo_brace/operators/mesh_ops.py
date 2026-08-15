@@ -194,8 +194,31 @@ class RIGO_OT_smooth(Operator):
         mod = obj.modifiers.new(name="Rigo Smooth", type="SMOOTH")
         mod.iterations = settings.smooth_iterations
         mod.factor = settings.smooth_factor
+        # Smooth the BASE scan, not a modifier stack tail: live correction
+        # previews (RIGO_REGION_PREVIEW_* displace modifiers) sit above and
+        # would otherwise make Blender warn about applying a non-first
+        # modifier (#49b).
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
         _apply_modifier(obj, mod)
-        self.report({"INFO"}, "Smoothing complete")
+        previews = [
+            m for m in obj.modifiers
+            if m.name.startswith("RIGO_REGION_PREVIEW_")
+        ]
+        if previews:
+            # The previews regenerate their displacement on top of the
+            # smoothed base every frame — the corrected areas will NOT look
+            # smoother until they are committed (where #49 refinement
+            # produces the fine wall) or removed.  Say so, or the orthotist
+            # sees "no effect" (#49b, measured).
+            self.report(
+                {"WARNING"},
+                f"Smoothed the scan under {len(previews)} live correction "
+                "preview(s) — the corrected areas redraw on top and will "
+                "only take their final smooth shape when committed",
+            )
+        else:
+            self.report({"INFO"}, "Smoothing complete")
         return {"FINISHED"}
 
 

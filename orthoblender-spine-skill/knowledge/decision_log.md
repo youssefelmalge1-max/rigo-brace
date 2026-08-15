@@ -1217,3 +1217,45 @@ Decisions (all measured via tools/refinedbg.py before shipping):
 Full battery green: regionqualtest (incl. paint15.refined_commit,
 refined_declared, w49 gates), regiontest, regionstyletest, regionuitest,
 selftest, downstreamtest.
+
+## DEC-0047 (2026-08-15) - #49b: coarse-scan staircase fixed (mean-edge floor removed); smooth-vs-preview UX explained and warned
+
+Trigger: orthotist screenshots - a committed library pressure on a COARSE
+patient scan still staircases, and "Smooth (whole mesh)" visibly does nothing
+to the region. Council routed (Botsch primary, Campbell secondary+no-veto,
+geometry-reliability, Ryan cross, Rigo governor no-veto): verdict HARDEN,
+council_49b_coarse_scans.md.
+
+Root cause 1: the refinement split criterion carried floor = 1.1 x mean_edge -
+the scan's own coarseness was the CEILING of output quality, so on coarse
+scans the sampling requirement was never enforced and the pre-#49 staircase
+shipped; the wall-sampling oracle carried the same floor and was blind to it
+(decim030: 21.5 mm wall edge, zero violations). Fix: the requirement is
+ABSOLUTE - floor deleted from BOTH production criterion and oracle/contract.
+Measured after: decim015 (user-screenshot density) refines (+8) and passes
+every gate; decim030 +9; dense/flat no-op gates unchanged; paint15 refines
+finer (+205). Density robustness: the same body triangulated differently now
+commits to the same wall quality.
+
+Root cause 2 (the "no effect" smooth): a live region is a DISPLACE modifier;
+rigo.smooth applied a SMOOTH modifier from the stack tail - the base smooths
+and the previews re-displace on top at scan density every frame. Fix: the
+smooth modifier is moved to index 0 before apply (silences Blender's order
+warning, same base semantics) and a WARNING names the live previews and says
+the corrected areas take their final smooth shape at commit.
+
+Oracle repair discovered en route: the finer splitting exposed 7 all-new
+wrinkle-flank faces flagged "inverted" by the single BVH-surface reference
+(production fold/selfx clean, test fold oracle 0) - the documented dual-
+confirmation gap for all-new faces. Extended: all-new faces count inverted
+only with surface-reference agreement AND a real fold against an
+edge-neighbour (< -0.5); a genuinely inverted patch cannot exist without one
+(its rim faces carry original vertices and its boundary must fold).
+
+Open follow-ups (issues.md): preview fidelity (DISPLACE preview still shows
+the coarse staircase that the commit no longer produces); import_decim065
+commit measured 3.9 s (ungated case; watch when perf matters).
+
+Battery green: regionqualtest (incl. import_decim015 refined gates),
+regiontest, regionstyletest, regionuitest, selftest, scancleantest,
+downstreamtest.

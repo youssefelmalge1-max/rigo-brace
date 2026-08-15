@@ -80,8 +80,16 @@ as refinement deliberately leaves them — pressing walls collide there), the
 post-commit length must not exceed `wall_sampling_margin` (1.3, a measured
 divergence allowance: actual post length exceeds the parallel-direction
 prediction hypot(L, amount·Δw) where faired directions diverge; healthy
-population measured ≤1.14×) × the sampling requirement
-max(1.4·h_req(g), 1.1·mean_edge); violations gated to ≤4. The count bound
+population measured ≤1.14×) × the sampling requirement 1.4·h_req(g);
+violations gated to ≤4. The requirement is ABSOLUTE — #49b removed the
+1.1·mean_edge floor from BOTH the refinement criterion and this oracle: a
+floor proportional to the scan's own mean edge made the input triangulation
+the ceiling of output quality, so coarse patient scans kept the pre-#49
+staircase (measured: decim030 shipped a 21.5 mm wall edge with zero flagged
+violations) while the equally-floored oracle was blind to it. Refinement now
+engages on coarse scans down to the same absolute requirement (density
+robustness: the same body triangulated differently must commit to the same
+wall quality). The count bound
 is the dissolve plan's own ≤4-face bound: a seam dissolution legitimately
 returns a bounded spot to the scan's sampling (measured on paint15: 3
 violations at ≤2.07× — one triangle row at one wrinkle seam), while the
@@ -109,7 +117,13 @@ displacements of surviving originals in every mode: the BVH signed distance
 misreads wrinkled zones by up to 2.1 mm (measured: a w 0.975/1.000 edge
 with exact displacements −14.61/−15.00 mm read as −13.32/−12.93), so it
 must not vote on 0.2 mm-tolerance reversals; new-vertex profile position
-stays covered by the osc/decile/core gates on the BVH oracle. Dihedral
+stays covered by the osc/decile/core gates on the BVH oracle. The inverted
+oracle is dual-confirmation everywhere (#49b): faces with original vertices
+need vertex-reference AND surface-reference agreement; ALL-NEW faces (no
+vertex reference; the surface reference alone misreads wrinkle flanks) need
+surface-reference agreement AND a real fold against an edge-neighbour
+(< −0.5) — a genuinely inverted patch cannot exist without one, because its
+rim faces carry original vertices and its boundary must fold. Dihedral
 honesty: only PRE-EXISTING edges can prove commit damage; edges born from
 refinement have no pre state (a wrinkled scan sampled finer shows sharp
 dihedrals that were always there) — new-edge geometry is covered by the quality

@@ -285,7 +285,7 @@ def _run():
             h_req = max(
                 1.2, (1.5 * amount_mm / g) * math.sqrt(1.0 + g * g) / rows
             )
-            bound = max(1.4 * h_req, 1.1 * mean_pre_mm)
+            bound = 1.4 * h_req  # absolute (#49b): no mean-edge floor
             post_mm = (
                 tempu.vertices[a].co - tempu.vertices[b].co
             ).length * 1000.0
