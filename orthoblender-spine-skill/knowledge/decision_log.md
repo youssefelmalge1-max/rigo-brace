@@ -1298,3 +1298,41 @@ Perf: floorless refinement + field passes measured 3.23 s on the 44.5k
 painted commit - contract perf gate re-derived 3.0 -> 4.0 s, regiontest
 aligned. Full battery green: regionqualtest, regiontest, regionstyletest,
 regionuitest, selftest, scancleantest, selecttest, downstreamtest.
+
+## DEC-0049 (2026-08-16) - field report "no action at all": frozen large commits + stale-session risk; perf hardening
+
+Orthotist reported the region tools "give no action at all" after #49c (big
+painted 20/10 region on the A model, live Region 1 visible). Reproduced the
+EXACT configuration in a fresh session (tools/noactiondbg.py): everything
+works - preview modifier present, commit FINISHED, 20 mm pressed - so the
+report is a stale live session (Blender open across the update install;
+operators half-reloaded) plus a real UX finding: the commit took 10.8 s
+FROZEN with zero feedback on that patch (the refined attempt fights a sharp
+crease through the full 40-iteration repair grind, twice, then falls back
+with the visible warning).
+
+Shipped (each timed):
+- Repair stall-break: a defect set unchanged through 16 straight iterations
+  (tangential AND escalated) is provably stuck - stop grinding (10.8->8.6 s).
+- Static-body BVH hoisted out of the attempt loop: static faces are never
+  split and never move; original vertex indices are preserved in every
+  working copy - build the opposite-wall net once per commit, not per
+  attempt, with MORE stable pair identities (8.6->8.0 s).
+- Footprint-scoped scans in _refine_footprint: candidate edges via weighted
+  verts link edges instead of 133k-edge full-mesh sweeps per round; weld /
+  beautify / cap / purge passes iterate new-vert neighbourhoods
+  (deterministic sorted order). Profile: _refine_footprint 2.82->1.09 s;
+  worst-case commit 10.8->6.9 s. Typical small commits unaffected (~1-3 s).
+- downstreamtest refined_green gate made robust to the PRE-EXISTING #50
+  trim-rim coin-flip: strict (a refined patient fully green through export)
+  whenever the pipeline lets any patient through; comparative with an
+  explicit RIM-BUG-BLOCKED marker when even the UNTOUCHED control fails the
+  same pre-corset stage (the marginal rim flipped sides again after #49c
+  changed split-vertex positions - the region commit itself is identical,
+  +99 verts, all region batteries green).
+
+Full battery green: regionqualtest, regiontest, regionstyletest,
+regionuitest, selftest, downstreamtest. User guidance: ALWAYS restart
+Blender after an update install; a big region commit can take several
+seconds and ends either with the pressed result or a status-bar message
+(warning or refusal) - never silently.

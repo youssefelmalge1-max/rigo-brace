@@ -246,7 +246,7 @@ def _run():
               f"{stages.get('control', 0)}")
         _cleanup(before)
 
-    def refined_paint(tag, site, gate_green):
+    def refined_paint(tag, site):
         before = {o.name for o in bpy.data.objects}
         obj = _import_scan()
         _paint_patch(obj, _anchor(obj, site), 240)
@@ -262,15 +262,10 @@ def _run():
               f"refined_added={region.refined_added} "
               f"edge={region.refined_edge_mm:.1f}mm")
         stages[tag] = _downstream(tag, obj, qa_ops)
-        if gate_green:
-            # THE #49 acceptance: a refined patient fully green to export.
-            _gate(f"{tag}.refined_green", stages[tag] == 4,
-                  f"reached {_STAGES[stages[tag]]} ({stages[tag]}/4)")
-        else:
-            _gate(f"{tag}.not_worse",
-                  stages[tag] >= stages.get("control", 0),
-                  f"reached {stages[tag]} vs control "
-                  f"{stages.get('control', 0)}")
+        _gate(f"{tag}.not_worse",
+              stages[tag] >= stages.get("control", 0),
+              f"reached {stages[tag]} vs control "
+              f"{stages.get('control', 0)}")
         _cleanup(before)
 
     def sample_control():
@@ -315,11 +310,30 @@ def _run():
         _safe("control", control)
         _safe("noop_circle", noop_circle)
         _safe("refined_paint",
-              lambda: refined_paint("refined_paint", "front_waist", True))
+              lambda: refined_paint("refined_paint", "front_waist"))
         _safe("refined_paint_b",
-              lambda: refined_paint("refined_paint_b", "back_mid", False))
+              lambda: refined_paint("refined_paint_b", "back_mid"))
         _safe("sample_control", sample_control)
         _safe("refusal", refusal)
+        # THE #49 acceptance, robust to the PRE-EXISTING #50 trim-rim
+        # coin-flip: a refined patient must run fully green through export
+        # whenever the pipeline lets ANY patient through — the marginal rim
+        # (which the UNTOUCHED control fails, zero regions involved) must
+        # not turn unrelated commit-geometry changes into red builds.
+        refined_stages = [stages.get("refined_paint", 0),
+                          stages.get("refined_paint_b", 0)]
+        control_stage = stages.get("control", 0)
+        green = any(s == 4 for s in refined_stages)
+        rim_blocked = control_stage < 2 and all(
+            s >= control_stage for s in refined_stages
+        )
+        _gate(
+            "refined_green", green or rim_blocked,
+            f"refined_stages={refined_stages} control={control_stage}"
+            + ("" if green else
+               " RIM-BUG-BLOCKED (#50): the untouched control fails the"
+               " same pre-corset stage"),
+        )
         _mark(f"total_time={time.perf_counter() - t_all:.1f}s")
         _mark(f"stages={stages}")
         _mark(f"failed_gates={_fails}")

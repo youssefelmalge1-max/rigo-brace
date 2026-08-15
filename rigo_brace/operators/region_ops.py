@@ -771,10 +771,26 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
     added = 0
     n_start = len(bm.verts)
     all_new = []
+    # Perf (#49c): every candidate edge has a weighted endpoint, so scan the
+    # weighted verts' link edges instead of the whole mesh (measured: the
+    # full-mesh scans dominated large commits — 133k edges × rounds).
+    bm.verts.ensure_lookup_table()
+    field_verts = [bm.verts[i] for i in weights]
     for _round in range(4):
         bm.normal_update()
         marked = []
-        for e in bm.edges:
+        seen_edges = set()
+        for fv in field_verts:
+            if not fv.is_valid:
+                continue
+            for e in fv.link_edges:
+                if e in seen_edges:
+                    continue
+                seen_edges.add(e)
+                marked.append(e)
+        candidates = marked
+        marked = []
+        for e in candidates:
             wa = e.verts[0][deform].get(group_index, 0.0)
             wb = e.verts[1][deform].get(group_index, 0.0)
             if wa <= 0.0 and wb <= 0.0:
@@ -851,6 +867,7 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
                     w = sampler(v.co)
                     if w > 0.0:
                         dv[group_index] = w
+                        field_verts.append(v)
                     elif group_index in dv:
                         del dv[group_index]
         added += len(new_verts)
@@ -864,26 +881,38 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
         new_set = {v for v in all_new if v.is_valid}
         short_limit = 0.35 * h_target
         targetmap = {}
-        for e in bm.edges:
-            a, b = e.verts
-            if (e.calc_length() >= short_limit
-                    or (a not in new_set and b not in new_set)):
-                continue
-            if a in new_set and a not in targetmap and b not in targetmap:
-                targetmap[a] = b  # weld the NEW vert onto its neighbour
-            elif b in new_set and b not in targetmap and a not in targetmap:
-                targetmap[b] = a
+        seen_edges = set()
+        for v in sorted(new_set, key=lambda v: v.index):
+            for e in v.link_edges:
+                if e in seen_edges:
+                    continue
+                seen_edges.add(e)
+                if e.calc_length() >= short_limit:
+                    continue
+                a, b = e.verts
+                if a in new_set and a not in targetmap \
+                        and b not in targetmap:
+                    targetmap[a] = b  # weld the NEW vert onto its neighbour
+                elif b in new_set and b not in targetmap \
+                        and a not in targetmap:
+                    targetmap[b] = a
         if targetmap:
             bmesh.ops.weld_verts(bm, targetmap=targetmap)
         # Flip toward max-min-angle on every interior edge of the touched
-        # zone (flips change triangulation, never positions).
-        interior = [
-            e for e in bm.edges
-            if len(e.link_faces) == 2 and any(
-                v[deform].get(group_index, 0.0) > 0.0
-                for f in e.link_faces for v in f.verts
-            )
-        ]
+        # zone (flips change triangulation, never positions).  Scoped scan:
+        # any face with a weighted vert is reachable from a field vert.
+        interior = []
+        seen_edges = set()
+        for fv in field_verts:
+            if not fv.is_valid:
+                continue
+            for f in fv.link_faces:
+                for e in f.edges:
+                    if e in seen_edges:
+                        continue
+                    seen_edges.add(e)
+                    if len(e.link_faces) == 2:
+                        interior.append(e)
         if interior:
             # Deterministic input order (sets iterate by pointer): flips
             # must be bit-reproducible run to run.
@@ -902,8 +931,15 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
         # directly; positions never change.
         new_set = {v for v in new_set if v.is_valid}
         cap_edges = []
-        for f in bm.faces:
-            if len(f.verts) != 3 or not any(v in new_set for v in f.verts):
+        cap_seen = set()
+        cap_faces = []
+        for v in sorted(new_set, key=lambda v: v.index):
+            for f in v.link_faces:
+                if f not in cap_seen:
+                    cap_seen.add(f)
+                    cap_faces.append(f)
+        for f in cap_faces:
+            if len(f.verts) != 3:
                 continue
             els = [(e.calc_length(), e) for e in f.edges]
             longest, e_long = max(els, key=lambda t: t[0])
@@ -930,10 +966,15 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
         for _purge in range(2):
             new_set = {v for v in new_set if v.is_valid}
             targetmap = {}
-            for f in bm.faces:
+            purge_seen = set()
+            purge_faces = []
+            for v in sorted(new_set, key=lambda v: v.index):
+                for f in v.link_faces:
+                    if f not in purge_seen:
+                        purge_seen.add(f)
+                        purge_faces.append(f)
+            for f in purge_faces:
                 if len(f.verts) != 3:
-                    continue
-                if not any(v in new_set for v in f.verts):
                     continue
                 els = [(e.calc_length(), e) for e in f.edges]
                 longest = max(length for length, _e in els)
@@ -1176,6 +1217,13 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
         prev_key = key
         if new_start is not None and not escalated and stall >= 3:
             escalated = True
+        if stall >= 16:
+            # The defect set survived 16 straight iterations of tangential
+            # AND escalated moves unchanged — provably stuck.  Grinding the
+            # remaining budget is pure frozen UI on the failure path
+            # (measured 10.8 s commits on large regions, read by the
+            # orthotist as "no action at all").
+            break
         if escalated:
             relax = {
                 vi for p_index in bad
@@ -2039,6 +2087,18 @@ class RIGO_OT_region_apply(Operator):
         fell_back = False
         dissolve = None
         retry = False
+        # The static-body BVH (#49c perf): faces holding no footprint vertex
+        # are never split and never move, and original vertex indices are
+        # preserved in every working copy — build the opposite-wall net ONCE
+        # from the real mesh instead of once per attempt (measured: ~1 s per
+        # rebuild on the 44.5k scan, ×3 on the fallback path).
+        member0 = set()
+        for vertex in me.vertices:
+            for g in vertex.groups:
+                if g.group == group.index and g.weight > 0.0:
+                    member0.add(vertex.index)
+                    break
+        static_tree, static_faces = _static_faces_bvh(me, member0)
         for attempt in range(3):
             if attempt == 1 and dissolve is None:
                 continue  # no dissolvable seam slivers — straight to fallback
@@ -2099,7 +2159,6 @@ class RIGO_OT_region_apply(Operator):
 
                 # Wave 1 (P0): predict wall contact before displacing, and
                 # baseline the cross-sheet state for the post net.
-                static_tree, static_faces = _static_faces_bvh(temp, member)
                 blocked = _wall_blocked_points(
                     temp, weights, faired, offset, static_tree
                 )
