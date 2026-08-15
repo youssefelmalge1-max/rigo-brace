@@ -490,6 +490,9 @@ def _faired_normals(me, weights, mean_edge):
     smooth influence field.  A pad presses along a coherent direction, so the
     commit displaces along normals faired over ~2 edge lengths (min 6 mm).
     Unit length, so |displacement| stays exactly amount × weight.
+    (#49d measured: scaling this radius with the amount changes NO seam
+    outcome at 15–20 mm — only the cost — the steep-wall seam collapses are
+    not direction-coherence-limited.)
     """
     radius = max(0.006, 2.0 * mean_edge)
     # Membership is "in the mask" (> 0.0), NOT ">= the 1e-6 floor": vertex
@@ -673,9 +676,12 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
     from the authored field (other regions' masks interpolate through the
     deform layer).  Returns (verts_added, h_target_mm).
 
-    ``dissolve`` is the seam-sliver retry plan from ``_sliver_dissolve_plan``:
-    specific NEW vertices (identified on the previous, bit-identical refined
-    attempt) to weld onto an original neighbour before displacement.
+    ``dissolve`` is a LIST of seam-sliver retry plans from
+    ``_sliver_dissolve_plan``, applied in order: each plan's NEW-vertex
+    indices were identified on the previous, bit-identical refined attempt
+    with all EARLIER plans already applied, so sequential application keeps
+    every plan's numbering valid (#49d: larger amounts collapse several
+    wrinkle seams — clusters surface one retry at a time).
 
     ``curved`` (#49c): place split points by Phong tessellation — projected
     onto the parent vertices' tangent planes — instead of on the flat parent
@@ -1052,22 +1058,23 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
                 if dv.get(group_index, 0.0) <= 1e-6 and group_index in dv:
                     del dv[group_index]
 
-    if dissolve is not None:
-        # Seam-sliver dissolution (#49 retry): the previous refined attempt
+    if dissolve:
+        # Seam-sliver dissolution (#49 retry): each previous refined attempt
         # identified specific NEW vertices whose seam triangles collapse
         # under the displacement's fairing-direction divergence.  Refinement
-        # is bit-deterministic (gated), so the same indices name the same
-        # vertices here; weld each onto its nearest ORIGINAL neighbour
-        # BEFORE displacement.  Original scan vertices never move, no new
-        # topology is created (welds only remove refinement vertices), and
-        # every surviving vertex keeps its authored/field weight — so the
-        # field needs no re-evaluation.  If the vertex count differs from
-        # the plan (determinism broken), skip: the unrefined fallback then
-        # decides honestly.
-        target_verts, expected = dissolve
-        if len(bm.verts) == expected:
-            bm.verts.ensure_lookup_table()
+        # is bit-deterministic (gated), so with the plans applied in order
+        # the same indices name the same vertices here; weld each onto its
+        # nearest ORIGINAL neighbour BEFORE displacement.  Original scan
+        # vertices never move, no new topology is created (welds only
+        # remove refinement vertices), and every surviving vertex keeps its
+        # authored/field weight — so the field needs no re-evaluation.  If
+        # a stage's vertex count differs from its plan (determinism
+        # broken), stop: the unrefined fallback then decides honestly.
+        for target_verts, expected in dissolve:
             bm.verts.index_update()
+            if len(bm.verts) != expected:
+                break
+            bm.verts.ensure_lookup_table()
             targetmap = {}
             for vi in sorted(target_verts):
                 if vi < n_start or vi >= len(bm.verts):
@@ -1087,7 +1094,35 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
                 if best is not None:
                     targetmap[v] = best
             if targetmap:
+                targets = list(targetmap.values())
                 bmesh.ops.weld_verts(bm, targetmap=targetmap)
+                # A clump weld can fold two triangles onto the SAME three
+                # vertices — the duplicate face leaves >2-face edges
+                # (non-manifold, measured #49d).  Remove the duplicates
+                # locally, around the weld targets only.
+                seen_faces = {}
+                dupes = []
+                for v in targets:
+                    if not v.is_valid:
+                        continue
+                    for f in v.link_faces:
+                        key = frozenset(f.verts)
+                        other = seen_faces.get(key)
+                        if other is None:
+                            seen_faces[key] = f
+                        elif f is not other:
+                            dupes.append(f)
+                if dupes:
+                    unique = []
+                    seen_ids = set()
+                    for f in dupes:
+                        if f.is_valid and id(f) not in seen_ids:
+                            seen_ids.add(id(f))
+                            unique.append(f)
+                    if unique:
+                        bmesh.ops.delete(
+                            bm, geom=unique, context="FACES_ONLY"
+                        )
                 bm.normal_update()
 
     # The weld pass removes some of the counted vertices — the DECLARED
@@ -1097,6 +1132,19 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
     bm.free()
     temp_me.update()
     return added, h_target * 1000.0
+
+
+def _nonmanifold_count(me):
+    """Edges not shared by exactly two faces (#49d transactional guard):
+    dissolution welds are the commit's only topology-editing step and must
+    never change the mesh's manifoldness — a fin or duplicate face that the
+    local weld cleanup missed must never ship."""
+    counts = [0] * len(me.edges)
+    edge_indices = [0] * len(me.loops)
+    me.loops.foreach_get("edge_index", edge_indices)
+    for i in edge_indices:
+        counts[i] += 1
+    return sum(1 for c in counts if c != 2)
 
 
 def _sliver_dissolve_plan(temp, remaining, n_orig):
@@ -1111,14 +1159,29 @@ def _sliver_dissolve_plan(temp, remaining, n_orig):
     """
     if not remaining or len(remaining) > 4:
         return None
-    seed = set()
     for fi in remaining:
-        new_on_face = [
-            vi for vi in temp.polygons[fi].vertices if vi >= n_orig
-        ]
-        if not new_on_face:
+        if not any(vi >= n_orig for vi in temp.polygons[fi].vertices):
             return None
-        seed.update(new_on_face)
+    # ONE cluster per retry (#49d): welding several seam clusters in a
+    # single pass piles faces onto shared edges (measured: non-manifold
+    # fins at 20 mm with 3 clusters / 24 verts in one weld).  Each retry
+    # dissolves only the lowest-index connected cluster — small, clean
+    # welds; the ladder's accumulated retries surface the rest one by one.
+    fverts = {fi: set(temp.polygons[fi].vertices) for fi in remaining}
+    pool = set(remaining)
+    comp = {min(pool)}
+    pool.discard(min(remaining))
+    grew = True
+    while grew:
+        grew = False
+        for fi in list(pool):
+            if any(fverts[fi] & fverts[cj] for cj in comp):
+                pool.discard(fi)
+                comp.add(fi)
+                grew = True
+    seed = set()
+    for fi in comp:
+        seed.update(vi for vi in fverts[fi] if vi >= n_orig)
     # Expand to the one-ring NEW neighbourhood: dissolving only the exact
     # defective vertices lets the fold migrate to the adjacent seam sliver
     # (measured) — dissolving the whole local seam returns that one spot
@@ -2076,17 +2139,23 @@ class RIGO_OT_region_apply(Operator):
         # any failure discards the copy and touches nothing.
         # ------------------------------------------------------------------ #
         me = obj.data
-        # Three seamless attempts: refined first; if its repair leaves ONLY
-        # refinement-born seam slivers, retry with those specific vertices
+        # Seamless attempt ladder: refined first; while the repair leaves
+        # ONLY refinement-born seam slivers, retry with those vertices
         # dissolved (welded away pre-displacement) and the whole pipeline
-        # re-run from a fresh copy; anything else — or a failed dissolve —
-        # falls back to a FULLY unrefined commit (exactly the pre-#49
-        # behaviour, with a visible warning), refusing only if that also
-        # fails.  No partial refinement, no density seams, deterministic.
+        # re-run from a fresh copy — plans ACCUMULATE across up to three
+        # retries, because larger amounts collapse several wrinkle seams
+        # and the clusters surface one retry at a time (#49d: measured 1
+        # cluster at 10 mm, 2 at 15 mm, 3 at 20 mm on the A-model waist —
+        # a single retry meant every amount above 10 mm fell back to the
+        # staircase).  Anything else — or an exhausted ladder — falls back
+        # to a FULLY unrefined commit (exactly the pre-#49 behaviour, with
+        # a visible warning), refusing only if that also fails.  No partial
+        # refinement, no density seams, deterministic.
         failure = None
         fell_back = False
-        dissolve = None
+        plans = []
         retry = False
+        prev_defects = None
         # The static-body BVH (#49c perf): faces holding no footprint vertex
         # are never split and never move, and original vertex indices are
         # preserved in every working copy — build the opposite-wall net ONCE
@@ -2099,20 +2168,26 @@ class RIGO_OT_region_apply(Operator):
                     member0.add(vertex.index)
                     break
         static_tree, static_faces = _static_faces_bvh(me, member0)
-        for attempt in range(3):
-            if attempt == 1 and dissolve is None:
-                continue  # no dissolvable seam slivers — straight to fallback
+        nonman_me = _nonmanifold_count(me)
+        while True:
             temp = me.copy()
             retry = False
             try:
-                if attempt < 2:
+                if not fell_back:
                     added, refine_mm = _refine_footprint(
                         temp, group.index, offset,
-                        dissolve=dissolve if attempt == 1 else None,
+                        dissolve=plans or None,
                     )
+                    if added and _nonmanifold_count(temp) != nonman_me:
+                        # A weld fin/duplicate the local cleanup missed —
+                        # topology damage never ships, and more welding
+                        # cannot heal it: the unrefined fallback decides
+                        # (#49d guard; skips the wasted displacement too).
+                        fell_back = True
+                        retry = True
+                        continue
                 else:
                     added, refine_mm = 0, 0.0
-                    fell_back = True
                 weights = {}
                 for vertex in temp.vertices:
                     for g in vertex.groups:
@@ -2186,13 +2261,29 @@ class RIGO_OT_region_apply(Operator):
                     sliver_h=0.12 * refine_mm * 0.001,
                 )
                 if remaining:
-                    if added and attempt == 0:
-                        dissolve = _sliver_dissolve_plan(
+                    # Worsening cutoff (#49d): a dissolve retry after which
+                    # the defect count GREW is whack-a-mole on a
+                    # geometrically infeasible wall — stop burning pipeline
+                    # runs (measured 25 s ladders on the 20/10 extreme) and
+                    # let the honest fallback decide.  A steady count is
+                    # still progress (one cluster dissolved, one migration
+                    # surfaced — measured converging on the next retry).
+                    making_progress = (
+                        prev_defects is None
+                        or len(remaining) <= prev_defects
+                    )
+                    prev_defects = len(remaining)
+                    if (added and not fell_back and len(plans) < 3
+                            and making_progress):
+                        plan = _sliver_dissolve_plan(
                             temp, remaining, len(me.vertices)
                         )
-                        retry = True
-                        continue
-                    if attempt == 1:
+                        if plan is not None:
+                            plans.append(plan)
+                            retry = True
+                            continue
+                    if not fell_back:
+                        fell_back = True
                         retry = True
                         continue
                     failure = (

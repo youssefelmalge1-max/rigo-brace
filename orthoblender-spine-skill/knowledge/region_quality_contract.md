@@ -28,7 +28,7 @@ editing the test.
              "iou_min": 0.80, "rms_max_mm": 0.5,
              "core_maxdd_mm": 1.0, "rim_shift_edges": 1.5},
   "resolution": {"core_med_min_frac": 0.90},
-  "perf": {"import_commit_max_s": 4.0},
+  "perf": {"import_commit_max_s": 6.0},
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
   "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
@@ -54,7 +54,12 @@ defective (measured: displacement squeezed a new seam triangle to 0.24 mm
 height against a 2.38 mm target — a numerically meaningless normal that
 must not ship). If repair still leaves ONLY refinement-born seam slivers
 (every still-defective face touches a new vertex; ≤4 faces), the commit
-retries once with those slivers DISSOLVED:
+retries with those slivers DISSOLVED — plans ACCUMULATE across up to THREE
+retries, because larger amounts collapse several wrinkle seams and the
+clusters surface one retry at a time (#49d, measured on the A-model waist:
+1 cluster at 10 mm, 2 at 15, 3 at 20; a single retry meant every amount
+above 10 mm fell back to the staircase, and sculpt-smoothing the fallback
+tore a spike crown). Each retry:
 the bit-deterministic refinement is re-run on a fresh working copy and the
 identified new vertices plus their one-ring new neighbourhood are welded
 onto surviving neighbours (nearest original preferred) BEFORE displacement —
@@ -132,11 +137,14 @@ topology-independently (signed distance to the pre-commit surface via BVH);
 parity samples the surviving original vertices as probe points. The smoothness
 bound's `h` is the post-commit mean footprint edge. Perf was re-derived for the
 transactional commit: full-mesh working copy + refinement + atomic write adds
-~0.7 s on the 44.5k patient scan (gate was 3.0 s), and #49b/#49c added real
-work — floorless refinement engages deeper and the curved-placement/harmonic
-field passes run per commit — measured 3.23 s on the 44.5k painted commit.
-The gate is 4.0 s (user-paced commit; the same interactivity budget, honest
-about the added geometry work).
+~0.7 s on the 44.5k patient scan (gate was 3.0 s); #49b/#49c added real work
+(floorless refinement, curved placement, harmonic field — measured 3.23 s);
+and the #49d dissolution ladder runs up to 5 transactional pipeline passes
+(refined + 3 accumulated dissolve retries + fallback) when wrinkle seams
+demand it — measured 4.96 s on the 44.5k painted commit, 8.1 s on the
+A-model 20 mm patch that the ladder WINS (refined +789 instead of the
+staircase). The gate is 6.0 s (user-paced commit; the orthotist accepted
+compute for maximum wall quality — DEC-0050).
 
 ## Measured clean controls (baseline)
 

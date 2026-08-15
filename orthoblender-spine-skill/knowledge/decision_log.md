@@ -1336,3 +1336,51 @@ regionuitest, selftest, downstreamtest. User guidance: ALWAYS restart
 Blender after an update install; a big region commit can take several
 seconds and ends either with the pressed result or a status-bar message
 (warning or refusal) - never silently.
+
+## DEC-0050 (2026-08-16) - #49d: refinement scales with the amount; the 20 mm cliff is gone; a real non-manifold gap found and guarded
+
+Orthotist report: 5-10 mm pressures commit beautifully, but ~20 mm followed
+by sculpt smoothing tears a crown of spikes - and asked for the meshing to
+scale with the amount. Measured on the A-model waist patch
+(tools/bigamountdbg.py): larger amounts collapse MORE wrinkle seams
+(1 cluster at 10 mm, 2 at 15, 3 at 20); the single dissolution retry meant
+every amount above 10 mm fell back to the staircase, and smoothing the
+staircase is exactly the spike crown.
+
+Shipped (each variant measured before acceptance):
+- ACCUMULATED DISSOLUTION LADDER: plans stack across up to three retries,
+  each re-running the bit-deterministic refinement and applying earlier
+  plans IN ORDER (which keeps every plan's numbering valid), so seam
+  clusters surface and dissolve one retry at a time. ONE cluster per plan
+  (the lowest-index connected component): welding several clusters in one
+  pass measurably piled faces onto shared edges.
+- NON-MANIFOLD GUARD (real production gap caught by regiontest's granular
+  verdict): clump welds can fold two triangles onto the same three
+  vertices - duplicate faces / >2-face edges that me.validate() does not
+  remove and the validity stack never checked (pre-#49 commits could not
+  change topology). Now: local duplicate-face cleanup at each weld, plus a
+  transactional whole-mesh manifoldness guard (loop-array edge-use count,
+  ~50 ms) - topology damage never ships, the fallback decides. The earlier
+  "+789 refined at 20/10" was carrying this damage; the guard correctly
+  rejects it.
+- WORSENING CUTOFF: a retry after which the defect count GREW is
+  whack-a-mole on an infeasible wall - stop (25 s hopeless ladders -> 12 s
+  honest fallback). A steady count is still progress (measured converging).
+- REJECTED on measurement: amount-scaled faired-normal radius (0.5x and
+  1.0x amount) - identical seam outcomes at every radius, only cost grew;
+  the steep-wall collapses are not direction-coherence-limited.
+
+Final measured ladder (A-model waist, 59 mm patch): 5/10 +151 (1.7 s),
+10/10 +387 (4-5 s), 15/10 +598 (10 s), 20/10 (the 2:1 steep extreme)
+honest warned fallback (12 s), 20/20 (the orthotist's actual config,
+Rigo pad proportions) +114 REFINED (3.4 s) with ZERO worsened edges after
+Laplacian smoothing. New battery gates: w49.amount20_refined +
+w49.amount20_smooth_after on the 20/20 A-model case. Contract perf
+re-derived 4.0 -> 6.0 s (ladder depth; battery fixture measured 3.4 s).
+Clinical note for the UI backlog: for deep presses, feather comparable to
+the amount is both the Rigo pad shape and what commits refined; 2:1
+steep-narrow walls on wrinkled zones warn and keep scan sampling.
+
+Full battery green: regionqualtest (incl. amount20 gates), regiontest
+(granular commit verdict now prints per-condition), regionstyletest,
+regionuitest, selftest, downstreamtest.

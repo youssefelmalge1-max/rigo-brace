@@ -33,6 +33,7 @@ _T = quality_contract.load()
 
 _OUT = r"C:\Projects\Blender Add-on Braces\regionqualtest_result.txt"
 _SCAN = r"C:\Projects\Blender Add-on Braces\Brace Sample.stl"
+_A_SCAN = r"C:\Projects\Blender Add-on Braces\A type model.stl"
 _PATIENT = r"C:\Projects\Blender Add-on Braces\A type model.stl"
 _TRIES = {"n": 0}
 _log = []
@@ -1728,6 +1729,74 @@ def _run():
             f"declared={region.refined_added}",
         )
         _delete(g)
+
+        # #49d: the amount must SCALE the refinement, never fall off a
+        # cliff — a 20 mm pad on the A-model waist used to fall back to the
+        # staircase, and sculpt-smoothing the fallback tore a crown of
+        # spikes (orthotist screenshots; their config: 20 mm / feather 20).
+        # The 2:1 steep extreme (20/10) legitimately warns-and-falls-back
+        # on this wrinkled crease zone; the clinical big-pad shape (feather
+        # comparable to amount, Rigo pad proportions) must commit REFINED.
+        obj = _import_scan(_A_SCAN)
+        me = obj.data
+        cos = [obj.matrix_world @ v.co for v in me.vertices]
+        z_lo = min(c.z for c in cos)
+        z_hi = max(c.z for c in cos)
+        y_lo, y_hi = min(c.y for c in cos), max(c.y for c in cos)
+        x_lo, x_hi = min(c.x for c in cos), max(c.x for c in cos)
+        anchor = Vector((
+            (x_lo + x_hi) * 0.5,
+            y_lo + 0.10 * (y_hi - y_lo),
+            z_lo + 0.45 * (z_hi - z_lo),
+        ))
+        seed = _nearest_vertex(me, anchor)
+        center = me.vertices[seed].co.copy()
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bm = bmesh.from_edit_mesh(me)
+        for f in bm.faces:
+            if (f.calc_center_median() - center).length < 0.059:
+                f.select = True
+        bmesh.update_edit_mesh(me)
+        settings.region_kind = "PRESSURE"
+        settings.region_magnitude = 20.0
+        settings.region_feather = 20.0
+        settings.region_falloff = "SMOOTH"
+        bpy.ops.rigo.region_add()
+        region = obj.rigo_regions[obj.rigo_region_index]
+        pre_dih = _dihedral_map(
+            obj, set(_group_weights(obj, region.surface_mask))
+        )
+        st = bpy.ops.rigo.region_apply()
+        _gate(
+            "w49.amount20_refined",
+            st == {"FINISHED"} and region.refined_added > 0,
+            f"st={st} refined_added={region.refined_added}",
+        )
+        w = _group_weights(obj, region.surface_mask)
+        fp = {i for i, wt in w.items() if wt > 1e-5}
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="VERT")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        for i in fp:
+            bm.verts[i].select = True
+        bmesh.update_edit_mesh(obj.data)
+        bpy.ops.mesh.vertices_smooth(factor=0.5, repeat=5)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        post_dih = _dihedral_map(obj, fp)
+        worsened = sum(
+            1 for key, a in post_dih.items()
+            if a > 60.0 and key in pre_dih and pre_dih[key] <= 45.0
+        )
+        _gate(
+            "w49.amount20_smooth_after",
+            worsened <= _T["quality"]["smooth_new_spikes"],
+            f"worsened_preexisting={worsened} after Laplacian 0.5x5",
+        )
+        _delete(obj)
 
     def roundtrip_case():
         # Precision contract (#48 hardening item 8): mask weights survive the

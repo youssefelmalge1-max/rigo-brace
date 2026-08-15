@@ -193,19 +193,25 @@ def _run():
             (v.co - before[v.index]).length * 1000.0
             for v in scan.data.vertices if v.index in before
         )
-        apply_ok = (
-            abs(committed_max_mm - 7.0) < 0.05
-            and scan.modifiers.get(f"RIGO_REGION_PREVIEW_{region.surface_mask}") is None
-            and len(scan.data.vertices) == nverts0 + region.refined_added
-            and _nonmanifold(scan) == nonman0
-            # Contract perf gate (4.0 s): a refined attempt that falls back
-            # legitimately runs the transaction twice, and #49b/#49c
-            # refinement engages deeper (measured 3.23 s on this commit).
-            and dt < 4.0
+        disp_ok = abs(committed_max_mm - 7.0) < 0.05
+        preview_gone = scan.modifiers.get(
+            f"RIGO_REGION_PREVIEW_{region.surface_mask}") is None
+        count_ok = (
+            len(scan.data.vertices) == nverts0 + region.refined_added
         )
+        nonman_ok = _nonmanifold(scan) == nonman0
+        # Contract perf gate (6.0 s): the #49d dissolution ladder runs
+        # up to 5 transactional passes when wrinkle seams demand it
+        # (measured 4.96 s on this commit).
+        time_ok = dt < 6.0
+        apply_ok = (disp_ok and preview_gone and count_ok and nonman_ok
+                    and time_ok)
         _mark(
             f"phase=commit max_disp={committed_max_mm:.3f}mm time={dt:.2f}s "
-            f"apply_ok={apply_ok}"
+            f"disp_ok={disp_ok} preview_gone={preview_gone} "
+            f"count_ok={count_ok} (verts {nverts0}->"
+            f"{len(scan.data.vertices)} declared={region.refined_added}) "
+            f"nonman_ok={nonman_ok} time_ok={time_ok} apply_ok={apply_ok}"
         )
 
         # ---- Mirror: coupled opposite region ---- #
