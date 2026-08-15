@@ -662,7 +662,8 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     return folded
 
 
-def _refine_footprint(temp_me, group_index, offset, dissolve=None):
+def _refine_footprint(temp_me, group_index, offset, dissolve=None,
+                      curved=True, harmonic=True):
     """Adaptive local refinement of the footprint on the WORKING mesh (#49).
 
     Splits only edges whose predicted post-displacement length exceeds the
@@ -675,6 +676,23 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
     ``dissolve`` is the seam-sliver retry plan from ``_sliver_dissolve_plan``:
     specific NEW vertices (identified on the previous, bit-identical refined
     attempt) to weld onto an original neighbour before displacement.
+
+    ``curved`` (#49c): place split points by Phong tessellation — projected
+    onto the parent vertices' tangent planes — instead of on the flat parent
+    triangle.  Linear splitting leaves the refined base piecewise-flat at
+    the ORIGINAL facet scale, so even a perfectly smooth field commits a
+    faceted wall on coarse scans; the lift curves the base through the
+    original vertices WITHOUT moving them.  Applied only where both parent
+    endpoints carry weight (unweighted new vertices must stay exactly on
+    the original surface — the feather 'outside' contract is 0.001 mm) and
+    only across agreeing normals (no crease bulging).
+
+    ``harmonic`` (#49c): after refinement, relax the NEW vertices' weights
+    to the harmonic solution anchored at the ORIGINAL authored samples
+    (Gauss–Seidel on the refined connectivity).  IDW's gradient vanishes at
+    every sample point — a flat spot per original vertex, read as ring
+    ridges in the wall; the harmonic field is smooth between anchors, never
+    overshoots (maximum principle), and keeps every authored weight exact.
     """
     weights = {}
     for v in temp_me.vertices:
@@ -788,6 +806,25 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
         # free of cross-call reference invalidation.  Subdivision never
         # removes vertices, so the round's new vertices are exactly the
         # tail of the vertex table.
+        lift_map = {}
+        if curved:
+            # Phong tessellation record per marked edge, keyed by the exact
+            # midpoint the subdivide will place the new vertex at.
+            for e in marked:
+                va, vb = e.verts
+                wa = va[deform].get(group_index, 0.0)
+                wb = vb[deform].get(group_index, 0.0)
+                if wa <= 0.0 or wb <= 0.0:
+                    continue  # boundary edge: stay on the original surface
+                na, nb = va.normal, vb.normal
+                if na.dot(nb) < 0.3:
+                    continue  # crease: no bulging
+                mid = (va.co + vb.co) * 0.5
+                proj_a = mid - na * (mid - va.co).dot(na)
+                proj_b = mid - nb * (mid - vb.co).dot(nb)
+                lift = (proj_a + proj_b) * 0.5
+                key = (round(mid.x, 8), round(mid.y, 8), round(mid.z, 8))
+                lift_map[key] = mid + (lift - mid) * 0.75
         n_before = len(bm.verts)
         bmesh.ops.subdivide_edges(
             bm, edges=marked, cuts=1, use_grid_fill=False,
@@ -797,6 +834,12 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
             bmesh.ops.triangulate(bm, faces=ngons)
         bm.verts.ensure_lookup_table()
         new_verts = list(bm.verts[n_before:])
+        if lift_map:
+            for v in new_verts:
+                key = (round(v.co.x, 8), round(v.co.y, 8), round(v.co.z, 8))
+                lifted = lift_map.get(key)
+                if lifted is not None:
+                    v.co = lifted
         all_new.extend(new_verts)
         if sampler is not None:
             for v in new_verts:
@@ -938,6 +981,35 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None):
                         dv[group_index] = w
                     else:
                         del dv[group_index]
+        if harmonic:
+            # Harmonic field relaxation (#49c): Gauss–Seidel toward the
+            # Laplace solution on the refined connectivity, ORIGINAL
+            # authored weights (including implicit zeros) as fixed anchors,
+            # NEW vertices only.  Deterministic (sorted order), bounded,
+            # no overshoot by the maximum principle.
+            live_new = [v for v in live_new if v.is_valid]
+            live_new.sort(key=lambda v: v.index)
+            relax_field = [
+                v for v in live_new
+                if group_index in v[deform] or any(
+                    n[deform].get(group_index, 0.0) > 0.0
+                    for e in v.link_edges for n in (e.other_vert(v),)
+                )
+            ]
+            for _pass in range(24):
+                for v in relax_field:
+                    total = 0.0
+                    count = 0
+                    for e in v.link_edges:
+                        n = e.other_vert(v)
+                        total += n[deform].get(group_index, 0.0)
+                        count += 1
+                    if count:
+                        v[deform][group_index] = total / count
+            for v in relax_field:
+                dv = v[deform]
+                if dv.get(group_index, 0.0) <= 1e-6 and group_index in dv:
+                    del dv[group_index]
 
     if dissolve is not None:
         # Seam-sliver dissolution (#49 retry): the previous refined attempt

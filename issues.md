@@ -1473,6 +1473,22 @@ density-honest preview (subdivided evaluated geometry) so the orthotist sees
 at author time what commit will build. (b) import_decim065 commit measured
 3.9 s (ungated case).
 
+#### #49c shipped (2026-08-16, DEC-0048) — sculpted-surface quality: curved splits, harmonic field, smooth shading
+
+The orthotist wanted the committed wall to read as ONE continuous sculpted
+surface. Measured (sculptdbg A–I + full-density reference): curved Phong
+split placement fixed 5 residual repair defects and improved the dihedral
+spectrum; the coarse committed wall now sits near the full-density ceiling
+(p95 48.4° vs reference 39.1°); the dominant remaining "plates" perception
+was FLAT SHADING on STL imports — the product now shade-smooths scans by
+angle (60°, data-level, crease-preserving, survives commit). Harmonic field
+relaxation shipped (IDW zero-gradient artifact, principled, ~free). Fairing
+and final-position Phong resurfacing measured WORSE and were rejected. Perf
+gate re-derived 3.0→4.0 s (measured 3.23 s, deeper refinement). Full battery
+green. OPEN follow-up: derive the wall_dih_p95 gate once the recorded
+population covers more scan classes; preview fidelity still pending (#49b
+note).
+
 ### #50 OPEN — pre-existing brace-generator failures surfaced by #49 step 5 (NOT #49 regressions)
 
 Discovered while validating downstream, all with ZERO regions involved,

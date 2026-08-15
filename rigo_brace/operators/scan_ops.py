@@ -5,6 +5,8 @@ Blender operations so the raw scan is correctly sized, stood upright, centred,
 and free of holes before landmarking and design.
 """
 
+import math
+
 import bpy
 from bpy.types import Operator
 
@@ -47,6 +49,20 @@ def _frame_object(context, obj):
 # --------------------------------------------------------------------------- #
 # Scale
 # --------------------------------------------------------------------------- #
+def shade_smooth_scan(me):
+    """Smooth-by-angle shading, data-level (no modifier, no context): faces
+    smooth, edges sharper than 60° marked sharp — the scan reads as one
+    continuous surface instead of flat-shaded plates (#49c: STL imports are
+    flat-shaded, which is most of the 'plates' look on coarse scans), while
+    genuine creases keep a crisp line.  Face smooth flags ride through the
+    region commit's transactional bmesh write, so committed corrections stay
+    smooth-shaded too."""
+    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    if hasattr(me, "set_sharp_from_angle"):
+        me.set_sharp_from_angle(angle=math.radians(60.0))
+    me.update()
+
+
 class RIGO_OT_apply_units(Operator):
     """Rescale the scan from its real-world units into the working scale"""
 
@@ -59,6 +75,7 @@ class RIGO_OT_apply_units(Operator):
         if obj is None:
             self.report({"ERROR"}, "Select the scan mesh first")
             return {"CANCELLED"}
+        shade_smooth_scan(obj.data)
         units = context.scene.rigo_brace.scan_units
         factor = _UNIT_SCALE[units]
 

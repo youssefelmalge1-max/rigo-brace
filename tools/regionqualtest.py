@@ -497,10 +497,19 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         wall_exceed = max(wall_exceed, post_mm / bound)
         if post_mm > margin * bound:
             wall_viol += 1
+    # Wall-band dihedral spectrum (#49c, recorded for gate derivation): the
+    # terracing the orthotist sees lives in the 0.05<w<0.95 band; the
+    # full-density reference commit measures p95=39°, coarse commits ~48°.
+    band = sorted(
+        a for (va, vb), a in post_dih.items()
+        if 0.05 < weights.get(va, 0.0) < 0.95
+        and 0.05 < weights.get(vb, 0.0) < 0.95
+    )
     quality = {
         "stretch_max": max(stretch) if stretch else 0.0,
         "stretch_gt15": sum(1 for s in stretch if s > 1.5),
         "wall_sampling": wall_viol,
+        "wall_dih_p95": band[int(len(band) * 0.95)] if band else 0.0,
         "aspect_p95": aspects[int(len(aspects) * 0.95)] if aspects else 0.0,
         "aspect_p95_pre": aspects_pre[int(len(aspects_pre) * 0.95)]
         if aspects_pre else 0.0,
@@ -520,6 +529,7 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
         f"[{tag}] quality: stretch_max={quality['stretch_max']:.2f} "
         f">1.5x:{quality['stretch_gt15']} wall_viol={wall_viol} "
         f"wall_exceed={wall_exceed:.2f} "
+        f"wall_dih_p95={quality['wall_dih_p95']:.1f} "
         f"aspect_p95={quality['aspect_p95']:.2f} "
         f">8:{quality['aspect_gt8']} max_edge={quality['max_edge_mm']:.2f}mm"
     )

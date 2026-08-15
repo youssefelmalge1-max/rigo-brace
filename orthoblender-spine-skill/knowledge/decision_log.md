@@ -1259,3 +1259,42 @@ commit measured 3.9 s (ungated case; watch when perf matters).
 Battery green: regionqualtest (incl. import_decim015 refined gates),
 regiontest, regionstyletest, regionuitest, selftest, scancleantest,
 downstreamtest.
+
+## DEC-0048 (2026-08-16) - #49c: sculpted-surface quality (curved split placement, harmonic field, smooth shading)
+
+Orthotist ask: the committed wall should read as ONE continuous sculpted
+surface (ZBrush-like) - no terracing, no speed-bump ridges - without touching
+amount, footprint, plateau or transition design. Council HARDEN
+(council_49c_sculpt_quality.md), all variants A-I measured on a decim-0.15
+steep painted wall via tools/sculptdbg.py, with the SAME patch on the
+full-density scan as the quality-ceiling reference.
+
+Shipped (each measured before shipping):
+- CURVED SPLIT PLACEMENT (Phong tessellation): split points projected onto
+  the parent vertices tangent planes instead of the flat parent triangle.
+  Fixed 5 residual repair defects on the coarse fixture AND improved the
+  wall dihedral spectrum; originals never move; unweighted new vertices stay
+  exactly on the original surface (outside 0.0000 mm); no lift across
+  creases. Also improved the wrinkled paint15 fixture (wall_viol 3->1,
+  stretch 2.25->2.13, aspect>8 16->10).
+- HARMONIC FIELD for new vertices weights (Gauss-Seidel x24, authored
+  originals as anchors): IDW gradient vanishes at every sample (a flat spot
+  per original vertex); harmonic is smooth between anchors, never overshoots.
+  Measured ~neutral on the fixture (kinks live AT anchors) but principled
+  and nearly free.
+- SMOOTH-BY-ANGLE SHADING (60 deg) at scan import + apply-units: STL imports
+  render flat-shaded - most of the "plates" look was presentation, not
+  geometry (the committed coarse wall already measures near the full-density
+  reference: p95 48.4 vs 39.1 deg, ridge fraction 30 vs 26 percent).
+  Data-level (face smooth + sharp edges), NO modifier; flags survive the
+  transactional commit; true creases stay crisp.
+- wall_dih_p95 recorded per commit in the battery (population 13-39 deg);
+  gate derivation deferred until more scan classes are measured.
+Rejected on measurement: post-displacement fairing of new verts (reintroduces
+repair failures - kinks at anchored originals) and Phong RESURFACING of final
+positions (worst ridge worsens via wrong-sheet BVH grabs).
+
+Perf: floorless refinement + field passes measured 3.23 s on the 44.5k
+painted commit - contract perf gate re-derived 3.0 -> 4.0 s, regiontest
+aligned. Full battery green: regionqualtest, regiontest, regionstyletest,
+regionuitest, selftest, scancleantest, selecttest, downstreamtest.

@@ -73,6 +73,9 @@ class RIGO_OT_import_scan(Operator, ImportHelper):
 
         scan = mesh_objects[0]
         scan.name = "Patient Scan"
+        # One continuous surface, not flat-shaded plates (#49c).
+        from .scan_ops import shade_smooth_scan
+        shade_smooth_scan(scan.data)
 
         # Make it the one and only active selection so the next steps target it.
         bpy.ops.object.select_all(action="DESELECT")
