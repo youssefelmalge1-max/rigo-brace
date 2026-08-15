@@ -662,7 +662,7 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     return folded
 
 
-def _refine_footprint(temp_me, group_index, offset):
+def _refine_footprint(temp_me, group_index, offset, dissolve=None):
     """Adaptive local refinement of the footprint on the WORKING mesh (#49).
 
     Splits only edges whose predicted post-displacement length exceeds the
@@ -671,6 +671,10 @@ def _refine_footprint(temp_me, group_index, offset):
     already-dense meshes; new-vertex weights of THIS region re-evaluated
     from the authored field (other regions' masks interpolate through the
     deform layer).  Returns (verts_added, h_target_mm).
+
+    ``dissolve`` is the seam-sliver retry plan from ``_sliver_dissolve_plan``:
+    specific NEW vertices (identified on the previous, bit-identical refined
+    attempt) to weld onto an original neighbour before displacement.
     """
     weights = {}
     for v in temp_me.vertices:
@@ -932,6 +936,44 @@ def _refine_footprint(temp_me, group_index, offset):
                     else:
                         del dv[group_index]
 
+    if dissolve is not None:
+        # Seam-sliver dissolution (#49 retry): the previous refined attempt
+        # identified specific NEW vertices whose seam triangles collapse
+        # under the displacement's fairing-direction divergence.  Refinement
+        # is bit-deterministic (gated), so the same indices name the same
+        # vertices here; weld each onto its nearest ORIGINAL neighbour
+        # BEFORE displacement.  Original scan vertices never move, no new
+        # topology is created (welds only remove refinement vertices), and
+        # every surviving vertex keeps its authored/field weight — so the
+        # field needs no re-evaluation.  If the vertex count differs from
+        # the plan (determinism broken), skip: the unrefined fallback then
+        # decides honestly.
+        target_verts, expected = dissolve
+        if len(bm.verts) == expected:
+            bm.verts.ensure_lookup_table()
+            bm.verts.index_update()
+            targetmap = {}
+            for vi in sorted(target_verts):
+                if vi < n_start or vi >= len(bm.verts):
+                    continue
+                v = bm.verts[vi]
+                best = None
+                for e in sorted(v.link_edges,
+                                key=lambda e: e.calc_length()):
+                    n = e.other_vert(v)
+                    if n.index in target_verts or n in targetmap:
+                        continue
+                    if n.index < n_start:
+                        best = n  # nearest surviving ORIGINAL wins
+                        break
+                    if best is None:
+                        best = n
+                if best is not None:
+                    targetmap[v] = best
+            if targetmap:
+                bmesh.ops.weld_verts(bm, targetmap=targetmap)
+                bm.normal_update()
+
     # The weld pass removes some of the counted vertices — the DECLARED
     # provenance must be the final net growth, exactly.
     added = len(bm.verts) - n_start
@@ -941,8 +983,45 @@ def _refine_footprint(temp_me, group_index, offset):
     return added, h_target * 1000.0
 
 
+def _sliver_dissolve_plan(temp, remaining, n_orig):
+    """Plan the #49 seam-sliver dissolution retry, or None.
+
+    A plan exists only when EVERY still-defective face is refinement-born
+    (touches at least one new vertex) and the defect is small enough to be
+    a seam artefact rather than a genuinely infeasible wall (measured seam
+    failures: 1–2 faces).  An original-geometry defect, or a large defect
+    set, is not ours to dissolve — the unrefined fallback is then the
+    honest answer.
+    """
+    if not remaining or len(remaining) > 4:
+        return None
+    seed = set()
+    for fi in remaining:
+        new_on_face = [
+            vi for vi in temp.polygons[fi].vertices if vi >= n_orig
+        ]
+        if not new_on_face:
+            return None
+        seed.update(new_on_face)
+    # Expand to the one-ring NEW neighbourhood: dissolving only the exact
+    # defective vertices lets the fold migrate to the adjacent seam sliver
+    # (measured) — dissolving the whole local seam returns that one spot
+    # to original sampling in a single deterministic step.
+    verts = set(seed)
+    for e in temp.edges:
+        a, b = e.vertices
+        if a in seed and b >= n_orig:
+            verts.add(b)
+        elif b in seed and a >= n_orig:
+            verts.add(a)
+    if not verts or len(verts) > 24:
+        return None
+    return frozenset(verts), len(temp.vertices)
+
+
 def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
-                  adjacency, baseline, affected=None, fold_pairs=()):
+                  adjacency, baseline, affected=None, fold_pairs=(),
+                  new_start=None, sliver_h=0.0):
     """Remove folded, degenerate or self-intersecting slivers after commit.
 
     Slides ONLY the vertices of defective faces (plus one ring, never outside
@@ -952,6 +1031,15 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
     already defective BEFORE the commit (dirty scans) — those are not ours to
     fix and never count.  Deterministic, bounded, self-terminating.
     Returns the number of faces still defective after the pass.
+
+    ``new_start`` (#49): first REFINEMENT vertex index of a refined commit.
+    When the tangential phase stalls (a seam sliver on a crease-excluded
+    edge has diverging faired directions — tangential sliding provably
+    cannot unfold it), the remaining defective faces' NEW vertices only are
+    allowed full one-ring relaxation, normal component included.  A new
+    vertex carries no authored amount — its normal position is derived from
+    the field sampling — so the clinical promise (original scan vertices
+    keep their exact authored displacement) is untouched.
     """
     member = {i for i, w in weights.items() if w > 0.0}
     if not member:
@@ -969,6 +1057,23 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
         }
         bad |= _footprint_self_intersections(me, member, affected)
         bad |= _folded_pairs(me, fold_pairs, pre_face_normals)
+        if new_start is not None and sliver_h > 0.0:
+            # Refined commits only (#49): displacement can compress a
+            # refinement-born triangle into a sub-sampling sliver whose
+            # normal is numerically meaningless (measured: 0.24 mm height
+            # against a 2.38 mm sampling target) — those are ours to fix,
+            # via escalation, before the commit is accepted.
+            for p in affected:
+                vs = p.vertices
+                if len(vs) != 3 or not any(vi >= new_start for vi in vs):
+                    continue
+                longest = max(
+                    (me.vertices[vs[k]].co
+                     - me.vertices[vs[(k + 1) % 3]].co).length
+                    for k in range(3)
+                )
+                if longest > 1e-9 and 2.0 * p.area / longest < sliver_h:
+                    bad.add(p.index)
         return bad - baseline
 
     # (returns the set of still-defective face indices — empty on success)
@@ -977,17 +1082,42 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
     # 40 iterations, not 20: refined footprints (#49) have smaller one-rings,
     # so each tangential step is proportionally smaller and deep crease folds
     # need more of them to unwind.  Still bounded, still deterministic.
+    stall = 0
+    prev_key = None
+    escalated = False
     for iteration in range(40):
         if not bad:
             return set()
-        relax = set()
-        for p_index in bad:
-            for vi in me.polygons[p_index].vertices:
-                if vi in member:
-                    relax.add(vi)
-                for neighbor in adjacency.get(vi, ()):
-                    if neighbor in member:
-                        relax.add(neighbor)
+        # Escalation (#49): a seam sliver whose faired directions diverge is
+        # provably tangential-unfixable, and every wasted tangential
+        # iteration slides the surrounding ORIGINAL vertices around,
+        # grinding collateral damage (edge stretch, off-profile reversals)
+        # into a healthy wall.  So: detect the stall (identical defect set 3
+        # iterations running) and switch to moving ONLY the defective
+        # faces' own NEW vertices — full one-ring relaxation, normal
+        # component included.  Never the ring, never originals.
+        key = tuple(sorted(bad))
+        stall = stall + 1 if key == prev_key else 0
+        prev_key = key
+        if new_start is not None and not escalated and stall >= 3:
+            escalated = True
+        if escalated:
+            relax = {
+                vi for p_index in bad
+                for vi in me.polygons[p_index].vertices
+                if vi >= new_start
+            }
+            if not relax:
+                break  # an all-original defect — escalation cannot help
+        else:
+            relax = set()
+            for p_index in bad:
+                for vi in me.polygons[p_index].vertices:
+                    if vi in member:
+                        relax.add(vi)
+                    for neighbor in adjacency.get(vi, ()):
+                        if neighbor in member:
+                            relax.add(neighbor)
         for vi in sorted(relax):
             neighbors = adjacency.get(vi)
             if not neighbors:
@@ -997,8 +1127,9 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
                 mean += me.vertices[j].co
             mean /= len(neighbors)
             delta = mean - me.vertices[vi].co
-            normal = pre_vertex_normals[vi]
-            delta -= normal * delta.dot(normal)  # tangential slide only
+            if not escalated:
+                normal = pre_vertex_normals[vi]
+                delta -= normal * delta.dot(normal)  # tangential slide only
             me.vertices[vi].co += delta * 0.5
         me.update()
         bad = defective()
@@ -1822,20 +1953,27 @@ class RIGO_OT_region_apply(Operator):
         # any failure discards the copy and touches nothing.
         # ------------------------------------------------------------------ #
         me = obj.data
-        # Two seamless attempts: refined first; if its displacement cannot
-        # be repaired (a crease interaction), fall back to a FULLY
-        # unrefined commit — exactly the pre-#49 behaviour, with a visible
-        # warning — and refuse only if that also fails.  No partial
-        # refinement, no density seams, deterministic.
+        # Three seamless attempts: refined first; if its repair leaves ONLY
+        # refinement-born seam slivers, retry with those specific vertices
+        # dissolved (welded away pre-displacement) and the whole pipeline
+        # re-run from a fresh copy; anything else — or a failed dissolve —
+        # falls back to a FULLY unrefined commit (exactly the pre-#49
+        # behaviour, with a visible warning), refusing only if that also
+        # fails.  No partial refinement, no density seams, deterministic.
         failure = None
         fell_back = False
-        for attempt in range(2):
+        dissolve = None
+        retry = False
+        for attempt in range(3):
+            if attempt == 1 and dissolve is None:
+                continue  # no dissolvable seam slivers — straight to fallback
             temp = me.copy()
             retry = False
             try:
-                if attempt == 0:
+                if attempt < 2:
                     added, refine_mm = _refine_footprint(
-                        temp, group.index, offset
+                        temp, group.index, offset,
+                        dissolve=dissolve if attempt == 1 else None,
                     )
                 else:
                     added, refine_mm = 0, 0.0
@@ -1910,9 +2048,17 @@ class RIGO_OT_region_apply(Operator):
                 remaining = _repair_folds(
                     temp, weights, pre_face_normals, pre_vertex_normals,
                     adjacency, baseline, affected, fold_pairs,
+                    new_start=len(me.vertices) if added else None,
+                    sliver_h=0.12 * refine_mm * 0.001,
                 )
                 if remaining:
                     if added and attempt == 0:
+                        dissolve = _sliver_dissolve_plan(
+                            temp, remaining, len(me.vertices)
+                        )
+                        retry = True
+                        continue
+                    if attempt == 1:
                         retry = True
                         continue
                     failure = (

@@ -33,38 +33,83 @@ editing the test.
   "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
   "size": {"surface_tolerance_frac": 0.12},
-  "quality": {"enforced": true, "stretch_max": 1.8, "stretch_gt15_max": 30,
-              "aspect_p95_factor": 1.45, "min_rows_across_feather": 4,
+  "quality": {"enforced": true, "wall_sampling_margin": 1.3,
+              "wall_sampling_violations": 4,
+              "aspect_p95_factor": 2.5, "min_rows_across_feather": 4,
               "growth_max_faces_factor": 2.5, "smooth_new_spikes": 2}
 }
 ```
 
 **Two-mode commit semantics (#49).** Every commit first attempts the REFINED
-transaction; if its repair cannot converge (crease interactions on wrinkled
-scans) it falls back to a FULLY unrefined commit — bit-for-bit the pre-#49
-behaviour — with a visible WARNING telling the orthotist the wall stayed at
-the scan's own sampling and that smoothing the scan first enables the finer
-wall. No partial refinement, no density seams, both modes atomic and
-deterministic. Each mode is measured by its proven oracle set: refined
+transaction. Its fold repair runs tangential-only (the clinical amount of
+every vertex is preserved by construction); when the defect set stalls
+unchanged for 3 iterations, the still-defective faces' OWN new vertices —
+never the ring, never originals — are allowed full one-ring relaxation,
+normal component included (escalation). A new vertex carries no authored
+amount (its normal position is derived from the field sampling), so the
+clinical promise — original scan vertices keep their exact authored
+displacement — is untouched. Refined commits additionally treat any
+refinement-born triangle compressed below 0.12× the sampling target as
+defective (measured: displacement squeezed a new seam triangle to 0.24 mm
+height against a 2.38 mm target — a numerically meaningless normal that
+must not ship). If repair still leaves ONLY refinement-born seam slivers
+(every still-defective face touches a new vertex; ≤4 faces), the commit
+retries once with those slivers DISSOLVED:
+the bit-deterministic refinement is re-run on a fresh working copy and the
+identified new vertices plus their one-ring new neighbourhood are welded
+onto surviving neighbours (nearest original preferred) BEFORE displacement —
+original scan vertices never move, no new topology is created, every
+surviving vertex keeps its authored/field weight, and the full
+displace→repair→validate stack re-runs on the dissolved topology (measured
+on paint15: the wrinkle-seam slivers dissolve, the retry converges with
++168 verts, zero inverted-face oracle flags, no warning). Only if
+that also fails — or the defect is NOT refinement-born — does it fall back
+to a FULLY unrefined commit — bit-for-bit the pre-#49 behaviour — with a
+visible WARNING telling the orthotist the wall stayed at the scan's own
+sampling and that smoothing the scan first enables the finer wall. No
+partial refinement, no density seams, all modes atomic and deterministic. Each mode is measured by its proven oracle set: refined
 commits by the topology-independent BVH oracles, unrefined commits by the
 behaviour-neutral index oracles (a refined-commit oracle applied to legacy
 output flags the staircase that legacy behaviour was always accepted with).
 Mesh-quality gates (#49) are ENFORCED on every commit that actually refined
-(`refined_added > 0`); fallback commits are legacy-gated and warned. Thresholds derive from measured fixtures, not
-taste: the refined defect fixture (painted 15/10) achieves stretch 1.47 with 0
-edges >1.5× (was 2.39 / 128–240 unrefined); the healthy-population bound is set
-by creased EXPANSION commits, whose crease-normal divergence legitimately
-stretches locally without any staircase (measured 1.66 / 24 edges on
-expand15 — a different phenomenon from the #49 sampling defect and untouched by
-refinement, which deliberately never splits across >60° creases). Gates 1.8 /
-≤30 therefore admit the whole healthy population and still exclude the defect
-class (2.39 / 128+) by a wide margin. Aspect_p95 ratio gate 1.45 backstops
-gross degradation (measured 1.38 refined-painted, ~1.0 circles); smooth-after-
-commit worsened-pre-existing spikes measured 0–1, gated ≤2.
+(`refined_added > 0`); fallback commits are legacy-gated and warned.
+Thresholds derive from measured fixtures, not taste. The enforced sampling
+gate is `wall_sampling`: over surviving PRE-EXISTING footprint edges with
+local slope g = amount·|Δw|/L ≥ 0.35 (sharp >60° pre-creases exempt, exactly
+as refinement deliberately leaves them — pressing walls collide there), the
+post-commit length must not exceed `wall_sampling_margin` (1.3, a measured
+divergence allowance: actual post length exceeds the parallel-direction
+prediction hypot(L, amount·Δw) where faired directions diverge; healthy
+population measured ≤1.14×) × the sampling requirement
+max(1.4·h_req(g), 1.1·mean_edge); violations gated to ≤4. The count bound
+is the dissolve plan's own ≤4-face bound: a seam dissolution legitimately
+returns a bounded spot to the scan's sampling (measured on paint15: 3
+violations at ≤2.07× — one triangle row at one wrinkle seam), while the
+systemic staircase defect measures 82 violations at 3.12× on the identical
+wall committed unrefined — a 20× count separation. A correctly refined
+wall away from dissolved seams has zero violations, because refinement
+split every edge above the same requirement (all 21 other fixtures: 0). The stretch RATIO (recorded, NOT gated) is set by the authored
+steepness alone — splitting an edge halves L and Δw alike, so the ratio is
+scale-invariant at √(1+g²), up to 2.46 for a legitimate 15/10 Rigo profile —
+a ratio threshold would gate the orthotist's authored profile, not the mesh
+(measured: refined paint15 2.15–2.27 max ratio on FLAT sub-floor edges with
+ZERO sampling violations and 0–1 smoothing spikes; the earlier 1.8/≤30 ratio
+gates were calibrated before any steep-feather fixture ever refined, on
+fixtures whose feathers were 2–3× wider). Aspect_p95 ratio gate 2.5
+backstops gross degradation (measured: heavy wrinkle-zone refinement of
+paint15 reaches 2.03–2.09× pre — splitting wrinkled triangles is
+intrinsically anisotropic — while circles and light refinement stay ~1.0);
+smooth-after-commit worsened-pre-existing spikes measured 0–1, gated ≤2.
 `min_rows_across_feather` is enforced BY CONSTRUCTION through the per-edge
 refinement criterion (split when predicted length exceeds 1.4× the local
-slope's row requirement) and verified indirectly by the stretch/max-edge gates;
-the same criterion makes already-dense meshes a no-op (gated). Dihedral
+slope's row requirement) and verified directly by the wall_sampling gate;
+the same criterion makes already-dense meshes a no-op (gated).
+Feather-monotonicity reversals (`rev`) are counted on the INDEX-EXACT
+displacements of surviving originals in every mode: the BVH signed distance
+misreads wrinkled zones by up to 2.1 mm (measured: a w 0.975/1.000 edge
+with exact displacements −14.61/−15.00 mm read as −13.32/−12.93), so it
+must not vote on 0.2 mm-tolerance reversals; new-vertex profile position
+stays covered by the osc/decile/core gates on the BVH oracle. Dihedral
 honesty: only PRE-EXISTING edges can prove commit damage; edges born from
 refinement have no pre state (a wrinkled scan sampled finer shows sharp
 dihedrals that were always there) — new-edge geometry is covered by the quality

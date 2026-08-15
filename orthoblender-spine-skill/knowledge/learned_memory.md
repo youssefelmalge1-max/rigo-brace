@@ -1079,3 +1079,20 @@ the asymmetry instead of hiding it. Also: when a value is resampled twice (autho
 field -> mirror), any clamp that "preserves the core" must absorb two attenuations,
 not one — raising the plateau threshold to cover that measurably improved every
 import parity gate, which is the difference between tuning and fixing.
+
+## LM-0044 (2026-08-15) - stretch RATIO is scale-invariant in authored steepness; gate SAMPLING, not ratio
+
+For a displacement field w on a surface, splitting an edge halves both its
+length L and its weight gap dw - the local slope g = A*|dw|/L and therefore
+the post/pre stretch ratio sqrt(1+g^2) are SCALE-INVARIANT. No amount of
+refinement can reduce the ratio below the authored profile's intrinsic value
+(2.46 for a 15 mm / 10 mm feather Rigo pressure). A mesh-quality gate built
+on the ratio therefore gates the ORTHOTIST's authored steepness, not the
+mesh. The staircase defect is under-SAMPLING: a surviving edge left to carry
+more transition arc than the row requirement allows - gate the post-commit
+LENGTH of high-gradient edges against the sampling requirement instead
+(#49, DEC-0046: healthy 0 violations, defect wall 82). Related: a BVH
+nearest-point signed-distance oracle misreads displacement by up to 2.1 mm
+in wrinkled zones (nearest point lands on another fold flank) - never let it
+vote on sub-millimetre monotonicity; use index-exact displacements of
+surviving originals for that.

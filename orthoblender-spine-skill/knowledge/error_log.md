@@ -536,3 +536,18 @@ inside a dry-run bmesh transaction, new-vertex weights RE-EVALUATED from the
 authored field (parent interpolation provably keeps the staircase), displacement
 math unchanged. Full verdict in issues.md; implementation awaiting orthotist
 approval (topology-changing commit).
+
+## ERR-0033 (2026-08-15) - designtest RED at baseline: pre-existing trim-rim / liner failures (filed as #50)
+
+Symptom: while validating #49 step 5, the untouched A model fails
+generate_curve_corset with "Trim rim cannot be built safely (0 open and 2
+non-manifold edges)" - designtest.py itself is RED with zero regions. The
+wrinkled sample scan additionally cannot carry ANY liner offset (its own
+creases fold: 4 places at 2.0 mm, 2 at 1.0 mm; corset_smooth has no effect),
+and product scan-smoothing then breaks the Type A trimline drape ("winds
+fully around the body"). Generator code untouched since #37/#45/#46, so this
+predates the #48/#49 region work; designtest is not part of the region
+battery, which is why it went unnoticed. Evidence: tools/corsetparamdbg.py,
+tools/downstreamscout.py, downstreamtest_result.txt (control cases).
+Lesson: keep at least one downstream smoke case in the routine battery -
+tools/downstreamtest.py now plays that role with comparative-control gates.

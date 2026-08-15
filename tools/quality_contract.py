@@ -31,7 +31,7 @@ REQUIRED = {
     "fold": ("dot", "pre_dot", "new_folds", "oracle_post_deg",
              "oracle_pre_deg"),
     "size": ("surface_tolerance_frac",),
-    "quality": ("enforced", "stretch_max", "stretch_gt15_max",
+    "quality": ("enforced", "wall_sampling_margin", "wall_sampling_violations",
                 "aspect_p95_factor", "min_rows_across_feather",
                 "growth_max_faces_factor", "smooth_new_spikes"),
 }

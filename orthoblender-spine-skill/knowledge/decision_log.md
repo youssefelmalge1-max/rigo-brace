@@ -1156,3 +1156,64 @@ vertex delta to provenance; w49 gates (smooth-after-commit workflow, refinement
 determinism bit-equal, overlap-mask field preservation, dense no-op); regiontest
 perf gate aligned to the contract's 3.0 s (a fallback runs the transaction
 twice, measured 2.83 s). Full battery green.
+
+## DEC-0046 (2026-08-15) - #49 closed: seam-sliver dissolution, repair escalation, wall-sampling gate, downstream chain green
+
+Context: DEC-0045 left one honest limitation (wrinkled painted walls fell back
+warned on 1-2 refinement-seam slivers) and step 5 (downstream validation) open.
+User directive: dissolve only the refinement-created slivers, inside the
+transaction, without moving originals or altering the authored field; keep
+refusal when unsafe; then run refined patient -> trimline -> brace -> QA ->
+export and do not close #49 until that chain is green on a refined patient.
+
+Decisions (all measured via tools/refinedbg.py before shipping):
+- REPAIR ESCALATION: tangential-only until the defect set stalls unchanged for
+  3 iterations; then ONLY the defective faces' own NEW vertices (never ring,
+  never originals) relax with the normal component. A new vertex carries no
+  authored amount; the clinical promise (originals keep exact authored
+  displacement) is untouched by construction.
+- SLIVER PREDICATE (refined commits only): a refinement-born triangle
+  compressed below 0.12x the sampling target post-displacement (measured
+  0.24 mm vs 2.38 mm target) is a defect - its normal is numerically
+  meaningless and must not ship. Caught two shipping warts the flip test
+  missed (one oracle-inverted 0.25 mm-edge sliver).
+- SEAM-SLIVER DISSOLUTION: when repair leaves ONLY refinement-born slivers
+  (every defective face touches a new vertex, <=4 faces), re-run the
+  bit-deterministic refinement on a fresh working copy with those vertices
+  PLUS their one-ring new neighbourhood welded onto surviving neighbours
+  (nearest original preferred) BEFORE displacement; full pipeline re-runs.
+  Exact-vertex dissolve measured insufficient (the fold migrates to the
+  adjacent seam sliver); one-ring converges (paint15: +168 verts, no warning,
+  validity/feather/amount/smooth all green, inverted 0, rev 0).
+- WALL-SAMPLING GATE replaces the stretch-ratio gates: the ratio is
+  scale-invariant in the authored steepness (splitting halves L and dw alike;
+  sqrt(1+g^2) = 2.46 intrinsic for a legitimate 15/10 profile), so a ratio
+  threshold gates the orthotist's profile, not the mesh. The enforced gate is
+  post-commit LENGTH of surviving high-gradient (g>=0.35) original edges vs
+  the contract sampling requirement, margin 1.3, sharp >60-degree pre-creases
+  exempt. Measured populations: healthy 0 violations (exceed <=1.14x);
+  dissolved seams <=4 violations at <=2.07x (bounded by the plan's own
+  <=4-face bound); the identical wall committed unrefined (defect class):
+  82 violations at 3.12x - 20x count separation. Gate <=4.
+- REV ORACLE on index-exact original displacements in every mode: the BVH
+  signed-distance reference misreads wrinkled zones by up to 2.1 mm (measured
+  w 0.975/1.000 edge, exact d -14.61/-15.00 read as -13.32/-12.93) and must
+  not vote on 0.2 mm-tolerance monotonicity. New-vertex profile stays covered
+  by osc/decile/core on the BVH oracle. aspect_p95_factor recalibrated to 2.5
+  (heavy wrinkle-zone refinement measures 2.03-2.09x pre; splitting wrinkled
+  triangles is intrinsically anisotropic).
+- STEP 5 DOWNSTREAM (tools/downstreamtest.py, comparative-control design):
+  refined A-model patient (+99) -> trimline -> corset (121k faces) -> QA
+  (manifold 0/0, selfx 0, min wall 3.41 mm, coverage 1.00) -> export: GREEN.
+  No-op chain green. Oppwall refusal leaves a byte-identical scan whose
+  downstream failure signature equals the untouched control exactly.
+  PRE-EXISTING generator failures surfaced (designtest RED at baseline with
+  zero regions: trim-rim non-manifold; the wrinkled sample scan cannot carry
+  any liner offset; spine-groove outer-wall overlap) - recorded as #50, NOT
+  #49 regressions (generator code untouched since #37/#45/#46). The test
+  gates corrections as never-worse-than-control and auto-tightens to
+  all-green when #50 is fixed.
+
+Full battery green: regionqualtest (incl. paint15.refined_commit,
+refined_declared, w49 gates), regiontest, regionstyletest, regionuitest,
+selftest, downstreamtest.

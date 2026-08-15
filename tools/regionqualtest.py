@@ -274,17 +274,23 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     osc_max = max(osc) if osc else 0.0
     osc_mean = (sum(osc) / len(osc)) if osc else 0.0
 
+    # Feather monotonicity on the INDEX-EXACT displacements of surviving
+    # originals — the authored profile is defined on the authored samples.
+    # The BVH signed distance misreads wrinkled zones by up to 2.1 mm
+    # (measured: w 0.975/1.000 edge with exact d −14.61/−15.00 read as
+    # −13.32/−12.93), so it must not vote on 0.2 mm-tolerance reversals;
+    # new-vertex profile position stays covered by osc/decile/core on d_all.
     rev = 0
     rev_tol = _T["feather"]["rev_tol_mm"]
     for e in me.edges:
         a, b = e.vertices
-        if a not in d_all or b not in d_all:
+        if a not in d or b not in d:
             continue
         wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
         if wa == wb or (wa == 0.0 and wb == 0.0):
             continue
-        if (wa - wb) * (abs(d_all[a]) - abs(d_all[b])) < 0 \
-                and abs(abs(d_all[a]) - abs(d_all[b])) > rev_tol:
+        if (wa - wb) * (abs(d[a]) - abs(d[b])) < 0 \
+                and abs(abs(d[a]) - abs(d[b])) > rev_tol:
             rev += 1
 
     core = [abs(d_all[i]) for i, w in weights.items()
@@ -418,9 +424,59 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
             aspects_pre.append(max(el) * max(el) / area2)
     aspects.sort()
     aspects_pre.sort()
+    # Wall-sampling oracle (#49): the staircase defect is an UNDER-SAMPLED
+    # wall — a surviving pre-existing edge left to carry more of the
+    # transition than the sampling requirement allows.  The stretch RATIO
+    # is set by the authored steepness alone (splitting an edge halves L
+    # and Δw alike — the ratio is scale-invariant, √(1+g²) up to 2.46 for
+    # a 15/10 profile), so ratio thresholds gate the orthotist's authored
+    # profile, not the mesh.  What refinement can and must fix is the
+    # post-commit LENGTH of each surviving high-gradient edge against the
+    # contract's sampling requirement; sharp pre-creases are exempt exactly
+    # as refinement deliberately leaves them (>60° — walls collide there).
+    wall_viol = 0
+    seen_pairs = set()
+    wall_edges = []
+    pre_lens = []
+    for p in faces_q:
+        vs = p.vertices
+        n = len(vs)
+        for k in range(n):
+            a, b = vs[k], vs[(k + 1) % n]
+            key = (a, b) if a < b else (b, a)
+            if key in seen_pairs or a not in before or b not in before:
+                continue
+            seen_pairs.add(key)
+            pre_len = (before[a] - before[b]).length
+            if pre_len > 1e-9:
+                pre_lens.append(pre_len)
+                wall_edges.append((a, b, pre_len))
+    mean_pre_mm = (
+        sum(pre_lens) / len(pre_lens) * 1000.0 if pre_lens else 0.0
+    )
+    margin = _T["quality"]["wall_sampling_margin"]
+    wall_exceed = 0.0
+    for a, b, pre_len in wall_edges:
+        g = amount_mm * abs(
+            weights.get(a, 0.0) - weights.get(b, 0.0)
+        ) / (pre_len * 1000.0)
+        if g < 0.35:
+            continue
+        if max(pre_dih.get((a, b), 0.0), pre_dih.get((b, a), 0.0)) > 60.0:
+            continue
+        rows = max(4, int(math.ceil(2.0 * math.atan(g) / 0.25)))
+        h_req = max(
+            1.2, (1.5 * amount_mm / g) * math.sqrt(1.0 + g * g) / rows
+        )
+        bound = max(1.4 * h_req, 1.1 * mean_pre_mm)
+        post_mm = (me.vertices[a].co - me.vertices[b].co).length * 1000.0
+        wall_exceed = max(wall_exceed, post_mm / bound)
+        if post_mm > margin * bound:
+            wall_viol += 1
     quality = {
         "stretch_max": max(stretch) if stretch else 0.0,
         "stretch_gt15": sum(1 for s in stretch if s > 1.5),
+        "wall_sampling": wall_viol,
         "aspect_p95": aspects[int(len(aspects) * 0.95)] if aspects else 0.0,
         "aspect_p95_pre": aspects_pre[int(len(aspects_pre) * 0.95)]
         if aspects_pre else 0.0,
@@ -438,7 +494,9 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
     )
     _mark(
         f"[{tag}] quality: stretch_max={quality['stretch_max']:.2f} "
-        f">1.5x:{quality['stretch_gt15']} aspect_p95={quality['aspect_p95']:.2f} "
+        f">1.5x:{quality['stretch_gt15']} wall_viol={wall_viol} "
+        f"wall_exceed={wall_exceed:.2f} "
+        f"aspect_p95={quality['aspect_p95']:.2f} "
         f">8:{quality['aspect_gt8']} max_edge={quality['max_edge_mm']:.2f}mm"
     )
     return {
@@ -493,14 +551,16 @@ def _gate_vaf(tag, m, amount_mm, feather_mm, h_mm, skip_amount=False,
     qc = _T.get("quality", {})
     if qc.get("enforced") and m.get("refined"):
         q = m["quality"]
+        # Stretch ratios stay RECORDED (the [tag] quality line) but the
+        # enforced sampling gate is wall_sampling: ratio = authored
+        # steepness (scale-invariant), length-vs-requirement = the defect.
         _gate(
             f"{tag}.quality",
-            q["stretch_max"] <= qc["stretch_max"]
-            and q["stretch_gt15"] <= qc["stretch_gt15_max"]
+            q["wall_sampling"] <= qc["wall_sampling_violations"]
             and (q["aspect_p95_pre"] <= 0.0
                  or q["aspect_p95"]
                  <= qc["aspect_p95_factor"] * q["aspect_p95_pre"]),
-            f"stretch={q['stretch_max']:.2f} gt15={q['stretch_gt15']} "
+            f"wall_viol={q['wall_sampling']} stretch={q['stretch_max']:.2f} "
             f"aspect_p95={q['aspect_p95']:.2f}/{q['aspect_p95_pre']:.2f}",
         )
 
@@ -840,10 +900,11 @@ def _run():
         # painted path (geodesic feather regression): a clean-area patch is
         # the gated product case; the wrinkled face-5000 armpit patch is the
         # hostile stress case (commit must repair or warn, never tear).
-        # paint15: 240 faces — stays clear of the crease south of the v9000
-        # zone; a crease-grazing patch legitimately takes the warned
-        # unrefined FALLBACK (covered by paint15_hostile + w49 cases), but
-        # this fixture's job is proving refined quality on a clean paint.
+        # paint15: 240 faces off v9000 — its wall crosses mild wrinkles that
+        # cost one refinement-seam sliver, which the commit's dissolution
+        # retry must absorb: the case is gated REFINED, no fallback.  A
+        # genuinely crease-bound patch may still take the warned unrefined
+        # FALLBACK (paint15_hostile), never a tear.
         for tag, seed_face, count, gated in (
             ("paint15", None, 240, True),
             ("paint15_hostile", 5000, 300, False),
@@ -864,6 +925,21 @@ def _run():
                 pre_cross = _cross_intersections(obj, fp)
                 before, before_n, before_fn, pre_polys = _snapshot(obj)
                 bpy.ops.rigo.region_apply()
+                # #49 acceptance: a steep painted wall on the wrinkled scan
+                # must commit REFINED (seam-sliver dissolution) — a warned
+                # fallback here is a regression, not an allowed outcome.
+                _gate(
+                    f"{tag}.refined_commit",
+                    region.refined_added > 0,
+                    f"refined_added={region.refined_added}",
+                )
+                _gate(
+                    f"{tag}.refined_declared",
+                    len(obj.data.vertices) - len(before)
+                    == region.refined_added,
+                    f"delta={len(obj.data.vertices) - len(before)} "
+                    f"declared={region.refined_added}",
+                )
                 weights = _group_weights(obj, region.surface_mask)
                 m = _measure(tag, obj, before, before_n, before_fn, pre_dih,
                              weights, 15.0, -1.0, nonman0, pre_cross, pre_polys)

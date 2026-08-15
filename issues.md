@@ -1423,10 +1423,51 @@ refined commits; audit items B4/B6/B7 + shape-key guard landed; provenance
 recorded per region. Battery green (regionqualtest incl. w49 gates, regiontest,
 regionstyletest, regionuitest, selftest).
 
-OPEN (#49 remainder): on wrinkled scans, steep PAINTED walls still take the warned
-fallback (1–2 refinement-seam slivers collapse under fairing-direction divergence
-across mild wrinkles and the repair correctly refuses them). Next step: in-
-transaction post-displacement sliver dissolution (collapse the defective slivers'
-new-vertex edges inside the temp mesh, rebuild validation state, re-validate) to
-unlock refinement there; then step 5's full downstream matrix (trimline → brace →
-QA → export on a refined committed patient).
+#### #49 CLOSED (2026-08-15, DEC-0046) — seam slivers dissolved, wall-sampling gate, downstream chain green
+
+The wrinkled-paint fallback is gone. The commit now layers three remedies inside
+the same transaction: (1) repair ESCALATION — when the tangential phase stalls
+(identical defect set 3 iterations), the defective faces' OWN new vertices may
+relax with the normal component (they carry no authored amount; originals never
+move); (2) a post-displacement SLIVER predicate — refinement-born triangles
+compressed below 0.12× the sampling target (measured 0.24 mm vs 2.38 mm) are
+defects; (3) seam-sliver DISSOLUTION — if only refinement-born slivers remain
+(≤4 faces), re-run the bit-deterministic refinement on a fresh copy with those
+vertices + their one-ring new neighbourhood welded onto originals BEFORE
+displacement, and re-run the whole pipeline. paint15 now commits REFINED
+(+168, no warning): validity clean, inverted 0, rev 0, feather/amount/smooth
+green. Quality gates recalibrated on measurement: the stretch RATIO is
+scale-invariant in the authored steepness (√(1+g²), 2.46 intrinsic for 15/10)
+so it gated the orthotist, not the mesh — replaced by the wall-sampling gate
+(post length of surviving high-gradient edges vs the contract sampling
+requirement; healthy 0 violations at ≤1.14×, dissolved seams ≤4 at ≤2.07×,
+the unrefined defect wall 82 at 3.12×). rev now counts index-exact original
+displacements (BVH reference misreads wrinkles by up to 2.1 mm). Battery
+green (regionqualtest incl. paint15.refined_commit + w49, regiontest,
+regionstyletest, regionuitest, selftest).
+
+Step 5 downstream (tools/downstreamtest.py, comparative-control design,
+PASS=True): refined A-model patient (+99 verts) → trimline → curve corset
+(121k faces) → QA (manifold 0/0, selfx 0, min wall 3.41 mm, coverage 1.00)
+→ STL export with QA re-run: GREEN end-to-end; no-op commit chain also green;
+oppwall refusal leaves a byte-identical scan whose downstream failure
+signature equals the untouched control's exactly (same 32 liner folds).
+
+### #50 OPEN — pre-existing brace-generator failures surfaced by #49 step 5 (NOT #49 regressions)
+
+Discovered while validating downstream, all with ZERO regions involved,
+generator code untouched since #37/#45/#46:
+1. `designtest.py` is RED at baseline: the untouched A model fails "Trim rim
+   cannot be built safely (0 open and 2 non-manifold edges)" — while some
+   committed corrections (front-waist dent) shift the drape enough to make the
+   SAME chain green. Marginal rim topology, not correction-related.
+2. The wrinkled sample scan cannot be braced at ANY liner offset (folds in its
+   own creases: 4 places at 2.0 mm, 2 at 1.0 mm; fairing has no effect), and
+   product scan-smoothing (rigo.smooth ×1–3) then breaks the Type A trimline
+   drape ("winds fully around the body"). Measured in tools/corsetparamdbg.py.
+3. A steep committed groove near the spine (back-mid 15/15 paint) refuses with
+   "outer-wall overlap"; the generator's refusal is safe and transactional but
+   there is no automatic remedy path. Measured in tools/downstreamscout.py.
+downstreamtest.py encodes these as comparative-control gates (corrections must
+never make the chain WORSE than untouched) and will auto-tighten to
+all-green when the rim bug is fixed.
