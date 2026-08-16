@@ -391,6 +391,14 @@ def _feathered_strength(bm, factor, rows=_SMOOTH_FEATHER_ROWS):
                     depth[j] = depth[i] + 1
                     further.append(j)
         frontier = further
+    # The ramp may never be wider than the patch's own half-depth, or a small
+    # painted area is ALL ramp: every vertex sits inside the run-up, the
+    # strength never reaches useful values anywhere, and the tool silently
+    # does nothing (measured, #49g: a patch a few faces across came out at
+    # peak strength 0.000 and the operator cancelled — reported as "Smooth
+    # Area gives no action").  Every usable patch must reach full strength
+    # somewhere in its middle.
+    rows = max(1, min(rows, max(depth.values(), default=0)))
     strength = {}
     for i in selected:
         t = min(depth.get(i, rows), rows) / float(rows)

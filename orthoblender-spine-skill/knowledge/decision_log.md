@@ -1542,3 +1542,48 @@ would have failed before the patch (1.66 mm, 87 -> 123).
 
 Full battery green: regionqualtest (failed_gates=[]), regiontest, selecttest,
 regionuitest, selftest.
+
+## DEC-0054 (2026-08-16) - #49g: 'Smooth Area gives no action', and the
+## Meshmixer smooth-boundary idea, measured and REJECTED
+
+Two things in one report. Both answered with measurement.
+
+1. NO ACTION (real regression, mine, from #49f). The feather ramp introduced
+   in #49f was a fixed 4 rows. A small painted area is ALL ramp: every vertex
+   sits inside the run-up, peak strength came out 0.000 and the operator
+   cancelled - exactly 'no action'. Measured across patch sizes on a fresh
+   scan each time (tools/boundarydbg.py PART 1). FIX: the ramp may never
+   exceed the patch's own half-depth, so every usable patch reaches full
+   strength somewhere in its middle. After: 10 mm patch (49 faces) 0.204 mm,
+   15 mm 0.271, 25 mm 0.428, 40 mm 0.624, 60 mm 0.644 - every size acts.
+   Also confirmed the paint selection SURVIVES the commit (1861 -> 1525 faces
+   fully inside after refinement), so 'no selection' was not the cause.
+
+2. SMOOTH THE BOUNDARY BEFORE ACTING (the orthotist's idea, from Meshmixer).
+   The instinct is exactly right and is the same root cause #49e found. But
+   it is ALREADY DONE, one level deeper and strictly better: #49e mollifies
+   the rim CURVE when it computes the falloff, which works at sub-triangle
+   resolution, where a selection-level edit can only move the border in whole
+   ~2.2 mm triangle steps - the very quantization that makes the border
+   ragged.
+   MEASURED (tools/boundarydbg.py PART 3, identical patch/amount/feather,
+   committed with and without a selection-rounding step): wall mean 4.7 deg,
+   p95 16.9, >30deg 10, ridges 87 - IDENTICAL both ways. Zero downstream
+   benefit.
+   Four implementations were written and measured before rejecting the
+   feature, and each failed for an instructive reason:
+   - signed DISTANCE field re-thresholded at zero: its zero level sits on
+     both sides of the border at once, so it DILATES (raggedness 1.43 ->1.47)
+   - blurred +/-1 INDICATOR thresholded at zero: ties exactly along a straight
+     border; only ~6 of 234 border faces ever moved
+   - morphological ERODE/DILATE by dual-graph distance: ADDS raggedness
+     (corners>60deg 83 -> 101), because graph distance on an irregular
+     triangle mesh is anisotropic - the very defect #49e diagnosed in the
+     falloff field, reappearing in the morphology
+   - combinatorial MAJORITY filter: unstable, synchronous flipping oscillates
+     (4 mm and 10 mm give identical output, 6 mm wildly different)
+   VERDICT: not shipped. An unstable button with zero measured benefit does
+   not belong in clinical-adjacent software. The probes are kept as the
+   record of what was tried and why each failed.
+
+Suites green: selftest, selecttest.
