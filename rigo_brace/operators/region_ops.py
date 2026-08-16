@@ -243,6 +243,11 @@ def _style_snapshot(scan, weights, coords=None, normals=None,
         ),
         "anchor_uv": [0.0, 0.0],
         "anchor_world": [center.x, center.y, center.z],
+        # The frame NORMAL, so the chart this snapshot was written in can be
+        # rebuilt exactly (`_surface_frame` derives side/up deterministically
+        # from it).  Without it a stored style field cannot be re-evaluated at
+        # commit time — see `_style_applied_field` (#49k).
+        "anchor_normal": [normal.x, normal.y, normal.z],
     }
     if build_field:
         snapshot["field"] = _field_from_samples(samples, spacing)
@@ -1584,6 +1589,12 @@ _RIM_GATE_STEPS = 3
 # waist 20/15).  0.01 sits two orders below the legacy signature and two
 # above numerical noise.
 _RIM_FIELD_TOLERANCE = 0.01
+# A placed style's field is reconstructed through a resampled grid (2 mm cells)
+# or an IDW sample cloud, so it cannot agree with the stored weights as tightly
+# as a painted region's closed form does; measured on the A-model waist at
+# 20/15, mean |Δ| 0.006, p95 0.018, max 0.036.  0.05 accepts that while still
+# rejecting a wrong frame by an order of magnitude (#49k).
+_STYLE_FIELD_TOLERANCE = 0.05
 
 
 def _boundary_distance(coords, adjacency, rim):
@@ -1783,6 +1794,100 @@ def _authored_rim_field(me, group_index, falloff_kind):
     def field(co):
         return _falloff(min(evaluate(co), f_eff) / f_eff, falloff_kind)
 
+    return field
+
+
+def _applied_field_record(entry, normal_world, origin_world):
+    """The authoring representation a placed style must carry with it (#49k).
+
+    A schema-v2 reusable style OWNS a continuous displacement field — its
+    resampled grid.  That field, not the coarse per-vertex weights it happens
+    to produce on this body, is the authority.  Recording it on the region at
+    placement time means commit can EVALUATE it for refinement-born vertices
+    instead of re-interpolating the samples it already wrote — and it survives
+    into the .blend, so a reopened file keeps the same authority without
+    consulting the library (which the orthotist may since have renamed or
+    deleted).
+
+    Scoped to schema-v2 GRID entries on purpose.  A v1 style's authoring
+    representation is itself a cloud of per-vertex samples taken at the
+    authoring scan's coarseness — IDW over it is the same pinned interpolant
+    the commit already uses, so there is no authoritative continuous field to
+    sample.  Measured on the A-model waist at 20/15: routing v1 through this
+    path moved the wall from p95 26.14 / max 75.79 to 27.00 / 71.78, i.e. no
+    better and marginally worse.  v1 therefore keeps the existing path and is
+    tracked as its own route defect rather than given a fake field.
+    """
+    grid = entry.get("field")
+    if not grid:
+        return None
+    return {
+        "kind": "grid",
+        "grid": grid,
+        "origin_world": [origin_world.x, origin_world.y, origin_world.z],
+        "normal_world": [normal_world.x, normal_world.y, normal_world.z],
+        "normal_tolerance_mm": max(
+            5.0, float(entry.get("normal_tolerance_mm", 15.0))
+        ),
+    }
+
+
+def _style_applied_field(scan, mask, me, group_index):
+    """Rebuild a placed style's continuous field, or ``None``.
+
+    Self-validating exactly as ``_authored_rim_field`` is: the reconstruction
+    is compared against the weights actually stored on the region and rejected
+    unless it agrees to ``_STYLE_FIELD_TOLERANCE``.  A region placed before
+    this existed, or one whose frame no longer reproduces its own weights,
+    therefore keeps the interpolation path untouched — no migration, no silent
+    re-authoring of a saved correction.
+    """
+    snapshot = _load_snapshot(scan, mask)
+    if not snapshot:
+        return None
+    record = snapshot.get("applied_field")
+    if not record:
+        return None
+    try:
+        origin = Vector(record["origin_world"])
+        normal = Vector(record["normal_world"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if normal.length < 1e-9:
+        return None
+    side, up, outward = _surface_frame(normal.normalized())
+    tolerance = float(record.get("normal_tolerance_mm", 15.0))
+    matrix = scan.matrix_world
+    grid = record.get("grid")
+    if not grid:
+        return None
+
+    def field(co_local):
+        relative = matrix @ co_local - origin
+        offset = abs(relative.dot(outward)) * 1000.0
+        if offset >= tolerance * 2.0:
+            return 0.0
+        u = relative.dot(side) * 1000.0
+        v = relative.dot(up) * 1000.0
+        weight = _field_weight(grid, u, v)
+        if offset > tolerance:
+            t = 1.0 - (offset - tolerance) / tolerance
+            weight *= t * t * (3.0 - 2.0 * t)
+        return min(1.0, max(0.0, weight))
+
+    weights = {}
+    for vertex in me.vertices:
+        for group in vertex.groups:
+            if group.group == group_index:
+                weights[vertex.index] = group.weight
+                break
+    if len(weights) < 12:
+        return None
+    deviation = sorted(
+        abs(field(me.vertices[i].co) - w) for i, w in weights.items()
+    )
+    if deviation[int(len(deviation) * 0.95)] > _STYLE_FIELD_TOLERANCE:
+        return None
     return field
 
 
@@ -2344,11 +2449,14 @@ class RIGO_OT_region_style_import(Operator):
         group = scan.vertex_groups.new(name=mask)
         for index, weight in weights.items():
             group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
-        _store_snapshot(
-            scan, mask, _style_snapshot(
-                scan, weights, coords, eval_normals, origin_world=target
-            )
+        snapshot = _style_snapshot(
+            scan, weights, coords, eval_normals, origin_world=target
         )
+        # #49k: the region carries the style's own continuous field, so commit
+        # can sample the AUTHORING representation for refinement-born vertices
+        # instead of re-interpolating the coarse weights just written.
+        snapshot["applied_field"] = _applied_field_record(entry, normal, target)
+        _store_snapshot(scan, mask, snapshot)
 
         inverse_normal = scan.matrix_world.to_3x3().inverted() @ normal
         region = scan.rigo_regions.add()
@@ -2516,6 +2624,18 @@ class RIGO_OT_region_apply(Operator):
         # anchors.  Returns None (and changes nothing) for library/style and
         # legacy regions, which is verified by reconstruction, not assumed.
         rim_field = _authored_rim_field(me, group.index, region.falloff_type)
+        if rim_field is None:
+            # #49k: a PLACED STYLE owns a continuous field too — the grid (v2)
+            # or sample cloud (v1) it was authored from, recorded on the region
+            # at placement.  Measured on the orthotist's own route (A-model
+            # waist, 20 mm / 15 mm): re-interpolating the coarse weights gave
+            # wall p95 27.2°, max 76.1°, 21 edges over 30°; sampling the stored
+            # field gives 21.5°, 38.9°, 6 — and refinement stops being worse
+            # than not refining at all.  Also self-validating, so a region
+            # without a recorded field keeps the interpolation path exactly.
+            rim_field = _style_applied_field(
+                obj, region.surface_mask, me, group.index
+            )
         refined_me = me.copy()
         added0, refine_mm0 = _refine_footprint(refined_me, group.index,
                                                offset, field=rim_field)

@@ -134,3 +134,67 @@ cross-version evidence.
   (test-harness artifact; all results were written before it, DONE=True).
 - the circular route refines by **0 vertices** at 20 mm / 30 mm radius and is
   the single worst route measured (p95 31.09) — unexplained, not yet filed.
+
+---
+
+# #49k steps 2-3 — the fix, and what it did NOT fix
+
+A schema-v2 style owns a continuous displacement field (its resampled grid).
+`_applied_field_record` now records that field, with the chart frame it was
+placed in, onto the region at placement; `_style_applied_field` rebuilds it at
+commit and hands it to refinement, so refinement-born vertices SAMPLE the
+authoring representation instead of re-interpolating the coarse weights the
+placement just wrote. Self-validating against the stored weights
+(`_STYLE_FIELD_TOLERANCE` 0.05, contract-pinned), so a region without a
+recorded field keeps the old path exactly — no migration, no re-authoring.
+
+## Step 3 ablation (A-model waist, 20 mm / 15 mm, same body and place)
+
+| arm | p95 | max | >30° | wall edges |
+|---|---|---|---|---|
+| 1 old library path (field=None) | 27.22 | 76.10 | 21 | 571 |
+| 2 no refinement at all | 23.88 | 38.31 | 3 | 320 |
+| 3 continuous field (test-side reconstruction) | 21.50 | 38.91 | 6 | 571 |
+| 4 **fixed production** | **20.73** | 38.91 | **3** | 571 |
+
+The fixed path beats the no-refinement control on p95 (20.73 vs 23.88) at equal
+`>30°` count and with 78 % more wall sampling — it is better than not refining,
+not merely valid. It also beats the test-side reconstruction (arm 3) because
+production anchors the chart at `_target_surface`'s projected surface point
+rather than the raw cursor.
+
+## Route matrix after the fix
+
+| route | refinement | p95 | max | >30° | state |
+|---|---|---|---|---|---|
+| painted | FIELD | 17.57 | 38.76 | 8 | ok |
+| **library v2 (user)** | **FIELD** | **20.73** | 38.91 | 3 | **fixed** |
+| mirrored style, import | FIELD | 20.73 | 38.91 | 3 | fixed |
+| reopened .blend | FIELD | 17.57 | 38.76 | 8 | ok |
+| library v1 (legacy) | IDW | 26.14 | 75.79 | 15 | **open** |
+| mirrored style, commit | IDW | 25.17 | 34.32 | 12 | **open** |
+| circular | IDW, +0 verts | 31.09 | 58.47 | 22 | **open (step 5)** |
+
+## Two things measurement stopped
+
+**v1 must NOT be routed through this path.** It was, in the first cut, and it
+made the wall *worse*: p95 26.14 to 27.00, max 75.79 to 71.78. A v1 style's
+authoring representation is itself a per-vertex sample cloud at the authoring
+scan's coarseness, so IDW over it is the same pinned interpolant commit already
+uses. There is no authoritative continuous field to sample, and inventing one
+is not neutral. `_applied_field_record` now returns `None` for v1 and the dead
+sample branch was removed from the evaluator.
+
+**Mirrored regions were not given the field.** `region_mirror` builds a
+mirrored SAMPLE cloud (no grid) and runs it through `_weights_from_style`, so
+it is the v1 case. Mirroring the grid in `u` would be exact and cheap, but it
+needs its own route gate first — shipping it without one would repeat exactly
+the mistake this audit found. Recorded, not done.
+
+## The golden gate is 7/8, and the 8th is honest
+
+`golden_user_pressure.shading_tail` fails at 20.04° against a 20.0° ceiling set
+BEFORE the fix was written. The ceiling was not moved. The library route's
+shading tail is still worse than the painted route's (17.71°), which is the
+same residual the p95 gap shows (20.73 vs 17.57) — the gate now tracks step 4
+rather than pretending the route reached parity.

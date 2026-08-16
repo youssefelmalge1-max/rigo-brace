@@ -1631,3 +1631,54 @@ the orthotist gated further geometry patches on this audit, and the audit
 changes what the fix should be and which route the golden test must use.
 
 Suites: none re-run (no production change).
+
+## DEC-0056 (2026-08-17) - #49k steps 1-3: golden library gate, then the scoped fix
+
+Step 1 first, on purpose: golden_user_pressure (tools/goldenroutetest.py) is a
+permanent end-to-end gate on the orthotist's OWN route - Library Style v2 ->
+A-model -> 20 mm -> Feather 15 mm -> Commit -> Smooth Area - and it was proven
+RED on the then-current production before any fix (wall p95 27.22 vs ceiling
+22.0, max 76.10 vs 45.0, >30deg 21 vs 10, parity 1.55 vs 1.25). The style
+fixture is immutable, tests/fixtures/style_v2_golden.json.
+
+Three production-independent detectors were built and TWO WERE REJECTED on
+measurement (bump fraction of realized depth; oscillation of realized depth
+around an iso-band ring): both rate the defective route BETTER than the painted
+one, being dominated by the coarse torso's triangulation. They are printed as
+labelled diagnostics, never gated. The surviving independent detector is the
+normal-field low-pass residual (what shading displays) - and only its TAIL
+discriminates: median is identical across routes (7.79 vs 8.14), the maximum
+separates (22.95 vs 17.71). This defect is a small number of large creases, not
+a broad roughening, so the gate is a tail gate.
+
+Step 2, scoped exactly to the architectural rule: a schema-v2 style owns its
+continuous field, so refinement must SAMPLE it, not re-interpolate the coarse
+weights the placement wrote. _applied_field_record stores the grid plus its
+chart frame on the region at placement (surviving into the .blend, so a
+reopened file needs no library lookup); _style_applied_field rebuilds and
+self-validates it at commit against the stored weights, tolerance 0.05,
+contract-pinned as style.field_tolerance and asserted by contract_constants.
+
+Step 3 ablation, A-model waist 20/15:
+
+    1 old library path        p95 27.22  max 76.10  >30deg 21  edges 571
+    2 no refinement at all    p95 23.88  max 38.31  >30deg  3  edges 320
+    3 continuous field (test) p95 21.50  max 38.91  >30deg  6  edges 571
+    4 FIXED production        p95 20.73  max 38.91  >30deg  3  edges 571
+
+Better than the no-refinement control, not merely valid: same >30deg count with
+78% more wall sampling.
+
+MEASUREMENT STOPPED TWO THINGS. Routing v1 styles through the same path made
+them WORSE (26.14 -> 27.00) - a v1 style's authoring representation is itself a
+coarse sample cloud, so there is no authoritative field to sample; the branch
+was removed and v1 kept on the old path. And mirrored regions were deliberately
+NOT given the field: region_mirror builds a mirrored sample cloud, and giving
+it a mirrored grid needs its own route gate first.
+
+golden_user_pressure is now 7/8. shading_tail fails at 20.04 against a 20.0
+ceiling that was set before the fix existed and was NOT moved; it now tracks
+the step-4 library-vs-painted residual.
+
+Suites green: selftest, regionqualtest, regiontest, regionstyletest,
+regionuitest, selecttest, scancleantest, downstreamtest.

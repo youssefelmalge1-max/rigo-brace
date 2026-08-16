@@ -31,6 +31,7 @@ REQUIRED = {
     "fold": ("dot", "pre_dot", "flip_confirm_dot", "new_folds",
              "oracle_post_deg", "oracle_pre_deg"),
     "rim": ("smooth_passes", "gate_steps", "field_tolerance"),
+    "style": ("field_tolerance",),
     "golden": ("commit_wall_p95_max", "commit_wall_max_deg",
                "commit_wall_over30_max", "commit_shade_max_deg",
                "parity_p95_factor", "core_depth_min_frac",

@@ -1422,11 +1422,18 @@ def _run():
             and ro._RIM_GATE_STEPS == _T["rim"]["gate_steps"]
             and abs(
                 ro._RIM_FIELD_TOLERANCE - _T["rim"]["field_tolerance"]
+            ) < 1e-12
+            # #49k: the tolerance that decides whether a PLACED STYLE's stored
+            # field is trusted for refinement.  Too loose accepts a wrong
+            # chart frame; too tight silently drops the whole library route
+            # back to the pre-#49k interpolation.
+            and abs(
+                ro._STYLE_FIELD_TOLERANCE - _T["style"]["field_tolerance"]
             ) < 1e-12,
             f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},"
             f"{ro._FOLD_PRE_DOT},{ro._FLIP_CONFIRM_DOT}) rim=("
             f"{ro._RIM_SMOOTH_PASSES},{ro._RIM_GATE_STEPS},"
-            f"{ro._RIM_FIELD_TOLERANCE})",
+            f"{ro._RIM_FIELD_TOLERANCE}) style={ro._STYLE_FIELD_TOLERANCE}",
         )
 
     def wave2_mirror_case():

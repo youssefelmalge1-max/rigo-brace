@@ -34,6 +34,7 @@ editing the test.
            "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
   "rim": {"smooth_passes": 6, "gate_steps": 3, "field_tolerance": 0.01},
+  "style": {"field_tolerance": 0.05},
   "golden": {"commit_wall_p95_max": 22.0, "commit_wall_max_deg": 45.0,
              "commit_wall_over30_max": 10, "commit_shade_max_deg": 20.0,
              "parity_p95_factor": 1.25, "core_depth_min_frac": 0.90,
