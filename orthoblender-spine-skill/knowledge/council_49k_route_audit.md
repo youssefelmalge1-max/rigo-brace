@@ -198,3 +198,83 @@ BEFORE the fix was written. The ceiling was not moved. The library route's
 shading tail is still worse than the painted route's (17.71°), which is the
 same residual the p95 gap shows (20.73 vs 17.57) — the gate now tracks step 4
 rather than pretending the route reached parity.
+
+---
+
+# #49k step 4 — `_geodesic_trim` is NOT the cause of the library/painted gap
+
+Suspected because it multiplies a smoothstep of an edge-walk Dijkstra distance
+onto the placed weights, and edge-walk Dijkstra is the anisotropic metric #49e
+removed from the painted path. Measured before replacing anything
+(`tools/trimgapdbg.py`):
+
+**The anisotropy is real.** Graph distance / straight-line distance over the
+footprint: mean 1.110, p95 1.298, max 1.393. By 30° direction bucket the mean
+ratio swings 1.032 → 1.288 — a **directional spread of 0.256, i.e. 23 % of the
+mean**. The metric genuinely is direction-dependent.
+
+**But it barely touches the wall.** limit 35.8 mm, fade starts at 28.7 mm; of
+134 transition-wall vertices only **8 (6.0 %)** lie in the fade band at all.
+
+**And removing it changes nothing:**
+
+| arm | members | p95 | max | >30° |
+|---|---|---|---|---|
+| A production (fade active) | 317 | 20.73 | 38.91 | 3 |
+| B cutoff kept, fade removed | 315 | **20.74** | 38.90 | 3 |
+| C trim removed entirely | 324 | 21.49 | 38.90 | 3 |
+
+Removing the fade moves p95 by **0.01°**. Removing the trim entirely makes the
+wall *worse* (it admits marginal vertices). **Verdict: not the cause. Do not
+replace it.** The far-side cutoff is doing real work and the taper is
+harmless — an anisotropic metric acting on 6 % of the wall is not a defect.
+
+## So what IS the residual 20.73 vs 17.57?
+
+Bilinear grid sampling is C0 — its gradient jumps across every 2 mm cell
+boundary — and since step 2 refinement SAMPLES that grid at sub-cell
+resolution, those seams are resolved for the first time. Re-running with a C1
+Catmull-Rom sample of the *same* grid data:
+
+| arm | p95 | max | >30° |
+|---|---|---|---|
+| production, bilinear (C0) | 20.73 | 38.91 | 3 |
+| Catmull-Rom (C1) | 20.67 | **32.72** | 4 |
+
+The C0 seams own part of the worst crease (max 38.91 → 32.72, −16 %) but
+essentially none of the p95 bulk (−0.06°). So the remaining ~3.2° p95 gap is
+**neither the trim nor the interpolation order**. The leading remaining
+candidate is chart-projection distortion: the style's field is defined in a
+flat tangent chart projected onto a curved torso, so its level sets are not
+surface-equidistant and the wall's steepness varies around the pad — a
+different class of error from anything measured so far. Not yet demonstrated;
+recorded as the next hypothesis, not a conclusion.
+
+# #49k step 5 — the circular route: refinement is innocent, the field is not
+
+`tools/circledbg.py`, 20 mm amount, 30 mm radius, A-model waist.
+
+**Refinement is not skipped by a guard.** Reproducing the production split test
+over the 697 candidate edges: slope g mean 0.434 / max 0.997, and
+`predicted / (1.4 * h_required)` has **max 0.851** — never above the 1.0 needed
+to split. A 20 mm cone spread over a 30 mm radius is a genuinely gentle wall
+and the scan already meets the sampling requirement. Adding vertices would not
+help, and forcing them would be the wrong fix.
+
+**The field is the defect.** The circle's weights come from an edge-walk
+Dijkstra ball around a single seed VERTEX. Its graph/straight ratio by
+direction swings 1.039 → 1.297 — a **directional spread of 22.9 %** — which at
+20 mm amount is up to **4.6 mm of direction-dependent wall error, written
+straight into the authored weights and never refined away**. That is the
+star-shaped isoline pattern #49e diagnosed, in the one route that still authors
+with raw Dijkstra, with no refinement stage to soften it.
+
+**Therefore the circular fix is not a refinement change.** It is to author the
+circle's weights from the same mollified-rim-curve distance the painted route
+uses — the ball's boundary is a rim polyline, and `falloff(d_rim / radius)`
+reproduces the same clinical cone semantics on a smooth metric. That would also
+let `_authored_rim_field` accept the region, so refinement inherits the field
+contract for free where it does apply.
+
+Not implemented: per the lesson this audit exists to teach, the circular route
+needs its own permanent end-to-end gate FIRST.
