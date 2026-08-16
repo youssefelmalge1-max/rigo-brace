@@ -74,6 +74,15 @@ class RIGO_OT_remesh(Operator):
         # Panel value is in mm; convert to metres-style scene units (x0.001).
         mod.voxel_size = settings.remesh_voxel * 0.001
         _apply_modifier(obj, mod)
+        # A REMESH modifier hands back a brand-new mesh with flat shading and
+        # no crease marks.  Flat shading draws every single facet, which is
+        # the dominant reason a corrected area reads as "plates" (#49c,
+        # measured) — so a remeshed scan looked terraced no matter how fine
+        # the voxels were.  Restore the product's crease-preserving smooth
+        # shading, exactly as import and Apply Units do.
+        from .scan_ops import shade_smooth_scan
+
+        shade_smooth_scan(obj.data)
         self.report({"INFO"}, "Remesh complete")
         return {"FINISHED"}
 
@@ -171,6 +180,11 @@ class RIGO_OT_use_quad_remesh_result(Operator):
         remeshed_scan.hide_viewport = False
         remeshed_scan.hide_render = False
         settings.scan_object = remeshed_scan
+        # Same reason as the voxel remesh: a remesher's output is flat-shaded,
+        # and flat shading alone makes a smooth wall read as facets (#49c).
+        from .scan_ops import shade_smooth_scan
+
+        shade_smooth_scan(remeshed_scan.data)
 
         mark_brace_dirty(context, "Patient scan was replaced by Quad Remesher output")
         self.report({"INFO"}, "Remeshed mesh is now the active patient scan")

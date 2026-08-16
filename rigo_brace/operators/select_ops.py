@@ -346,42 +346,61 @@ class RIGO_OT_thicken_selection(Operator):
         return {"FINISHED"}
 
 
-# Rows over which the smoothing strength ramps up from the painted edge.  The
-# ramp has to be wider than the jaggedness of the painted border (one face
-# row) or it prints that jaggedness into the surface; four rows is ~1.5 cm on
-# a typical scan, comparable to a feather, and still leaves the middle of any
-# usable patch at full strength.
-_SMOOTH_FEATHER_ROWS = 4
+# Rows of surrounding surface the smoothing blends out over.  Wider than the
+# painted border's own raggedness (one face row) so it cannot print that
+# raggedness, and long enough that the tail is imperceptible where it finally
+# stops: at four rows the last moving row still shifted 0.21 mm, at six it is
+# under 0.1 mm — below the surface's own local roughness (a committed wall
+# averages 4.7 deg of dihedral, i.e. ~0.3 mm over one edge).  Capped in
+# `_feathered_strength` by the painted patch's own depth, so a small area
+# merges with its surroundings instead of smearing them.
+_SMOOTH_FEATHER_ROWS = 8
 
 
 def _feathered_strength(bm, factor, rows=_SMOOTH_FEATHER_ROWS):
-    """Per-vertex smoothing strength that reaches EXACTLY zero at the painted
-    border and ramps up inward (#49f).
+    """Per-vertex smoothing strength: FULL across the whole painted area, then
+    decaying to zero over ``rows`` rows OUTSIDE it (#49h).
 
     ``bpy.ops.mesh.vertices_smooth`` smooths the selected vertices at uniform
     strength and simply stops at the selection border.  That discontinuity is
-    written into the surface: measured on a committed 20 mm region, it left a
-    1.66 mm step and a 6.3° mean crease running along the painted outline —
-    and because a brush-painted outline is jagged at the face scale, that
-    crease reads as a scalloped ring.  A strength that ramps to zero has no
-    edge to print, and vertices on the border cannot move at all, so the
-    region's "nothing outside the paint moves" promise survives too.
+    written into the surface: measured on a committed 20 mm region, a 1.66 mm
+    step and a 6.3° mean crease along the painted outline — and a brush-painted
+    outline is ragged at the face scale, so the crease reads as a scalloped
+    ring.
+
+    #49f first solved that by ramping the strength up INWARD from zero at the
+    border.  That removed the step, but it also meant the smoothing could
+    never relax the correction into the untouched body: the painted edge — the
+    very place the orthotist wants blended — was pinned hardest.  Their own
+    description of the problem: it smooths *within* the shape instead of
+    distributing across everything the paint covers and out into the rest.
+
+    So the ramp now runs the other way.  The painted area is smoothed at full
+    strength edge to edge, and the influence dies away over a few rows of the
+    surrounding surface, which is what lets a correction blend into the body
+    instead of ending at a line.  There is still no cliff anywhere — the
+    strength is continuous, so nothing is stepped — and the influence is
+    bounded: it reaches ``rows`` rows past the paint and no further.
     """
     selected = {v.index for v in bm.verts if v.select}
     if not selected:
         return {}
-    depth = {}
-    frontier = []
-    for i in selected:
-        vertex = bm.verts[i]
+    strength = {i: factor for i in selected}
+    border = [
+        i for i in selected
         if any(
-            e.other_vert(vertex).index not in selected
-            for e in vertex.link_edges
-        ):
-            depth[i] = 0
-            frontier.append(i)
-    if not frontier:  # closed selection (whole mesh) — no border to protect
-        return {i: factor for i in selected}
+            e.other_vert(bm.verts[i]).index not in selected
+            for e in bm.verts[i].link_edges
+        )
+    ]
+    if not border:  # closed selection (whole mesh) — nothing outside it
+        return strength
+
+    # How deep is the painted patch itself?  The blend must not reach farther
+    # out than the patch reaches in, or a small area smears its surroundings
+    # instead of merging with them.
+    depth = {i: 0 for i in border}
+    frontier = list(border)
     while frontier:
         further = []
         for i in frontier:
@@ -391,18 +410,29 @@ def _feathered_strength(bm, factor, rows=_SMOOTH_FEATHER_ROWS):
                     depth[j] = depth[i] + 1
                     further.append(j)
         frontier = further
-    # The ramp may never be wider than the patch's own half-depth, or a small
-    # painted area is ALL ramp: every vertex sits inside the run-up, the
-    # strength never reaches useful values anywhere, and the tool silently
-    # does nothing (measured, #49g: a patch a few faces across came out at
-    # peak strength 0.000 and the operator cancelled — reported as "Smooth
-    # Area gives no action").  Every usable patch must reach full strength
-    # somewhere in its middle.
-    rows = max(1, min(rows, max(depth.values(), default=0)))
-    strength = {}
-    for i in selected:
-        t = min(depth.get(i, rows), rows) / float(rows)
-        strength[i] = factor * t * t * (3.0 - 2.0 * t)
+    rows = max(2, min(max(1, rows), max(depth.values(), default=1)))
+
+    reached = set(selected)
+    frontier = list(border)
+    for ring in range(1, rows + 1):
+        further = []
+        for i in frontier:
+            for e in bm.verts[i].link_edges:
+                j = e.other_vert(bm.verts[i]).index
+                if j not in reached:
+                    reached.add(j)
+                    further.append(j)
+        if not further:
+            break
+        # Smootherstep, not smoothstep: the tail has to arrive at zero with
+        # zero SLOPE as well as zero value, or the last row that still moves
+        # leaves a visible lip where the influence stops (measured: 0.26 mm
+        # with a smoothstep tail on the wrinkled fixture).
+        t = 1.0 - ring / float(rows)
+        value = factor * t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        for j in further:
+            strength[j] = value
+        frontier = further
     return strength
 
 
@@ -510,8 +540,9 @@ class RIGO_OT_smooth_selection(Operator):
             return {"CANCELLED"}
         self.report(
             {"INFO"},
-            f"Smoothed {moved} vertices — strength feathered to zero over "
-            f"{rings} rows at the painted edge, correction depth preserved",
+            f"Smoothed {moved} vertices — full strength across the paint, "
+            f"blended out over {rings} rows into the surrounding body, "
+            f"correction depth preserved",
         )
         return {"FINISHED"}
 

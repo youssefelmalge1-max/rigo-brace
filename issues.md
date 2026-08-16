@@ -1560,3 +1560,32 @@ Gated by w49f.smooth_area_no_border_step and w49f.smooth_area_no_new_bumps.
 KNOWN LIMIT, not fixable in the add-on: Blender's sculpt-mode Smooth brush has
 the same class of cut-off at the BRUSH EDGE; a stroke run along a region rim
 writes that edge into the surface. Use Smooth Area for corrected regions.
+
+### #49h SHIPPED - remesh shipped a 100% flat-shaded mesh; Smooth Area now blends outward
+
+Orthotist: the corrected area is terraced again after a remesh with very
+detailed meshing, worse in sculpt mode, and "the machine should distribute
+with correlation of the whole area I made", not smooth within its own shape.
+
+1. rigo.remesh applied a REMESH modifier and never restored shading. CONTROL
+   (tools/remeshdbg.py): a raw REMESH modifier returns 82096 faces, 100% FLAT,
+   zero crease marks. #49c established flat shading alone is the dominant
+   cause of the "plates" look - so every remeshed scan drew every facet, and a
+   FINER remesh looked worse because it drew more, smaller facets. Both remesh
+   paths (voxel and the Quad Remesher hand-off) now restore crease-preserving
+   smooth shading. After: 0% flat.
+2. Smooth Area's feather ramp was reversed. #49f ramped strength up INWARD
+   from zero at the painted border, which killed the 1.66 mm cliff but pinned
+   the one place that most needs relaxing, so a correction still ended at a
+   line. Now: full strength across the paint, dying away over rows of the
+   SURROUNDING surface, tail on smootherstep so it reaches zero with zero
+   slope (a smoothstep tail still left a 0.26 mm lip), blend width capped by
+   the patch's own depth so a small area merges rather than smears.
+   Measured on a committed 20 mm A-model correction: 1100 verts beyond the
+   paint join the blend, cliff 0.035 mm (from 1.66 mm), depth 19.90 of 20,
+   visible bumps >30 deg 10 -> 1.
+   Gates corrected: step measured at the edge of the INFLUENCE, blend bounded
+   in millimetres (27.8 mm measured against a 40 mm ceiling) not vertex count,
+   and the bump gate separates visible >30 deg (may not increase) from
+   sub-visible 10-30 deg (may move within half again).
+Full battery green.
