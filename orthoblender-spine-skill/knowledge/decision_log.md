@@ -1491,3 +1491,54 @@ with 0 defects; regiontest commit 6.06 -> 2.24 s.
 
 Full battery green: regionqualtest (failed_gates=[]), regiontest,
 regionstyletest, regionuitest, selftest, downstreamtest.
+
+## DEC-0053 (2026-08-16) - #49f: SMOOTHING was a second, separate defect
+
+Orthotist after #49e: the committed shape is better, but smoothing (Smooth
+Area / sculpt Smooth brush) brings the ridged rim back. Asked for a stage-by-
+stage walk of the whole chain and warned it might be several issues at once.
+tools/smoothdbg.py walks import -> paint -> live region -> commit once, then
+runs SIX smoothing operators on IDENTICAL committed geometry (positions saved
+and restored between arms), so the arms differ only in the operator.
+
+FALSIFIED BY MEASUREMENT (three candidates eliminated, not argued away):
+- stale sharp-edge shading flags in the footprint: 0 (a hard line where the
+  geometry is smooth would have been a SHADING artifact, not geometry)
+- flat-shaded faces in the footprint: 0
+- density step at the footprint boundary: 0.97x (no jump for smoothing to
+  amplify)
+- the committed surface itself is sound: wall mean 4.7 deg, depth 20.00 mm.
+
+CONFIRMED: the defect is in the smoothing OPERATOR, not the correction.
+bpy.ops.mesh.vertices_smooth smooths selected vertices at uniform strength and
+stops dead at the selection border. Measured on a committed 20 mm region:
+1.66 mm step and 6.3 deg mean crease along the painted outline (jagged at the
+face scale, so it reads as a scalloped ring), convex speed bumps 87 -> 123,
+worst core point 95% -> 85% of the authored depth (a silent 2 mm of lost
+correction), tangential drift 2.68 mm.
+
+DECIDED: Smooth Area is now a FEATHERED HC-LAPLACIAN.
+- strength ramps to exactly zero over 4 rows at the painted border (wider than
+  the border's own one-row jaggedness, so the ramp cannot print it). Border
+  vertices cannot move at all, so 'nothing outside the paint moves' survives.
+- Vollmer HC correction instead of plain Laplacian: plain Laplacian is
+  curvature flow and eats the authored form; HC pushes each vertex back by the
+  displacement its whole neighbourhood shared, so bumps go and the correction
+  stays.
+- MEASURED, same mesh: border step 1.66 -> 0.00 mm, crease 6.3 -> 1.6 deg,
+  ring p95 15.0 -> 4.7 deg, speed bumps 123 -> 86 (below the 87 baseline),
+  worst-point depth 85% -> 91%, outside_moved 0.000 mm.
+- Arms rejected on measurement: weighted plain Laplacian (bumps 85 but worst
+  depth 90%), Taubin lambda/mu weighted (depth best at 95% but barely moves -
+  0.22 mm - so it does not actually polish), Taubin normal-only (same).
+- NOT FIXABLE IN THE ADD-ON: Blender's sculpt Smooth brush has the same class
+  of cut-off, at the brush edge instead of a selection border; a stroke run
+  along a region rim writes that edge into the surface. Documented for the
+  orthotist rather than papered over.
+
+GATES: w49f.smooth_area_no_border_step (step and outside both <=0.05 mm) and
+w49f.smooth_area_no_new_bumps (convex ridge count must not increase). Both
+would have failed before the patch (1.66 mm, 87 -> 123).
+
+Full battery green: regionqualtest (failed_gates=[]), regiontest, selecttest,
+regionuitest, selftest.

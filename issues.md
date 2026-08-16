@@ -1535,3 +1535,28 @@ its falloff from a Dijkstra distance to the SEED VERTEX (same metrication
 weakness, isolines radiating from the centre; clean on today fixtures);
 preview fidelity still shows the coarse authored field the commit no longer
 produces.
+
+### #49f SHIPPED - smoothing was a SECOND, separate defect from the commit
+
+After #49e the orthotist reported the committed shape improved but that
+smoothing brought the ridged rim back, and asked for a stage-by-stage walk of
+the whole chain. tools/smoothdbg.py does exactly that, then runs six smoothing
+operators on identical committed geometry.
+Three candidates were eliminated by measurement: stale sharp-edge shading flags
+in the footprint = 0, flat-shaded faces = 0, density step at the footprint
+boundary = 0.97x; the committed surface itself measures sound (wall mean 4.7
+deg, depth 20.00 mm). The defect was the OPERATOR: Smooth Area called
+bpy.ops.mesh.vertices_smooth, which smooths selected vertices at uniform
+strength and stops dead at the selection border - measured 1.66 mm step and
+6.3 deg crease along the painted outline (jagged at the face scale, so it reads
+as scallops), convex speed bumps 87 -> 123, and the worst core point pulled
+from 95% to 85% of the authored depth (a silent 2 mm of lost correction).
+Smooth Area is now a feathered HC-Laplacian: strength ramps to zero over 4 rows
+at the painted border, and Vollmer's HC correction replaces plain Laplacian
+curvature flow so bumps go while the authored form stays. Measured: border step
+0.00 mm, crease 1.6 deg, speed bumps 86 (below baseline; 67 -> 49 on the
+wrinkled fixture), depth 100% of authored, nothing outside the paint moved.
+Gated by w49f.smooth_area_no_border_step and w49f.smooth_area_no_new_bumps.
+KNOWN LIMIT, not fixable in the add-on: Blender's sculpt-mode Smooth brush has
+the same class of cut-off at the BRUSH EDGE; a stroke run along a region rim
+writes that edge into the surface. Use Smooth Area for corrected regions.

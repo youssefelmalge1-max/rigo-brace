@@ -777,6 +777,28 @@ def _nearest_vertex(me, point):
     return idx
 
 
+def _convex_ridges(obj, weights):
+    """Convex signed dihedrals >10 deg inside the transition band — the
+    literal speed bumps in a pressed (concave) wall."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    count = 0
+    for e in bm.edges:
+        a, b = e.verts[0].index, e.verts[1].index
+        wa, wb = weights.get(a, 0.0), weights.get(b, 0.0)
+        if not (0.05 < wa < 0.95 and 0.05 < wb < 0.95):
+            continue
+        if len(e.link_faces) != 2:
+            continue
+        try:
+            if math.degrees(e.calc_face_angle_signed()) > 10.0:
+                count += 1
+        except ValueError:
+            pass
+    bm.free()
+    return count
+
+
 def _paint_patch(obj, seed_face, count):
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_mode(type="FACE")
@@ -1670,6 +1692,59 @@ def _run():
             f"worsened_preexisting={worsened} after Laplacian 0.5x5",
         )
         sig_a = _topo_sig(obj.data)
+        _delete(obj)
+
+        # #49f: the SHIPPED Smooth Area operator on a committed correction.
+        # bpy.ops.mesh.vertices_smooth stopped dead at the painted border and
+        # wrote that discontinuity into the surface (measured on the A-model
+        # 20 mm region: 1.66 mm step, 6.3 deg mean crease along the painted
+        # outline, convex speed bumps 87 -> 123, worst core point down to 85%
+        # of the authored depth).  A polish tool may not step at its own
+        # border, may not move untouched anatomy, and may not eat the
+        # correction.
+        obj, region, _pre = painted_commit()
+        w = _group_weights(obj, region.surface_mask)
+        member = {i for i, wt in w.items() if wt > 1e-5}
+        me = obj.data
+        before = [v.co.copy() for v in me.vertices]
+        pre_ridges = _convex_ridges(obj, w)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bm = bmesh.from_edit_mesh(me)
+        for f in bm.faces:
+            if all(v.index in member for v in f.verts):
+                f.select = True
+        bmesh.update_edit_mesh(me)
+        settings.select_smooth_factor = 0.5
+        settings.select_smooth_iters = 5
+        bpy.ops.rigo.smooth_selection()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        me = obj.data
+        step = 0.0
+        for e in me.edges:
+            a, b = e.vertices
+            if (a in member) == (b in member):
+                continue
+            inner = a if a in member else b
+            step = max(step, (me.vertices[inner].co - before[inner]).length)
+        outside = 0.0
+        for i in range(len(before)):
+            if w.get(i, 0.0) > 0.0:
+                continue
+            outside = max(outside, (me.vertices[i].co - before[i]).length)
+        post_ridges = _convex_ridges(obj, w)
+        _gate(
+            "w49f.smooth_area_no_border_step",
+            step * 1000.0 <= 0.05 and outside * 1000.0 <= 0.05,
+            f"border_step={step*1000.0:.3f}mm outside_moved="
+            f"{outside*1000.0:.3f}mm",
+        )
+        _gate(
+            "w49f.smooth_area_no_new_bumps",
+            post_ridges <= pre_ridges,
+            f"convex ridges {pre_ridges} -> {post_ridges}",
+        )
         _delete(obj)
 
         # determinism: an identical refined commit is bit-identical.

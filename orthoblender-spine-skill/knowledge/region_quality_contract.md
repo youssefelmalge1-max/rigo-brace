@@ -87,6 +87,30 @@ past 90° (`flip_confirm_dot`, still far stricter than the `dot` fold-over test
 it backs up). Self-intersection, degeneracy and fold-over keep their own
 independent tests unchanged.
 
+**A polish tool may not step at its own border (#49f).** Smoothing is a
+separate operator from the commit and has its own contract: it may not leave a
+discontinuity where its influence stops, it may not move anatomy the orthotist
+did not paint, and it may not eat the authored correction.
+`bpy.ops.mesh.vertices_smooth` fails all three by construction — it smooths
+the selected vertices at uniform strength and simply stops at the selection
+border. Measured on a committed A-model 20 mm region: a **1.66 mm step** and a
+6.3° mean crease running along the painted outline (which, being brush-painted,
+is jagged at the face scale, so the crease reads as a scalloped ring), convex
+speed bumps in the wall raised from 87 to 123, and the worst core point pulled
+from 95 % to **85 %** of the authored depth — a silent 2 mm of lost correction.
+`Smooth Area` therefore ramps its strength to exactly zero over
+`_SMOOTH_FEATHER_ROWS` rows at the painted border (wider than the border's own
+one-row jaggedness, so the ramp cannot print it) and uses Vollmer's
+HC-Laplacian, which pushes each vertex back by the displacement its whole
+neighbourhood shared — high-frequency bumps go, the low-frequency form stays.
+Measured on the same mesh: border step **0.00 mm**, crease 6.3° → 1.6°, speed
+bumps 87 → 86 (67 → 49 on the wrinkled fixture), core depth 100 % of authored,
+nothing outside the paint moved. Gated by `w49f.smooth_area_no_border_step` and
+`w49f.smooth_area_no_new_bumps`. The same reasoning applies to Blender's
+sculpt-mode Smooth brush, whose cut-off is the brush edge rather than a
+selection border — a stroke run along a region's rim writes that edge into the
+surface, and no add-on code can prevent it.
+
 **Two-mode commit semantics (#49).** Every commit first attempts the REFINED
 transaction. Its fold repair runs tangential-only (the clinical amount of
 every vertex is preserved by construction); when the defect set stalls
