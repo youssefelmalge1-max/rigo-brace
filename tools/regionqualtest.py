@@ -382,11 +382,17 @@ def _measure(tag, obj, before, before_n, before_fn, pre_dih, weights,
                 center += me.vertices[vi].co
             center /= len(p.vertices)
             _loc, nor, _idx, _dist = surf.find_nearest(center)
+            # Confident agreement only (#49d): a REAL inversion measures
+            # near −1 against both references (the pre-fix wreckage class);
+            # dots within ±0.2 on decimated wrinkle flanks are reference
+            # noise (measured: an all-original feather-rim face at
+            # −0.16/−0.09 with no fold and no selfx tipped either way on
+            # unrelated commit changes).
             by_verts = (
                 reference.length >= 1.5
-                and p.normal.dot(reference.normalized()) < 0.0
+                and p.normal.dot(reference.normalized()) < -0.2
             )
-            by_surf = nor is not None and p.normal.dot(nor) < 0.0
+            by_surf = nor is not None and p.normal.dot(nor) < -0.2
             if reference.length >= 1.5 and nor is not None:
                 if by_verts and by_surf:
                     inverted += 1

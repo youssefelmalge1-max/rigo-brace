@@ -58,7 +58,7 @@ def _run():
     settings = bpy.context.scene.rigo_brace
     try:
         for amount, feather in (
-            (15.0, 10.0), (20.0, 10.0), (20.0, 20.0),
+            (20.0, 15.0),
         ):
             bpy.ops.wm.stl_import(filepath=A_SCAN)
             obj = bpy.context.active_object
@@ -159,11 +159,84 @@ def _run():
             )
             bpy.data.meshes.remove(temp)
 
+            if plan is not None:
+                # What does the dissolve weld leave?  Non-manifold delta +
+                # classification of the offending edges.
+                temp2 = me.copy()
+                nm0 = ro._nonmanifold_count(me)
+                ro._refine_footprint(temp2, group.index, offset)
+                ro._apply_dissolve(temp2, [plan], n_orig)
+                nm1 = ro._nonmanifold_count(temp2)
+                _mark(f"  dissolve-weld nonman: {nm0} -> {nm1}")
+                if nm1 != nm0:
+                    counts = {}
+                    for p in temp2.polygons:
+                        vs = p.vertices
+                        for k in range(len(vs)):
+                            a2, b2 = vs[k], vs[(k + 1) % len(vs)]
+                            key = (b2, a2) if a2 > b2 else (a2, b2)
+                            counts.setdefault(key, []).append(p.index)
+                    shown = 0
+                    for key, faces in counts.items():
+                        if len(faces) != 2 and shown < 8:
+                            shown += 1
+                            areas = [
+                                f"{temp2.polygons[fi].area:.1e}"
+                                for fi in faces
+                            ]
+                            _mark(
+                                f"    edge {key} faces={len(faces)} "
+                                f"newv={[vi >= n_orig for vi in key]} "
+                                f"areas={areas}"
+                            )
+                bpy.data.meshes.remove(temp2)
+
             t0 = time.perf_counter()
             st = bpy.ops.rigo.region_apply()
             _mark(
                 f"  operator: {st} {time.perf_counter() - t0:.1f}s "
                 f"refined_added={region.refined_added}"
+            )
+            # Independent post-commit rim forensics: is the SHIPPED mesh
+            # torn (self-intersections, folded flaps, flipped shards), or
+            # clean geometry that only the raw preview / shading shows torn?
+            me2 = obj.data
+            wpost = {}
+            vg = obj.vertex_groups.get(region.surface_mask)
+            for v in me2.vertices:
+                for g in v.groups:
+                    if g.group == vg.index:
+                        wpost[v.index] = g.weight
+                        break
+            member2 = {i for i, w in wpost.items() if w > 0.0}
+            affected2 = [
+                p for p in me2.polygons
+                if any(vi in member2 for vi in p.vertices)
+            ]
+            selfx = ro._footprint_self_intersections(me2, member2, affected2)
+            by_edge = {}
+            for p in affected2:
+                vs = p.vertices
+                for k in range(len(vs)):
+                    a, b = vs[k], vs[(k + 1) % len(vs)]
+                    key = (b, a) if a > b else (a, b)
+                    by_edge.setdefault(key, []).append(p.index)
+            folded = 0
+            worst_dot = 1.0
+            for key, faces in by_edge.items():
+                if len(faces) == 2:
+                    d = me2.polygons[faces[0]].normal.dot(
+                        me2.polygons[faces[1]].normal
+                    )
+                    worst_dot = min(worst_dot, d)
+                    if d < -0.5:
+                        folded += 1
+            tiny = sum(1 for p in affected2 if p.area < 1e-10)
+            nonman = ro._nonmanifold_count(me2)
+            _mark(
+                f"  committed-rim forensics: selfx={len(selfx)} "
+                f"folded(dot<-0.5)={folded} worst_dot={worst_dot:.2f} "
+                f"tiny_faces={tiny} nonman={nonman}"
             )
             bpy.data.objects.remove(obj, do_unlink=True)
         _mark("DONE")

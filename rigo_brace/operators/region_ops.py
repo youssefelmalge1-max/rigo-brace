@@ -665,7 +665,64 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     return folded
 
 
-def _refine_footprint(temp_me, group_index, offset, dissolve=None,
+def _apply_dissolve(temp_me, plans, n_start):
+    """Apply accumulated seam-sliver dissolve plans to a COPY of the
+    once-computed refined mesh (#49d perf: re-running the deterministic
+    refinement per retry measured 13 s commits).  Each plan's NEW-vertex
+    indices were identified with all earlier plans already applied, so
+    sequential application keeps every plan's numbering valid.  Each vertex
+    is removed by a SEQUENTIAL link-condition-gated edge collapse (nearest
+    ORIGINAL neighbour preferred) — the only manifold-safe single collapse;
+    a vertex with no safe collapse stays and the validation ladder decides.
+    Original scan vertices never move; every surviving vertex keeps its
+    authored/field weight."""
+    bm = bmesh.new()
+    bm.from_mesh(temp_me)
+    for target_verts, expected in plans:
+        bm.verts.index_update()
+        if len(bm.verts) != expected:
+            break  # determinism broken — the fallback decides honestly
+        bm.verts.ensure_lookup_table()
+        plan_refs = [
+            bm.verts[vi] for vi in sorted(target_verts)
+            if n_start <= vi < len(bm.verts)
+        ]
+        plan_set = set(plan_refs)
+        for v in plan_refs:
+            if not v.is_valid:
+                continue
+            for e in sorted(v.link_edges, key=lambda e: e.calc_length()):
+                n = e.other_vert(v)
+                if n in plan_set or not n.is_valid:
+                    continue
+                if n.index >= n_start:
+                    # prefer an ORIGINAL target if one is also safe
+                    better = None
+                    for e3 in sorted(v.link_edges,
+                                     key=lambda e3: e3.calc_length()):
+                        m = e3.other_vert(v)
+                        if (m.index < n_start and m not in plan_set
+                                and m.is_valid):
+                            nbrs_v = {
+                                e4.other_vert(v) for e4 in v.link_edges
+                            }
+                            nbrs_m = {
+                                e5.other_vert(m) for e5 in m.link_edges
+                            }
+                            if len(nbrs_v & nbrs_m) == 2:
+                                better = m
+                                break
+                    if better is not None:
+                        n = better
+                if _link_safe_collapse(bm, v, n):
+                    break
+        bm.normal_update()
+    bm.to_mesh(temp_me)
+    bm.free()
+    temp_me.update()
+
+
+def _refine_footprint(temp_me, group_index, offset,
                       curved=True, harmonic=True):
     """Adaptive local refinement of the footprint on the WORKING mesh (#49).
 
@@ -676,12 +733,9 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
     from the authored field (other regions' masks interpolate through the
     deform layer).  Returns (verts_added, h_target_mm).
 
-    ``dissolve`` is a LIST of seam-sliver retry plans from
-    ``_sliver_dissolve_plan``, applied in order: each plan's NEW-vertex
-    indices were identified on the previous, bit-identical refined attempt
-    with all EARLIER plans already applied, so sequential application keeps
-    every plan's numbering valid (#49d: larger amounts collapse several
-    wrinkle seams — clusters surface one retry at a time).
+    Seam-sliver dissolution lives in ``_apply_dissolve`` (#49d): the
+    refined state is computed ONCE per commit and dissolve retries operate
+    on copies of it.
 
     ``curved`` (#49c): place split points by Phong tessellation — projected
     onto the parent vertices' tangent planes — instead of on the flat parent
@@ -886,24 +940,15 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
         # original scan vertices.
         new_set = {v for v in all_new if v.is_valid}
         short_limit = 0.35 * h_target
-        targetmap = {}
-        seen_edges = set()
         for v in sorted(new_set, key=lambda v: v.index):
-            for e in v.link_edges:
-                if e in seen_edges:
-                    continue
-                seen_edges.add(e)
+            if not v.is_valid:
+                continue
+            for e in sorted(v.link_edges, key=lambda e: e.calc_length()):
                 if e.calc_length() >= short_limit:
-                    continue
-                a, b = e.verts
-                if a in new_set and a not in targetmap \
-                        and b not in targetmap:
-                    targetmap[a] = b  # weld the NEW vert onto its neighbour
-                elif b in new_set and b not in targetmap \
-                        and a not in targetmap:
-                    targetmap[b] = a
-        if targetmap:
-            bmesh.ops.weld_verts(bm, targetmap=targetmap)
+                    break
+                # weld the NEW vert onto its neighbour — link-gated (#49d)
+                if _link_safe_collapse(bm, v, e.other_vert(v)):
+                    break
         # Flip toward max-min-angle on every interior edge of the touched
         # zone (flips change triangulation, never positions).  Scoped scan:
         # any face with a weighted vert is reachable from a field vert.
@@ -971,7 +1016,6 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
         # never moves an original vertex, repeated until clean.
         for _purge in range(2):
             new_set = {v for v in new_set if v.is_valid}
-            targetmap = {}
             purge_seen = set()
             purge_faces = []
             for v in sorted(new_set, key=lambda v: v.index):
@@ -979,27 +1023,45 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
                     if f not in purge_seen:
                         purge_seen.add(f)
                         purge_faces.append(f)
+            any_collapsed = False
             for f in purge_faces:
-                if len(f.verts) != 3:
+                if not f.is_valid or len(f.verts) != 3:
                     continue
                 els = [(e.calc_length(), e) for e in f.edges]
                 longest = max(length for length, _e in els)
                 if longest < 1e-9 or 2.0 * f.calc_area() / longest \
                         >= 0.3 * h_target:
                     continue
+                done = False
                 for _length, e in sorted(els, key=lambda t: t[0]):
+                    if not e.is_valid:
+                        continue
                     va, vb = e.verts
-                    if va in new_set and va not in targetmap \
-                            and vb not in targetmap:
-                        targetmap[va] = vb
+                    if va in new_set and _link_safe_collapse(bm, va, vb):
+                        done = True
                         break
-                    if vb in new_set and vb not in targetmap \
-                            and va not in targetmap:
-                        targetmap[vb] = va
+                    if vb in new_set and _link_safe_collapse(bm, vb, va):
+                        done = True
                         break
-            if not targetmap:
+                if not done:
+                    # No link-safe collapse: rotate the sliver's long edge
+                    # instead — position-preserving, manifold-safe, and the
+                    # classical escape for an uncollapsible thin triangle
+                    # (#49d: one such survivor displaced into an inverted
+                    # face on the decim065 fixture).
+                    _l, e_long = max(els, key=lambda t: t[0])
+                    if e_long.is_valid and len(e_long.link_faces) == 2:
+                        try:
+                            bmesh.ops.rotate_edges(
+                                bm, edges=[e_long], use_ccw=False
+                            )
+                            done = True
+                        except RuntimeError:
+                            pass
+                if done:
+                    any_collapsed = True
+            if not any_collapsed:
                 break
-            bmesh.ops.weld_verts(bm, targetmap=targetmap)
         bm.normal_update()
         live_new = [v for v in all_new if v.is_valid]
         for _pass in range(2):
@@ -1058,73 +1120,6 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
                 if dv.get(group_index, 0.0) <= 1e-6 and group_index in dv:
                     del dv[group_index]
 
-    if dissolve:
-        # Seam-sliver dissolution (#49 retry): each previous refined attempt
-        # identified specific NEW vertices whose seam triangles collapse
-        # under the displacement's fairing-direction divergence.  Refinement
-        # is bit-deterministic (gated), so with the plans applied in order
-        # the same indices name the same vertices here; weld each onto its
-        # nearest ORIGINAL neighbour BEFORE displacement.  Original scan
-        # vertices never move, no new topology is created (welds only
-        # remove refinement vertices), and every surviving vertex keeps its
-        # authored/field weight — so the field needs no re-evaluation.  If
-        # a stage's vertex count differs from its plan (determinism
-        # broken), stop: the unrefined fallback then decides honestly.
-        for target_verts, expected in dissolve:
-            bm.verts.index_update()
-            if len(bm.verts) != expected:
-                break
-            bm.verts.ensure_lookup_table()
-            targetmap = {}
-            for vi in sorted(target_verts):
-                if vi < n_start or vi >= len(bm.verts):
-                    continue
-                v = bm.verts[vi]
-                best = None
-                for e in sorted(v.link_edges,
-                                key=lambda e: e.calc_length()):
-                    n = e.other_vert(v)
-                    if n.index in target_verts or n in targetmap:
-                        continue
-                    if n.index < n_start:
-                        best = n  # nearest surviving ORIGINAL wins
-                        break
-                    if best is None:
-                        best = n
-                if best is not None:
-                    targetmap[v] = best
-            if targetmap:
-                targets = list(targetmap.values())
-                bmesh.ops.weld_verts(bm, targetmap=targetmap)
-                # A clump weld can fold two triangles onto the SAME three
-                # vertices — the duplicate face leaves >2-face edges
-                # (non-manifold, measured #49d).  Remove the duplicates
-                # locally, around the weld targets only.
-                seen_faces = {}
-                dupes = []
-                for v in targets:
-                    if not v.is_valid:
-                        continue
-                    for f in v.link_faces:
-                        key = frozenset(f.verts)
-                        other = seen_faces.get(key)
-                        if other is None:
-                            seen_faces[key] = f
-                        elif f is not other:
-                            dupes.append(f)
-                if dupes:
-                    unique = []
-                    seen_ids = set()
-                    for f in dupes:
-                        if f.is_valid and id(f) not in seen_ids:
-                            seen_ids.add(id(f))
-                            unique.append(f)
-                    if unique:
-                        bmesh.ops.delete(
-                            bm, geom=unique, context="FACES_ONLY"
-                        )
-                bm.normal_update()
-
     # The weld pass removes some of the counted vertices — the DECLARED
     # provenance must be the final net growth, exactly.
     added = len(bm.verts) - n_start
@@ -1132,6 +1127,23 @@ def _refine_footprint(temp_me, group_index, offset, dissolve=None,
     bm.free()
     temp_me.update()
     return added, h_target * 1000.0
+
+
+def _link_safe_collapse(bm, v, n):
+    """Collapse ``v`` onto its edge-neighbour ``n`` iff the classical LINK
+    CONDITION holds (their shared neighbours are exactly the two opposite
+    vertices of the edge) — the only manifold-safe single edge collapse.
+    Clump welds without this test measurably tore holes and built fins
+    (#49d: 16 non-manifold edges on one commit).  Returns True on collapse.
+    """
+    if not (v.is_valid and n.is_valid):
+        return False
+    nbrs_v = {e.other_vert(v) for e in v.link_edges}
+    nbrs_n = {e.other_vert(n) for e in n.link_edges}
+    if len(nbrs_v & nbrs_n) != 2:
+        return False
+    bmesh.ops.weld_verts(bm, targetmap={v: n})
+    return True
 
 
 def _nonmanifold_count(me):
@@ -1157,31 +1169,21 @@ def _sliver_dissolve_plan(temp, remaining, n_orig):
     set, is not ours to dissolve — the unrefined fallback is then the
     honest answer.
     """
-    if not remaining or len(remaining) > 4:
-        return None
-    for fi in remaining:
-        if not any(vi >= n_orig for vi in temp.polygons[fi].vertices):
-            return None
-    # ONE cluster per retry (#49d): welding several seam clusters in a
-    # single pass piles faces onto shared edges (measured: non-manifold
-    # fins at 20 mm with 3 clusters / 24 verts in one weld).  Each retry
-    # dissolves only the lowest-index connected cluster — small, clean
-    # welds; the ladder's accumulated retries surface the rest one by one.
-    fverts = {fi: set(temp.polygons[fi].vertices) for fi in remaining}
-    pool = set(remaining)
-    comp = {min(pool)}
-    pool.discard(min(remaining))
-    grew = True
-    while grew:
-        grew = False
-        for fi in list(pool):
-            if any(fverts[fi] & fverts[cj] for cj in comp):
-                pool.discard(fi)
-                comp.add(fi)
-                grew = True
+    if not remaining or len(remaining) > 12:
+        return None  # a defect field that large = genuinely infeasible zone
     seed = set()
-    for fi in comp:
-        seed.update(vi for vi in fverts[fi] if vi >= n_orig)
+    for fi in remaining:
+        new_on_face = [
+            vi for vi in temp.polygons[fi].vertices if vi >= n_orig
+        ]
+        if not new_on_face:
+            return None  # an original-geometry fold — not ours to dissolve
+        seed.update(new_on_face)
+    # ALL seam clusters in one plan (#49d): per-cluster retries cost a full
+    # pipeline run per cluster (measured 15 s commits).  Joint welding was
+    # only dangerous when clump welds could tear — every collapse is now
+    # link-condition-gated, so the joint plan is safe by construction and
+    # most walls converge in 1–2 retries.
     # Expand to the one-ring NEW neighbourhood: dissolving only the exact
     # defective vertices lets the fold migrate to the adjacent seam sliver
     # (measured) — dissolving the whole local seam returns that one spot
@@ -1193,7 +1195,7 @@ def _sliver_dissolve_plan(temp, remaining, n_orig):
             verts.add(b)
         elif b in seed and a >= n_orig:
             verts.add(a)
-    if not verts or len(verts) > 24:
+    if not verts or len(verts) > 48:
         return None
     return frozenset(verts), len(temp.vertices)
 
@@ -2156,6 +2158,14 @@ class RIGO_OT_region_apply(Operator):
         plans = []
         retry = False
         prev_defects = None
+        no_gain = 0
+        # Ladder depth scales with the AMOUNT (#49d, the orthotist's own
+        # principle): a gentle press (≤10 mm) has a mild wall where the
+        # warned fallback is visually fine — no dissolve retries, the
+        # classic refined-or-fallback keeps commits fast; a deep press is
+        # where the staircase genuinely hurts and the orthotist accepted
+        # compute for quality — full ladder.
+        max_plans = 0 if region.magnitude_mm <= 10.0 else 4
         # The static-body BVH (#49c perf): faces holding no footprint vertex
         # are never split and never move, and original vertex indices are
         # preserved in every working copy — build the opposite-wall net ONCE
@@ -2169,17 +2179,27 @@ class RIGO_OT_region_apply(Operator):
                     break
         static_tree, static_faces = _static_faces_bvh(me, member0)
         nonman_me = _nonmanifold_count(me)
-        while True:
-            temp = me.copy()
+        # The refined state is bit-deterministic — compute it ONCE and let
+        # every dissolve retry copy it (#49d perf: re-running the
+        # refinement per retry measured 13 s commits).
+        refined_me = me.copy()
+        added0, refine_mm0 = _refine_footprint(refined_me, group.index,
+                                               offset)
+        try:
+          while True:
+            if fell_back:
+                temp = me.copy()
+            else:
+                temp = refined_me.copy()
             retry = False
             try:
                 if not fell_back:
-                    added, refine_mm = _refine_footprint(
-                        temp, group.index, offset,
-                        dissolve=plans or None,
-                    )
+                    refine_mm = refine_mm0
+                    if plans:
+                        _apply_dissolve(temp, plans, len(me.vertices))
+                    added = len(temp.vertices) - len(me.vertices)
                     if added and _nonmanifold_count(temp) != nonman_me:
-                        # A weld fin/duplicate the local cleanup missed —
+                        # A weld artifact the link condition let through —
                         # topology damage never ships, and more welding
                         # cannot heal it: the unrefined fallback decides
                         # (#49d guard; skips the wasted displacement too).
@@ -2261,20 +2281,24 @@ class RIGO_OT_region_apply(Operator):
                     sliver_h=0.12 * refine_mm * 0.001,
                 )
                 if remaining:
-                    # Worsening cutoff (#49d): a dissolve retry after which
-                    # the defect count GREW is whack-a-mole on a
-                    # geometrically infeasible wall — stop burning pipeline
-                    # runs (measured 25 s ladders on the 20/10 extreme) and
-                    # let the honest fallback decide.  A steady count is
-                    # still progress (one cluster dissolved, one migration
-                    # surfaced — measured converging on the next retry).
-                    making_progress = (
-                        prev_defects is None
-                        or len(remaining) <= prev_defects
-                    )
+                    # No-gain cutoff (#49d): one steady defect count is
+                    # still progress (a cluster dissolved, one migration
+                    # surfaced — measured converging on the next retry),
+                    # but TWO consecutive retries without improvement is
+                    # whack-a-mole on a geometrically infeasible wall —
+                    # stop burning pipeline runs (measured 25 s hopeless
+                    # ladders on the 20/10 extreme) and let the honest
+                    # fallback decide.  The plan budget covers many-seam
+                    # walls (measured: 7 clusters at 20/15 on the A-model
+                    # waist — the old 3-plan budget could never finish).
+                    if prev_defects is not None \
+                            and len(remaining) >= prev_defects:
+                        no_gain += 1
+                    else:
+                        no_gain = 0
                     prev_defects = len(remaining)
-                    if (added and not fell_back and len(plans) < 3
-                            and making_progress):
+                    if (added and not fell_back and len(plans) < max_plans
+                            and no_gain < 2):
                         plan = _sliver_dissolve_plan(
                             temp, remaining, len(me.vertices)
                         )
@@ -2318,6 +2342,8 @@ class RIGO_OT_region_apply(Operator):
                 break
             finally:
                 bpy.data.meshes.remove(temp)
+        finally:
+            bpy.data.meshes.remove(refined_me)
         if failure is not None or retry:
             self.report({"ERROR"}, failure or "Correction could not be made valid")
             return {"CANCELLED"}

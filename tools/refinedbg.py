@@ -151,8 +151,10 @@ def _run():
             if plan is not None:
                 temp2 = me.copy()
                 added2, target2 = ro._refine_footprint(
-                    temp2, group.index, offset, dissolve=plan
+                    temp2, group.index, offset
                 )
+                ro._apply_dissolve(temp2, [plan], n_orig)
+                added2 = len(temp2.vertices) - n_orig
                 _mark(f"retry refined: +{added2} verts "
                       f"({n_orig} -> {len(temp2.vertices)})")
                 weights2 = {}

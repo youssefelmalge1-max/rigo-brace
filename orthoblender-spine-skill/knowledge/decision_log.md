@@ -1384,3 +1384,44 @@ steep-narrow walls on wrinkled zones warn and keep scan sampling.
 Full battery green: regionqualtest (incl. amount20 gates), regiontest
 (granular commit verdict now prints per-condition), regionstyletest,
 regionuitest, selftest, downstreamtest.
+
+## DEC-0051 (2026-08-16) - #49d finale: link-condition collapses everywhere, refined-snapshot ladder, amount-scaled depth; 20/15 refines
+
+Orthotist screenshot: the 20 mm / feather-15 commit showed giant terraces.
+Forensics (tools/bigamountdbg.py): the SHIPPED mesh was geometrically clean
+(selfx 0, folds 0, manifold) - the terraces were the warned FALLBACK
+staircase: at 20/15 the refined attempt left 9 seam defects in 7 clusters
+and the plan bound (<=4 total faces, calibrated for single-cluster days)
+refused to even start the ladder.
+
+Root causes unwound in sequence, each measured:
+- The dissolve plan bound moved to where it belongs: <=12 defect faces
+  total (infeasible-zone detector), <=48 verts per plan.
+- EVERY collapse in the pipeline (short-edge weld, sliver purge, dissolve)
+  is now a SEQUENTIAL edge collapse gated by the classical LINK CONDITION
+  (shared neighbours exactly the two opposite vertices) - clump welds
+  measurably tore holes and built fins (16 non-manifold edges at 20/15,
+  including on the PLAIN refinement path: the nonman guard was tripping on
+  attempt 0 and silently forcing fallbacks). Sliver purge gained an edge-
+  rotation escape for link-uncollapsible slivers. Bonus: paint15 quality
+  improved outright (osc_max 3.2->1.7, wall_viol 3->0, wall_exceed 1.02).
+- Joint plans restored (all seam clusters per retry): per-cluster retries
+  cost a full pipeline run per cluster (measured 15 s commits); joint
+  welding is safe by construction now that every collapse is link-gated.
+- REFINED SNAPSHOT: the bit-deterministic refined state is computed ONCE
+  per commit; dissolve retries copy it and weld (re-running refinement per
+  retry measured 13 s commits). Dissolution moved to _apply_dissolve.
+- LADDER DEPTH SCALES WITH AMOUNT (the orthotist's own principle):
+  <=10 mm = direct refined-or-fallback (gentle walls; fallback visually
+  fine; 6.06 s measured on the wrinkled 53k gate fixture); >10 mm = up to
+  4 accumulated retries (20/15 refines +325 in 9 s, folds 15->3, all
+  pre-creased-exempt class).
+- Inverted oracle calibrated to CONFIDENT reference agreement (dots
+  < -0.2): a real inversion measures near -1; a marginal all-original
+  feather-rim face at -0.16/-0.09 on decimated wrinkles (no fold, no
+  selfx) tipped either way on unrelated commit changes (measured,
+  tools/decimdbg.py).
+- Contract perf re-derived 6.0 -> 7.0 s with the full ladder derivation.
+
+Full battery green: regionqualtest (incl. w49.amount20 gates), regiontest,
+regionstyletest, regionuitest, selftest, downstreamtest.

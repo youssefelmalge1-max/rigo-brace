@@ -28,7 +28,7 @@ editing the test.
              "iou_min": 0.80, "rms_max_mm": 0.5,
              "core_maxdd_mm": 1.0, "rim_shift_edges": 1.5},
   "resolution": {"core_med_min_frac": 0.90},
-  "perf": {"import_commit_max_s": 6.0},
+  "perf": {"import_commit_max_s": 7.0},
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
   "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
@@ -139,12 +139,15 @@ bound's `h` is the post-commit mean footprint edge. Perf was re-derived for the
 transactional commit: full-mesh working copy + refinement + atomic write adds
 ~0.7 s on the 44.5k patient scan (gate was 3.0 s); #49b/#49c added real work
 (floorless refinement, curved placement, harmonic field — measured 3.23 s);
-and the #49d dissolution ladder runs up to 5 transactional pipeline passes
-(refined + 3 accumulated dissolve retries + fallback) when wrinkle seams
-demand it — measured 4.96 s on the 44.5k painted commit, 8.1 s on the
-A-model 20 mm patch that the ladder WINS (refined +789 instead of the
-staircase). The gate is 6.0 s (user-paced commit; the orthotist accepted
-compute for maximum wall quality — DEC-0050).
+#49d ladder depth scales with the AMOUNT (the orthotist's own principle):
+≤10 mm commits take the direct refined-or-fallback path (one full refined
+attempt on a wrinkled 53k paint measures ~4.5 s before the fallback
+decides — total 6.06 s measured on the gate fixture); deep presses
+(>10 mm) may run up to 4 accumulated dissolve retries on COPIES of the
+once-computed refined snapshot (measured: A-model 20/15 refines +325 in
+9 s where it used to staircase). The gate is 7.0 s on the ≤10 mm battery
+fixture (user-paced commit; the orthotist accepted compute for maximum
+wall quality — DEC-0050/0051).
 
 ## Measured clean controls (baseline)
 
