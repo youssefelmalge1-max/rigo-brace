@@ -30,6 +30,7 @@ REQUIRED = {
     "wall": ("clearance_mm", "cross_sheet_new"),
     "fold": ("dot", "pre_dot", "flip_confirm_dot", "new_folds",
              "oracle_post_deg", "oracle_pre_deg"),
+    "rim": ("smooth_passes", "gate_steps", "field_tolerance"),
     "size": ("surface_tolerance_frac",),
     "quality": ("enforced", "wall_sampling_margin", "wall_sampling_violations",
                 "aspect_p95_factor", "min_rows_across_feather",

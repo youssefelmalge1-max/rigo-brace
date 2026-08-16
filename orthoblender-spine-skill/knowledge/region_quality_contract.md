@@ -33,6 +33,7 @@ editing the test.
   "fold": {"dot": -0.95, "pre_dot": -0.5, "flip_confirm_dot": 0.0,
            "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
+  "rim": {"smooth_passes": 6, "gate_steps": 3, "field_tolerance": 0.01},
   "size": {"surface_tolerance_frac": 0.12},
   "quality": {"enforced": true, "wall_sampling_margin": 1.3,
               "wall_sampling_violations": 4,

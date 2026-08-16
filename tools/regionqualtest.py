@@ -9,6 +9,7 @@ GUI Blender only:
   & blender.exe --app-template rigo_brace --python tools\regionqualtest.py
 """
 
+import heapq
 import math
 import os
 import random
@@ -1326,6 +1327,47 @@ def _run():
                 )
             _delete(obj)
 
+    def flip_confirm_unit_case(ro):
+        # #49e narrowed the single-triangle rotation test: a face whose own
+        # normal passed 90 deg only BLOCKS a commit when the surface confirms
+        # it by creasing a shared edge past 90 deg.  That predicate is now the
+        # sole ship-blocking answer for an isolated inversion and nothing
+        # exercised it.  Two arms on the same two-triangle fixture: a face
+        # rotated past 90 deg whose neighbour still agrees (a steep wall
+        # tilting - NOT a defect, this is what threw healthy refined commits
+        # away for the staircase), and one that folds back onto its neighbour.
+        def build(apex):
+            mesh = bpy.data.meshes.new("QA_FLIPU")
+            mesh.from_pydata(
+                [(0.0, 0.0, 0.0), (0.01, 0.0, 0.0), (0.005, 0.010, 0.0),
+                 apex],
+                [], [(0, 1, 2), (1, 0, 3)],
+            )
+            mesh.update()
+            return mesh
+
+        # Arm 1: neighbour dihedral healthy (faces nearly coplanar).
+        benign = build((0.005, -0.010, 0.0005))
+        benign_dot = benign.polygons[0].normal.dot(benign.polygons[1].normal)
+        kept_benign = ro._surface_confirmed_flips(benign, {1}, [(0, 1)])
+        # Arm 2: the second face folded back over the first.
+        folded = build((0.005, 0.008, 0.0005))
+        folded_dot = folded.polygons[0].normal.dot(folded.polygons[1].normal)
+        kept_folded = ro._surface_confirmed_flips(folded, {1}, [(0, 1)])
+        # Arm 3: a flipped face with NO neighbourhood to consult must keep
+        # the strict answer rather than be silently forgiven.
+        kept_alone = ro._surface_confirmed_flips(benign, {1}, [])
+        _gate(
+            "flip_confirm_unit",
+            not kept_benign and kept_folded == {1} and kept_alone == {1},
+            f"neighbour dot {benign_dot:.2f} -> not confirmed "
+            f"({sorted(kept_benign)}); dot {folded_dot:.2f} -> confirmed "
+            f"({sorted(kept_folded)}); no neighbours -> strict "
+            f"({sorted(kept_alone)})",
+        )
+        bpy.data.meshes.remove(benign)
+        bpy.data.meshes.remove(folded)
+
     def fold_unit_case(ro):
         # Wave 1 P0: the pre-creased <90°-rotation fold (hardendbg
         # adjfold.foldover_creased).  The production predicate must flag it,
@@ -1371,9 +1413,20 @@ def _run():
             and abs(ro._FOLD_PRE_DOT - _T["fold"]["pre_dot"]) < 1e-9
             and abs(
                 ro._FLIP_CONFIRM_DOT - _T["fold"]["flip_confirm_dot"]
-            ) < 1e-9,
+            ) < 1e-9
+            # #49e's three tuning constants were reachable by nothing: the
+            # rim mollification width, the geodesic gate that is the SOLE
+            # safety argument for measuring Euclidean distance on a folded
+            # torso, and the legacy-region reconstruction tolerance.
+            and ro._RIM_SMOOTH_PASSES == _T["rim"]["smooth_passes"]
+            and ro._RIM_GATE_STEPS == _T["rim"]["gate_steps"]
+            and abs(
+                ro._RIM_FIELD_TOLERANCE - _T["rim"]["field_tolerance"]
+            ) < 1e-12,
             f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},"
-            f"{ro._FOLD_PRE_DOT},{ro._FLIP_CONFIRM_DOT})",
+            f"{ro._FOLD_PRE_DOT},{ro._FLIP_CONFIRM_DOT}) rim=("
+            f"{ro._RIM_SMOOTH_PASSES},{ro._RIM_GATE_STEPS},"
+            f"{ro._RIM_FIELD_TOLERANCE})",
         )
 
     def wave2_mirror_case():
@@ -1672,11 +1725,164 @@ def _run():
             pre_dih = _dihedral_map(
                 obj, set(_group_weights(obj, region.surface_mask))
             )
+            bpy.ops.object.mode_set(mode="OBJECT")
+            # Pre-commit state the #49e/#49h gates need: the undisplaced
+            # surface (to measure realized correction depth against), the
+            # vertex count (to tell refinement-born vertices apart) and the
+            # authored field itself.
+            me = obj.data
+            pre = {
+                "coords": [v.co.copy() for v in me.vertices],
+                "polys": [tuple(p.vertices) for p in me.polygons],
+                "n_orig": len(me.vertices),
+                "group": obj.vertex_groups.get(region.surface_mask).index,
+                "offset": -region.magnitude_mm * 0.001,
+                "feather_mm": 10.0,
+                "mesh": me.copy(),
+            }
+            pre["rim_field"] = ro._authored_rim_field(
+                me, pre["group"], region.falloff_type
+            )
             bpy.ops.rigo.region_apply()
-            return obj, region, pre_dih
+            return obj, region, pre_dih, pre
+
+        def _percentile(values, fraction=0.95):
+            if not values:
+                return 0.0
+            values = sorted(values)
+            return values[min(len(values) - 1, int(len(values) * fraction))]
+
+        def _candidate_fields(obj, region, pre):
+            """Rebuild BOTH candidate falloff fields test-side from the mesh:
+            the #49e distance-to-the-mollified-rim-CURVE field, and the
+            pre-#49e edge-walk Dijkstra distance from the rim VERTICES.
+
+            Without the second arm a gate is satisfied by either metric — and
+            measured: with the field reverted to Dijkstra the entire battery
+            stayed green (failed_gates=[]).
+            """
+            me = pre["mesh"]
+            weights = _group_weights(obj, region.surface_mask)
+            weights = {i: w for i, w in weights.items() if i < len(me.vertices)}
+            coords = {i: me.vertices[i].co.copy() for i in weights}
+            adjacency = {i: [] for i in weights}
+            rim = set()
+            for edge in me.edges:
+                a, b = edge.vertices
+                a_in, b_in = a in adjacency, b in adjacency
+                if a_in and b_in:
+                    adjacency[a].append(b)
+                    adjacency[b].append(a)
+                elif a_in:
+                    rim.add(a)
+                elif b_in:
+                    rim.add(b)
+            curve, _evaluate = ro._boundary_distance(coords, adjacency, rim)
+
+            walk = {i: 0.0 for i in rim}
+            heap = [(0.0, i) for i in rim]
+            heapq.heapify(heap)
+            while heap:
+                d, i = heapq.heappop(heap)
+                if d > walk.get(i, 1e30):
+                    continue
+                for j in adjacency[i]:
+                    nd = d + (coords[i] - coords[j]).length
+                    if nd < walk.get(j, 1e30):
+                        walk[j] = nd
+                        heapq.heappush(heap, (nd, j))
+
+            kind = region.falloff_type
+            out = {}
+            for name, field in (("curve", curve), ("walk", walk)):
+                top = max(field.values())
+                f_eff = min(pre["feather_mm"] * 0.001, top)
+                if f_eff <= 1e-9:
+                    out[name] = 1.0
+                    continue
+                out[name] = _percentile([
+                    abs(
+                        ro._falloff(min(field.get(i, top), f_eff) / f_eff, kind)
+                        - w
+                    )
+                    for i, w in weights.items()
+                ])
+            return out
+
+        # ---------------------------------------------------------------- #
+        # #49e: the falloff field itself.  Verified by experiment on
+        # 2026-08-16 that reverting _region_weights_from_selection to the
+        # pre-#49e Dijkstra left the ENTIRE battery green (failed_gates=[]),
+        # so nothing here pinned the change that fixed the reported artifact.
+        # These three gates are the discriminators.
+        # ---------------------------------------------------------------- #
+        obj, region, _pd, pre = painted_commit()
+        arms = _candidate_fields(obj, region, pre)
+        _gate(
+            "w49e.field_is_curve_distance",
+            arms["curve"] <= 0.01 and arms["walk"] >= 0.05,
+            f"p95 deviation from distance-to-mollified-rim-CURVE="
+            f"{arms['curve']:.4f} (must be <=0.01); from rim-VERTEX Dijkstra="
+            f"{arms['walk']:.4f} (must be >=0.05, else the bake reverted)",
+        )
+        _gate(
+            "w49e.rim_field_recovered",
+            pre["rim_field"] is not None,
+            "a freshly baked painted region reconstructs to its own "
+            "closed-form field, so the commit can sample it",
+        )
+        # New vertices must SAMPLE the authored field, not interpolate the
+        # coarse anchors.  Compared against both refinement paths run on the
+        # undisplaced pre-commit mesh, where the field is defined.
+        sampled = pre["mesh"].copy()
+        interpolated = pre["mesh"].copy()
+        ro._refine_footprint(
+            sampled, pre["group"], pre["offset"], field=pre["rim_field"]
+        )
+        ro._refine_footprint(interpolated, pre["group"], pre["offset"])
+
+        def _new_weights(mesh):
+            out = []
+            for v in mesh.vertices:
+                if v.index < pre["n_orig"]:
+                    continue
+                for g in v.groups:
+                    if g.group == pre["group"]:
+                        out.append(g.weight)
+                        break
+            return sorted(out)
+
+        shipped = _new_weights(obj.data)
+        by_field = _new_weights(sampled)
+        by_idw = _new_weights(interpolated)
+        paths_differ = 0.0
+        if by_field and by_idw:
+            n = min(len(by_field), len(by_idw))
+            paths_differ = _percentile([
+                abs(by_field[i] - by_idw[i]) for i in range(n)
+            ])
+        matches_field = (
+            bool(shipped)
+            and len(shipped) == len(by_field)
+            and max(
+                (abs(a - b) for a, b in zip(shipped, by_field)), default=1.0
+            ) <= 1e-9
+        )
+        _gate(
+            "w49e.new_vertices_sample_the_field",
+            matches_field and paths_differ >= 0.005,
+            f"shipped {len(shipped)} new-vertex weights, field path "
+            f"{len(by_field)}, IDW path {len(by_idw)}; shipped==field:"
+            f"{matches_field}; the two paths differ by p95 {paths_differ:.4f} "
+            f"(must be >=0.005, else field= is a no-op)",
+        )
+        bpy.data.meshes.remove(sampled)
+        bpy.data.meshes.remove(interpolated)
+        bpy.data.meshes.remove(pre["mesh"])
+        _delete(obj)
 
         # smooth-after-commit: the sculpted smooth must not spike.
-        obj, region, pre_dih = painted_commit()
+        obj, region, pre_dih, pre = painted_commit()
         w = _group_weights(obj, region.surface_mask)
         fp = {i for i, wt in w.items() if wt > 1e-5}
         bpy.ops.object.mode_set(mode="EDIT")
@@ -1700,6 +1906,7 @@ def _run():
             f"worsened_preexisting={worsened} after Laplacian 0.5x5",
         )
         sig_a = _topo_sig(obj.data)
+        bpy.data.meshes.remove(pre["mesh"])
         _delete(obj)
 
         # #49f: the SHIPPED Smooth Area operator on a committed correction.
@@ -1710,12 +1917,31 @@ def _run():
         # of the authored depth).  A polish tool may not step at its own
         # border, may not move untouched anatomy, and may not eat the
         # correction.
-        obj, region, _pre = painted_commit()
+        obj, region, _pd, pre = painted_commit()
         w = _group_weights(obj, region.surface_mask)
         member = {i for i, wt in w.items() if wt > 1e-5}
         me = obj.data
         before = [v.co.copy() for v in me.vertices]
         pre_ridges = _convex_ridges(obj, w)
+        # Realized correction depth against the UNDISPLACED surface, before
+        # and after the polish.  The operator tells the orthotist "correction
+        # depth preserved" on every run; until now nothing verified it.
+        undisplaced = BVHTree.FromPolygons(
+            pre["coords"], pre["polys"], all_triangles=True
+        )
+        core = [i for i, wt in w.items() if wt >= 0.95]
+
+        def _core_depth(mesh):
+            out = []
+            for i in core:
+                loc, _n, _idx, _d = undisplaced.find_nearest(
+                    mesh.vertices[i].co
+                )
+                if loc is not None:
+                    out.append((mesh.vertices[i].co - loc).length * 1000.0)
+            return sorted(out)
+
+        depth_before = _core_depth(me)
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_mode(type="FACE")
         bpy.ops.mesh.select_all(action="DESELECT")
@@ -1781,13 +2007,118 @@ def _run():
             f"(ceiling {max(8, int(pre_ridges[0] * 1.5))}), "
             f">30deg {pre_ridges[1]} -> {post_ridges[1]}",
         )
+        depth_after = _core_depth(obj.data)
+        med_before = depth_before[len(depth_before) // 2] if depth_before else 0.0
+        med_after = depth_after[len(depth_after) // 2] if depth_after else 0.0
+        # The discriminator here is the WORST-POINT floor, not the median.
+        # Measured on the A model, the pre-#49f smoother left the median at
+        # 98.6% of authored while collapsing the worst core point to 85% —
+        # so a median-only gate would have passed the very defect this
+        # exists to catch.  The median bound is a sanity ceiling, set at the
+        # same 5% scale as the contract's own +/-10% amount tolerance;
+        # measured on this fixture the shipped smoother costs 3.2% of the
+        # median and IMPROVES the worst point.
+        _gate(
+            "w49h.smooth_area_keeps_depth",
+            bool(depth_before)
+            and med_after >= 0.95 * med_before
+            and depth_after[0] >= 0.90 * depth_before[0],
+            f"core depth median {med_before:.2f} -> {med_after:.2f}mm "
+            f"({100.0 * med_after / max(med_before, 1e-9):.1f}%), worst point "
+            f"{depth_before[0]:.2f} -> {depth_after[0]:.2f}mm "
+            f"({100.0 * depth_after[0] / max(depth_before[0], 1e-9):.1f}%, "
+            f"floor 90% — the pre-#49f smoother scored 85% here)",
+        )
+        # The blend deliberately reaches past the paint (#49h), so how FAR a
+        # single untouched vertex may be displaced needs its own ceiling —
+        # the first ring outside the paint is smoothed at 98% of full
+        # strength, and nothing else bounds its travel.
+        outside_travel = max(
+            (
+                (obj.data.vertices[i].co - before[i]).length
+                for i in shifted if i not in member
+            ),
+            default=0.0,
+        )
+        _gate(
+            "w49h.smooth_area_outside_travel",
+            outside_travel * 1000.0 <= 2.0,
+            f"furthest untouched vertex moved {outside_travel*1000.0:.3f}mm "
+            f"(ceiling 2.0)",
+        )
+        bpy.data.meshes.remove(pre["mesh"])
         _delete(obj)
 
         # determinism: an identical refined commit is bit-identical.
-        obj, region, _pre = painted_commit()
+        obj, region, _pd, pre = painted_commit()
         sig_b = _topo_sig(obj.data)
         _gate("w49.refine_determinism", sig_a == sig_b,
               f"sig_a={sig_a} sig_b={sig_b}")
+        # #49e safety branch: a region baked by an OLDER build carries
+        # Dijkstra weights, and the reconstruction must REFUSE to treat them
+        # as its own field — otherwise reopening a saved case silently
+        # re-authors the correction.  Fired once in a probe; gated here.
+        legacy = pre["mesh"]
+        weights = _group_weights(obj, region.surface_mask)
+        weights = {
+            i: w for i, w in weights.items() if i < len(legacy.vertices)
+        }
+        adjacency = {i: [] for i in weights}
+        rim = set()
+        for edge in legacy.edges:
+            a, b = edge.vertices
+            a_in, b_in = a in adjacency, b in adjacency
+            if a_in and b_in:
+                adjacency[a].append(b)
+                adjacency[b].append(a)
+            elif a_in:
+                rim.add(a)
+            elif b_in:
+                rim.add(b)
+        walk = {i: 0.0 for i in rim}
+        heap = [(0.0, i) for i in rim]
+        heapq.heapify(heap)
+        while heap:
+            d, i = heapq.heappop(heap)
+            if d > walk.get(i, 1e30):
+                continue
+            for j in adjacency[i]:
+                nd = d + (
+                    legacy.vertices[i].co - legacy.vertices[j].co
+                ).length
+                if nd < walk.get(j, 1e30):
+                    walk[j] = nd
+                    heapq.heappush(heap, (nd, j))
+        top = max(walk.values())
+        f_eff = min(0.010, top)
+        group = obj.vertex_groups.get(region.surface_mask)
+        stand_in = bpy.data.objects.new("QA legacy region", legacy)
+        bpy.context.scene.collection.objects.link(stand_in)
+        legacy_group = stand_in.vertex_groups.new(name=region.surface_mask)
+        for i in weights:
+            legacy_group.add(
+                [i],
+                max(
+                    ro._falloff(
+                        min(walk.get(i, top), f_eff) / f_eff,
+                        region.falloff_type,
+                    ),
+                    1e-6,
+                ),
+                "REPLACE",
+            )
+        rejected = ro._authored_rim_field(
+            legacy, legacy_group.index, region.falloff_type
+        )
+        _gate(
+            "w49e.legacy_region_not_reauthored",
+            rejected is None,
+            "a Dijkstra-baked (older build) region is REFUSED by the "
+            "reconstruction, so its saved field is left alone: got "
+            + ("None" if rejected is None
+               else "a field - it would be silently re-authored"),
+        )
+        bpy.data.objects.remove(stand_in, do_unlink=True)
         _delete(obj)
 
         # overlap masks (audit B3): committing region A must preserve an
@@ -1990,6 +2321,7 @@ def _run():
         _safe("flat", flat_cases)
         _safe("oppwall", lambda: oppwall_cases(ro))
         _safe("foldunit", lambda: fold_unit_case(ro))
+        _safe("flipconfirm", lambda: flip_confirm_unit_case(ro))
         _safe("w2mirror", wave2_mirror_case)
         _safe("w2horseshoe", wave2_horseshoe_case)
         _safe("w2size", wave2_size_case)

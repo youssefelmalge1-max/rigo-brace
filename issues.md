@@ -1589,3 +1589,40 @@ with correlation of the whole area I made", not smooth within its own shape.
    and the bump gate separates visible >30 deg (may not increase) from
    sub-visible 10-30 deg (may move within half again).
 Full battery green.
+
+### #49j OPEN gaps - remaining untested claims after the coverage audit
+
+A 9-agent adversarial audit of 90 behavioural claims across 8302b8d..0361871
+found only 9 backed by a gate that would go red on a revert. The headline
+finding was VERIFIED BY EXPERIMENT: reverting the #49e falloff field to the old
+Dijkstra left regionqualtest at failed_gates=[] PASS=True. Eight new gates
+closed the P1 items (see DEC/commit #49j). These remain OPEN:
+
+1. `_RIM_GATE_STEPS` is the sole safety argument for measuring Euclidean
+   distance on a folded torso, and no fixture exercises it against a genuine
+   far-side shortcut. Needs a U-folded sheet fixture (two 60x60mm parallel
+   sheets 2mm apart joined along one edge), paint across both, assert
+   max(dist) >= 0.8x the true along-surface half-width and that every vertex's
+   walk root lies on its own sheet. paint15_hostile does NOT substitute: it
+   passes on EITHER valid_commit OR refuse_safe, so a garbage field that
+   causes a refusal still passes.
+2. SHARP and LINEAR falloff are dead code under the whole battery - all 15
+   region_falloff assignments across every suite are "SMOOTH". `_inv_falloff`
+   round-trips correctly (verified offline to 1.3e-14) but two of its three
+   branches never run under test.
+3. The five degenerate-input guards in `_authored_rim_field` (<12 weights,
+   <3 rim, <8 interior, <8 band, f_eff<=1e-9) are unreachable: the smallest
+   painted fixture in the battery is 240 faces / ~171 mask verts.
+4. No suite loads a region baked by a PREVIOUS build. Every region in every
+   test is baked and read inside the same process, so cross-version
+   persistence is asserted by nothing. `w49e.legacy_region_not_reauthored`
+   simulates a legacy weight vector but does not test a real saved file.
+5. `select_smooth_factor` / `select_smooth_iters` are hard-coded 0.5 / 5 at
+   both call sites; a smoothing kernel that ignored both sliders would pass
+   the whole battery.
+6. No suite asserts the ABSENCE of the rejected #49g feature
+   (rigo.smooth_boundary, select_boundary_smooth_mm), although selftest
+   already uses that idiom for two other retired operators.
+7. `wall_dih_p95` is computed and printed on every fixture but has no
+   threshold in the contract - it is the metric this whole investigation
+   optimised, and it is advisory only.
