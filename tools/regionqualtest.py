@@ -1338,8 +1338,12 @@ def _run():
             "contract_constants",
             abs(ro._WALL_CLEARANCE_MM - _T["wall"]["clearance_mm"]) < 1e-9
             and abs(ro._FOLD_DOT - _T["fold"]["dot"]) < 1e-9
-            and abs(ro._FOLD_PRE_DOT - _T["fold"]["pre_dot"]) < 1e-9,
-            f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},{ro._FOLD_PRE_DOT})",
+            and abs(ro._FOLD_PRE_DOT - _T["fold"]["pre_dot"]) < 1e-9
+            and abs(
+                ro._FLIP_CONFIRM_DOT - _T["fold"]["flip_confirm_dot"]
+            ) < 1e-9,
+            f"prod=({ro._WALL_CLEARANCE_MM},{ro._FOLD_DOT},"
+            f"{ro._FOLD_PRE_DOT},{ro._FLIP_CONFIRM_DOT})",
         )
 
     def wave2_mirror_case():

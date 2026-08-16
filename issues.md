@@ -1507,3 +1507,31 @@ generator code untouched since #37/#45/#46:
 downstreamtest.py encodes these as comparative-control gates (corrections must
 never make the chain WORSE than untouched) and will auto-tighten to
 all-green when the rim bug is fixed.
+
+### #49e SHIPPED - the residual crown of radial pleats was the FALLOFF FIELD, not the mesh
+
+Third report of the same artifact after #49b/#49c ("you see still the same").
+Council: knowledge/council_49e_falloff_field.md. Discriminating experiment:
+tools/fielddbg.py (same mesh/amount/feather/curve/direction/repair, only the
+field differs). The falloff was baked as an edge-walk Dijkstra distance from
+the painted rim VERTICES - which is only C0 (gradient jumps along the bisector
+between neighbouring seeds, one crease per reflex corner of a rim the paint
+tool quantized onto triangles) and anisotropic (+8.5% mean / +36.7% p95 /
++43.9% max vs exact distance). Denser mesh reproduces those creases MORE
+faithfully, which is why two rounds of density work did not close it.
+Now: distance to the MOLLIFIED RIM CURVE, root-gated so the Euclidean segment
+measurement can never shortcut through space, level set re-zeroed so every rim
+vertex is exactly 0; and the commit SAMPLES that closed form for new vertices
+instead of interpolating coarse pinned anchors. Self-validating by
+reconstruction, so library/style and legacy regions keep their old path and no
+schema changed. Also split the inversion predicate: the repair still aims at
+every rotated face, but only a SURFACE-CONFIRMED flip may block a commit -
+a steep wall tilts its whole neighbourhood (65deg at 15 mm through 10 mm) and
+a thin scan triangle riding it crosses 90deg while the surface stays sound.
+Measured (A-model waist 20/15): wall dihedral mean 12.2->4.7, p95 31.1->16.9,
+edges >30deg 91->10, ridges 431->87, seam defects 9-in-7-clusters->0, commit
+9.0s->3.1s. Full battery green. OPEN follow-ups: the circle path still builds
+its falloff from a Dijkstra distance to the SEED VERTEX (same metrication
+weakness, isolines radiating from the centre; clean on today fixtures);
+preview fidelity still shows the coarse authored field the commit no longer
+produces.

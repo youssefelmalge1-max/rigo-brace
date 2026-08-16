@@ -30,7 +30,8 @@ editing the test.
   "resolution": {"core_med_min_frac": 0.90},
   "perf": {"import_commit_max_s": 7.0},
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
-  "fold": {"dot": -0.95, "pre_dot": -0.5, "new_folds": 0,
+  "fold": {"dot": -0.95, "pre_dot": -0.5, "flip_confirm_dot": 0.0,
+           "new_folds": 0,
            "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
   "size": {"surface_tolerance_frac": 0.12},
   "quality": {"enforced": true, "wall_sampling_margin": 1.3,
@@ -39,6 +40,52 @@ editing the test.
               "growth_max_faces_factor": 2.5, "smooth_new_spikes": 2}
 }
 ```
+
+**The falloff field is defined by the authored BOUNDARY CURVE (#49e).** For a
+painted region the weight is `falloff(d / f_eff)` where `d` is the surface
+distance to the **mollified rim curve**, not the graph distance to the rim
+vertices. Distance from a set of vertices is only C0 — its gradient jumps
+along the bisector between neighbouring seeds, one crease per reflex corner of
+a rim the paint tool quantized onto triangles — and an edge-walk Dijkstra adds
+an anisotropic overestimate on top (measured on the A-model waist patch:
++8.5 % mean, +36.7 % p95, +43.9 % max). Refinement reproduces those creases
+more faithfully; it cannot remove them, which is why two rounds of density
+work (#49b, #49c) did not close the ridge crown. The construction is: rim
+polyline Laplacian-mollified along itself (6 passes, λ=0.5 — kills wavelengths
+under ~6 rim edges; the authored outline, mode 1 of a ~100-vertex loop, keeps
+0.996 of its radius); a multi-source walk recording each vertex's ROOT rim
+vertex; exact point-to-SEGMENT distance restricted to rim segments within 3
+rim-steps of that root — Euclidean measurement is admissible **only** because
+of that gate (across the ≲12 mm it can reach, the chord/arc gap on R ≈ 120 mm
+is d³/24R² ≈ 0.005 mm, and no far-side sheet is reachable because the root
+came from a walk on the surface, the same discipline as `_geodesic_trim`);
+level set re-zeroed by the LARGEST rim residual, so every rim vertex is
+exactly 0 with no per-vertex pinning and the region edge still lands on the
+untouched scan. Because the field is a closed form, commit-time refinement
+SAMPLES it for new vertices instead of interpolating the authored anchors: no
+interpolant can be smoother than the function it interpolates, and IDW +
+harmonic is pinned at the ORIGINAL vertices, so a coarse scan's anchor lattice
+printed its own kink ring into the wall (measured, same mesh and field: wall
+dihedral p95 23.0° interpolated vs 16.9° sampled, edges over 30° 35 vs 10).
+The reconstruction is self-validating — compared against the stored weights
+and rejected unless it agrees to 0.01 — so library/style and legacy regions
+keep the interpolation path and no saved correction is silently re-authored.
+
+**Inversion is a question about the SURFACE, not about one triangle (#49e).**
+`normal · pre_normal ≤ 0` conflates two different events: the surface folding
+back on itself (a defect) and the surface legitimately TILTING under a steep
+authored wall (the correction itself — 15 mm through a 10 mm feather is a
+2.19 mm/mm slope, a 65° tilt). On a coarse scan a thin triangle riding that
+tilt crosses 90° while nothing around it is folded, degenerate or
+self-intersecting (measured, paint15 face 53270: self-flip −0.049, every
+neighbour dihedral 0.77, 2.14 mm² area, neighbours themselves rotated
+0.64–0.72). The two questions are therefore answered separately: fold repair
+still AIMS at every rotated face — dropping it from the target set measurably
+let real inversions through on five circle fixtures — but what may not SHIP is
+the surface-CONFIRMED subset, where at least one shared edge actually creases
+past 90° (`flip_confirm_dot`, still far stricter than the `dot` fold-over test
+it backs up). Self-intersection, degeneracy and fold-over keep their own
+independent tests unchanged.
 
 **Two-mode commit semantics (#49).** Every commit first attempts the REFINED
 transaction. Its fold repair runs tangential-only (the clinical amount of

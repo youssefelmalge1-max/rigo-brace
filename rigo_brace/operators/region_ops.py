@@ -43,6 +43,16 @@ _SNAPSHOT_PREFIX = "rigo_style_src_"
 _WALL_CLEARANCE_MM = 3.0
 _FOLD_DOT = -0.95
 _FOLD_PRE_DOT = -0.5
+# A face whose own normal passed 90° from its pre-commit normal is only a
+# real inversion when the SURFACE confirms it: at least one of its edges must
+# actually crease back on itself.  A legitimately steep wall tilts its whole
+# neighbourhood (15 mm through a 10 mm feather is a 2.19 mm/mm slope — a 65°
+# tilt), so a thin scan triangle riding that wall can cross 90° while the
+# surface around it stays sound.  Confirmation at 0.0 (dihedral past 90°) is
+# far stricter than the _FOLD_DOT fold-over test it backs up, and it sits a
+# wide margin below the benign case measured on paint15 face 53270 (every
+# neighbour dihedral 0.77, no self-intersection, 2.14 mm² area).
+_FLIP_CONFIRM_DOT = 0.0
 
 
 def _preview_name(region):
@@ -665,6 +675,48 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     return folded
 
 
+def _surface_confirmed_flips(me, flipped, fold_pairs):
+    """Keep only the flipped faces whose own neighbourhood confirms an
+    inversion (#49e).
+
+    ``normal · pre_normal <= 0`` asks a single triangle whether it turned
+    past 90°, which conflates two very different events: the surface folding
+    back on itself (a real defect) and the surface legitimately TILTING under
+    a steep authored wall (not a defect — it is the correction).  On a
+    coarse scan the second one fires on thin triangles: measured on the
+    wrinkled paint15 fixture at 15 mm through a 10 mm feather, face 53270
+    reached self-flip −0.05 while its three neighbours sat at dihedral 0.77
+    and had themselves rotated 0.64–0.72.  Nothing there is folded, degenerate
+    or self-intersecting — and blocking on it threw a healthy refined commit
+    away for the unrefined staircase.
+
+    A genuine inversion always creases at least one shared edge past 90°;
+    where a whole strip inverts together, its border faces still do, so the
+    repair still gets a handle on it.  Self-intersection, degeneracy and
+    fold-over stay on their own independent tests — this only narrows the
+    single-triangle rotation heuristic.
+    """
+    if not flipped:
+        return set()
+    neighbours = {}
+    for a, b in fold_pairs:
+        neighbours.setdefault(a, []).append(b)
+        neighbours.setdefault(b, []).append(a)
+    confirmed = set()
+    for index in flipped:
+        others = neighbours.get(index)
+        if not others:  # no surface to ask — keep the strict answer
+            confirmed.add(index)
+            continue
+        normal = me.polygons[index].normal
+        if any(
+            normal.dot(me.polygons[other].normal) < _FLIP_CONFIRM_DOT
+            for other in others
+        ):
+            confirmed.add(index)
+    return confirmed
+
+
 def _apply_dissolve(temp_me, plans, n_start):
     """Apply accumulated seam-sliver dissolve plans to a COPY of the
     once-computed refined mesh (#49d perf: re-running the deterministic
@@ -723,7 +775,7 @@ def _apply_dissolve(temp_me, plans, n_start):
 
 
 def _refine_footprint(temp_me, group_index, offset,
-                      curved=True, harmonic=True):
+                      curved=True, harmonic=True, field=None):
     """Adaptive local refinement of the footprint on the WORKING mesh (#49).
 
     Splits only edges whose predicted post-displacement length exceeds the
@@ -753,6 +805,13 @@ def _refine_footprint(temp_me, group_index, offset,
     every sample point — a flat spot per original vertex, read as ring
     ridges in the wall; the harmonic field is smooth between anchors, never
     overshoots (maximum principle), and keeps every authored weight exact.
+
+    ``field`` (#49e): a closed-form evaluator for the authored falloff, from
+    ``_authored_rim_field``.  When present it REPLACES the IDW+harmonic
+    interpolation for new vertices — no interpolant can be smoother than the
+    function it interpolates, and this one is pinned to the coarse original
+    lattice.  ``None`` (library/style and legacy regions) keeps the
+    interpolation path exactly as it was.
     """
     weights = {}
     for v in temp_me.vertices:
@@ -797,33 +856,45 @@ def _refine_footprint(temp_me, group_index, offset,
 
     h_target = mean_edge  # provenance figure: tightest requirement seen
 
-    # New-vertex weights come from a smooth 3D IDW over the ORIGINAL
-    # vertices' authored weights.  Parent-edge interpolation provably keeps
-    # the staircase; a chart-space field disagrees with the authored
-    # per-vertex weights exactly at creases (measured: fold-scale weight
-    # jumps).  k-NN IDW in 3D is smooth, exactly consistent with the
-    # surviving original weights, and needs no snapshot (legacy regions
-    # refine too).
-    entries = [
-        (temp_me.vertices[i].co.copy(), w) for i, w in weights.items()
-    ]
-    field_kd = kdtree.KDTree(len(entries))
-    for index, (co, _w) in enumerate(entries):
-        field_kd.insert(co, index)
-    field_kd.balance()
-    support = 2.5 * mean_edge
-    eps2 = (0.35 * mean_edge) ** 2
+    if field is not None:
+        # #49e: the authored falloff is a closed-form function of the
+        # region's own boundary — sample it at the new vertices instead of
+        # interpolating the coarse authored samples.  IDW + the harmonic
+        # pass is a good interpolant, but it is PINNED at the original
+        # vertices, so a coarse scan's anchor lattice prints its own ring of
+        # kinks into the wall (measured, A-model waist 20/15, same mesh and
+        # same field: wall dihedral p95 23.0° interpolated vs 17.6° sampled,
+        # edges over 30° 35 vs 12).
+        sampler = field
+        harmonic = False
+    else:
+        # New-vertex weights come from a smooth 3D IDW over the ORIGINAL
+        # vertices' authored weights.  Parent-edge interpolation provably
+        # keeps the staircase; a chart-space field disagrees with the
+        # authored per-vertex weights exactly at creases (measured:
+        # fold-scale weight jumps).  k-NN IDW in 3D is smooth, exactly
+        # consistent with the surviving original weights, and needs no
+        # snapshot (legacy and library regions refine too).
+        entries = [
+            (temp_me.vertices[i].co.copy(), w) for i, w in weights.items()
+        ]
+        field_kd = kdtree.KDTree(len(entries))
+        for index, (co, _w) in enumerate(entries):
+            field_kd.insert(co, index)
+        field_kd.balance()
+        support = 2.5 * mean_edge
+        eps2 = (0.35 * mean_edge) ** 2
 
-    def sampler(co_local):
-        numerator = 0.0
-        denominator = 0.0
-        for _co, index, dist in field_kd.find_n(co_local, 6):
-            if dist > support:
-                continue
-            kernel = 1.0 / (dist * dist + eps2)
-            numerator += entries[index][1] * kernel
-            denominator += kernel
-        return numerator / denominator if denominator else 0.0
+        def sampler(co_local):
+            numerator = 0.0
+            denominator = 0.0
+            for _co, index, dist in field_kd.find_n(co_local, 6):
+                if dist > support:
+                    continue
+                kernel = 1.0 / (dist * dist + eps2)
+                numerator += entries[index][1] * kernel
+                denominator += kernel
+            return numerator / denominator if denominator else 0.0
 
     bm = bmesh.new()
     bm.from_mesh(temp_me)
@@ -1230,12 +1301,27 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
             p for p in me.polygons if any(vi in member for vi in p.vertices)
         ]
 
-    def defective():
-        bad = {
+    def defective(strict=True):
+        """``strict`` drives what the repair AIMS at; the relaxed reading
+        decides what may not SHIP (#49e).
+
+        Keeping the single-triangle rotation test as a repair target is
+        useful — sliding a face back before it creases anything is cheap
+        insurance, and dropping it from the target set measurably let real
+        inversions through on the circle fixtures.  But leaving an
+        unconfirmed rotation in the RETURNED set is what threw a healthy
+        refined commit away for the unrefined staircase, so the two
+        questions are answered separately.
+        """
+        bad = {p.index for p in affected if p.area < 1e-12}
+        flipped = {
             p.index for p in affected
             if p.normal.dot(pre_face_normals[p.index]) <= 1e-9
-            or p.area < 1e-12
         }
+        bad |= (
+            flipped if strict
+            else _surface_confirmed_flips(me, flipped, fold_pairs)
+        )
         bad |= _footprint_self_intersections(me, member, affected)
         bad |= _folded_pairs(me, fold_pairs, pre_face_normals)
         if new_start is not None and sliver_h > 0.0:
@@ -1321,7 +1407,7 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
             me.vertices[vi].co += delta * 0.5
         me.update()
         bad = defective()
-    return bad
+    return defective(strict=False)
 
 
 def _weights_from_style(scan, entry, target_world, target_normal, coords):
@@ -1455,6 +1541,251 @@ def _falloff(t, kind):
     return t * t * (3.0 - 2.0 * t)  # SMOOTH (smoothstep)
 
 
+def _inv_falloff(y, kind):
+    """Inverse of ``_falloff`` — recovers the normalized distance a weight
+    was produced from (used to recover the authored feather from a baked
+    region, which stores weights but not the feather)."""
+    y = min(1.0, max(0.0, y))
+    if kind == "LINEAR":
+        return y
+    if kind == "SHARP":
+        return math.sqrt(y)
+    return 0.5 - math.sin(math.asin(1.0 - 2.0 * y) / 3.0)  # smoothstep
+
+
+def _point_segment_distance(p, a, b):
+    ab = b - a
+    denom = ab.length_squared
+    if denom < 1e-18:
+        return (p - a).length
+    t = (p - a).dot(ab) / denom
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    return (p - (a + ab * t)).length
+
+
+# Rim mollification (#49e).  One Laplacian pass with λ=0.5 along the rim
+# polyline annihilates the one-vertex zigzag (wavelength 2 → factor 0) and
+# multiplies a 6-vertex wavelength by 0.75; six passes leave everything
+# below ~6 rim edges at ≤18 % while the authored outline itself (mode 1 of a
+# ~100-vertex loop) keeps 0.996 of its radius.  The scale is the rim's OWN
+# sampling — nothing here is tuned to a fixture.
+_RIM_SMOOTH_PASSES = 6
+# The nearest point of the mollified rim to a band vertex lies within a rim
+# edge or two of that vertex's walk ROOT (the root IS its nearest rim
+# vertex); three steps is margin.  Gating by the root — which came from a
+# walk ON the surface — is what stops the Euclidean measurement below from
+# ever short-cutting through space to a far-side rim.
+_RIM_GATE_STEPS = 3
+# An unedited region baked by this formulation reconstructs to ~1e-9; a
+# legacy Dijkstra-baked one deviates by 0.138 at p95 (measured, A-model
+# waist 20/15).  0.01 sits two orders below the legacy signature and two
+# above numerical noise.
+_RIM_FIELD_TOLERANCE = 0.01
+
+
+def _boundary_distance(coords, adjacency, rim):
+    """Distance in metres from the authored region boundary — a falloff that
+    is smooth *by construction* (#49e).
+
+    The previous field was an edge-walk Dijkstra distance from the rim
+    VERTICES.  Two properties of that construction put ridges in the wall
+    that no amount of extra mesh density could remove:
+
+    * **Metrication.** A path forced onto mesh edges is longer than the path
+      on the surface, and the excess depends on how the local edges happen to
+      point.  Measured on the A-model waist patch: the graph distance
+      overestimates true distance by 8.5 % on average and 36.7 % at p95, and
+      varies that much *around* the rim.  At the steepest point of a
+      smoothstep that is millimetres of radial wall undulation.
+    * **Creases.** Distance from a set of POINTS is only C0: its gradient
+      jumps along the bisector between neighbouring seeds — one crease per
+      reflex corner of the jagged painted rim, radiating inward.  A denser
+      mesh reproduces those creases *more* faithfully; it cannot remove them.
+      This is why #49b/#49c density work did not close the artifact.
+
+    The field here is instead:
+
+    1. the rim polyline mollified along itself (``_RIM_SMOOTH_PASSES``) — the
+       jaggedness is the paint tool quantizing a smooth stroke onto
+       triangles, not authored intent;
+    2. a multi-source walk from the rim recording each vertex's ROOT rim
+       vertex — the intrinsic, surface-following part;
+    3. exact point-to-SEGMENT distance, restricted to rim segments within
+       ``_RIM_GATE_STEPS`` of that root.  Euclidean measurement is admissible
+       *only* because of that gate: across the ≲12 mm neighbourhood it can
+       reach, the chord/arc gap on a torso of radius R ≈ 120 mm is
+       d³/24R² ≈ 0.005 mm, and no far-side surface is reachable at all
+       because the root came from a walk on the mesh (the same
+       geodesic-gating discipline as ``_geodesic_trim``);
+    4. the level set re-zeroed onto the rim by the LARGEST rim residual, so
+       every rim vertex lands at exactly 0 with no per-vertex pinning — the
+       region edge stays on the untouched scan and the field stays smooth
+       across it (``max(0, ·)`` costs no continuity: every supported falloff
+       has zero slope at t = 0).
+
+    ``coords`` maps vertex index → position; ``adjacency`` maps every region
+    vertex → its region neighbours; ``rim`` is the boundary vertex set.
+    Returns ``(distance_by_index, evaluate)``, where ``evaluate(co)`` gives
+    the same field at an arbitrary nearby position — commit-time refinement
+    samples it for vertices that did not exist when the region was baked.
+    """
+    rim_neighbours = {i: [] for i in rim}
+    for i in rim:
+        for j in adjacency.get(i, ()):
+            if j in rim:
+                rim_neighbours[i].append(j)
+
+    position = {i: coords[i].copy() for i in rim}
+    for _pass in range(_RIM_SMOOTH_PASSES):
+        moved = {}
+        for i, neighbours in rim_neighbours.items():
+            if len(neighbours) < 2:  # spur or isolated rim vertex: leave it
+                moved[i] = position[i]
+                continue
+            mean = Vector()
+            for j in neighbours:
+                mean += position[j]
+            moved[i] = position[i].lerp(mean / len(neighbours), 0.5)
+        position = moved
+
+    depth = {i: 0.0 for i in rim}
+    root = {i: i for i in rim}
+    heap = [(0.0, i) for i in rim]
+    heapq.heapify(heap)
+    while heap:
+        d, i = heapq.heappop(heap)
+        if d > depth.get(i, 1e30):
+            continue
+        for j in adjacency.get(i, ()):
+            nd = d + (coords[i] - coords[j]).length
+            if nd < depth.get(j, 1e30):
+                depth[j] = nd
+                root[j] = root[i]
+                heapq.heappush(heap, (nd, j))
+
+    segments = {}
+    for r in rim:
+        ring = {r}
+        frontier = [r]
+        for _step in range(_RIM_GATE_STEPS):
+            further = []
+            for i in frontier:
+                for j in rim_neighbours[i]:
+                    if j not in ring:
+                        ring.add(j)
+                        further.append(j)
+            frontier = further
+        segments[r] = [
+            (position[i], position[j])
+            for i in ring for j in rim_neighbours[i]
+            if j in ring and j > i
+        ]
+
+    def measure(co, r):
+        segs = segments.get(r)
+        if not segs:
+            return None
+        return min(_point_segment_distance(co, a, b) for a, b in segs)
+
+    raw = {}
+    for i in adjacency:
+        value = measure(coords[i], root.get(i))
+        raw[i] = depth.get(i, 0.0) if value is None else value
+    zero = max((raw[i] for i in rim), default=0.0)
+    dist = {i: max(0.0, raw[i] - zero) for i in adjacency}
+
+    order = list(adjacency)
+    tree = kdtree.KDTree(len(order))
+    for slot, i in enumerate(order):
+        tree.insert(coords[i], slot)
+    tree.balance()
+
+    def evaluate(co):
+        _co, slot, _d = tree.find(co)
+        if slot is None:
+            return 0.0
+        i = order[slot]
+        value = measure(co, root.get(i))
+        return dist.get(i, 0.0) if value is None else max(0.0, value - zero)
+
+    return dist, evaluate
+
+
+def _authored_rim_field(me, group_index, falloff_kind):
+    """Reconstruct a painted region's falloff as a closed-form function of
+    its own boundary, or ``None`` if this region was not baked that way.
+
+    Commit-time refinement otherwise interpolates the authored samples (IDW +
+    a harmonic pass anchored at the ORIGINAL vertices).  That interpolant is
+    smooth *between* anchors but pinned *at* them, so a coarse scan's anchor
+    lattice prints its own ring of kinks into the wall.  Sampling the field
+    the region was authored from removes the lattice entirely.
+
+    Self-validating on purpose: the reconstruction is compared against the
+    stored weights and rejected unless it agrees to ``_RIM_FIELD_TOLERANCE``.
+    Library/style regions (continuous chart field, no zero-weight rim) and
+    legacy Dijkstra-baked regions therefore keep their existing interpolation
+    path untouched — no schema change, no migration, no silent re-authoring
+    of a saved correction.
+    """
+    weights = {}
+    for vertex in me.vertices:
+        for g in vertex.groups:
+            if g.group == group_index:
+                weights[vertex.index] = g.weight
+                break
+    if len(weights) < 12:
+        return None
+    coords = {i: me.vertices[i].co.copy() for i in weights}
+    adjacency = {i: [] for i in weights}
+    # The rim is the PAINTED boundary — region vertices with a neighbour
+    # outside the region — not "every vertex that ended up at weight zero":
+    # re-zeroing the level set leaves a band of interior vertices at zero
+    # too, and seeding from those would reconstruct a different field.
+    rim = set()
+    for edge in me.edges:
+        a, b = edge.vertices
+        a_in, b_in = a in adjacency, b in adjacency
+        if a_in and b_in:
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+        elif a_in:
+            rim.add(a)
+        elif b_in:
+            rim.add(b)
+    if len(rim) < 3 or len(weights) - len(rim) < 8:
+        return None
+    dist, evaluate = _boundary_distance(coords, adjacency, rim)
+
+    band = [
+        i for i, w in weights.items()
+        if 0.05 < w < 0.95 and dist[i] > 1e-9
+    ]
+    if len(band) < 8:
+        return None
+    ratios = sorted(
+        dist[i] / max(_inv_falloff(weights[i], falloff_kind), 1e-6)
+        for i in band
+    )
+    f_eff = ratios[len(ratios) // 2]
+    if f_eff <= 1e-9:
+        return None
+    deviation = sorted(
+        abs(_falloff(min(dist[i], f_eff) / f_eff, falloff_kind) - w)
+        for i, w in weights.items()
+    )
+    if deviation[int(len(deviation) * 0.95)] > _RIM_FIELD_TOLERANCE:
+        return None
+
+    def field(co):
+        return _falloff(min(evaluate(co), f_eff) / f_eff, falloff_kind)
+
+    return field
+
+
 def _region_weights_from_selection(obj, feather_mm, falloff_kind):
     """Read the Edit-Mode selection and compute per-vertex falloff weights.
 
@@ -1490,10 +1821,12 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
         return None, None, None, 0.0
     normal.normalize()
 
-    # Geodesic (edge-walk Dijkstra) distance in METRES from the boundary
-    # inward.  Integer topological rings quantized the feather into visible
-    # terraces on irregular scan triangles (#48 RC4); real surface distance
-    # keeps the falloff continuous whatever the triangulation.
+    # Surface distance in METRES from the painted boundary inward.  Integer
+    # topological rings quantized the feather into visible terraces on
+    # irregular scan triangles (#48 RC4); a plain edge-walk Dijkstra fixed
+    # the quantization but is itself anisotropic and creased (#49e) —
+    # ``_boundary_distance`` measures to the mollified rim CURVE, which is
+    # what the orthotist actually painted.
     sel_set = {v.index for v in sel}
     boundary = [
         v for v in sel
@@ -1503,21 +1836,16 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
         weights = {v.index: 1.0 for v in sel}
         return weights, centroid.copy(), normal, radius_mm
 
-    depth = {v.index: 0.0 for v in boundary}
-    heap = [(0.0, v.index) for v in boundary]
-    heapq.heapify(heap)
-    while heap:
-        d, idx = heapq.heappop(heap)
-        if d > depth.get(idx, 1e30):
-            continue
-        for e in bm.verts[idx].link_edges:
-            o = e.other_vert(bm.verts[idx])
-            if o.index not in sel_set:
-                continue
-            nd = d + e.calc_length()
-            if nd < depth.get(o.index, 1e30):
-                depth[o.index] = nd
-                heapq.heappush(heap, (nd, o.index))
+    coords = {i: bm.verts[i].co.copy() for i in sel_set}
+    adjacency = {i: [] for i in sel_set}
+    for v in sel:
+        for e in v.link_edges:
+            o = e.other_vert(v)
+            if o.index in sel_set:
+                adjacency[v.index].append(o.index)
+    depth, _evaluate = _boundary_distance(
+        coords, adjacency, {v.index for v in boundary}
+    )
     max_depth = max(depth.values())
 
     # Feather cannot be wider than the region is deep — normalize so the
@@ -2182,9 +2510,15 @@ class RIGO_OT_region_apply(Operator):
         # The refined state is bit-deterministic — compute it ONCE and let
         # every dissolve retry copy it (#49d perf: re-running the
         # refinement per retry measured 13 s commits).
+        # #49e: for a painted region the authored falloff is a closed-form
+        # function of its own boundary — hand it to the refinement so new
+        # vertices SAMPLE it rather than interpolate the coarse authored
+        # anchors.  Returns None (and changes nothing) for library/style and
+        # legacy regions, which is verified by reconstruction, not assumed.
+        rim_field = _authored_rim_field(me, group.index, region.falloff_type)
         refined_me = me.copy()
         added0, refine_mm0 = _refine_footprint(refined_me, group.index,
-                                               offset)
+                                               offset, field=rim_field)
         try:
           while True:
             if fell_back:

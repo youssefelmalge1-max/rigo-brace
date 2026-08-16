@@ -1425,3 +1425,69 @@ Root causes unwound in sequence, each measured:
 
 Full battery green: regionqualtest (incl. w49.amount20 gates), regiontest,
 regionstyletest, regionuitest, selftest, downstreamtest.
+
+## DEC-0052 (2026-08-16) - #49e: the falloff FIELD, not the mesh, was making the pleats
+
+Third orthotist report of the same crown of radial ridges after two rounds of
+density work (#49b, #49c). Council verdict recorded in
+knowledge/council_49e_falloff_field.md; discriminating experiment in
+tools/fielddbg.py (same mesh, same amount/feather/curve/direction/repair -
+only the field differs, so any wall difference is the field alone).
+
+ROOT CAUSE: the falloff was the exact answer to a badly-posed question.
+Distance measured from a SET OF RIM VERTICES is only C0 - its gradient jumps
+along the bisector between neighbouring seeds, one crease per reflex corner
+of a rim the paint tool quantized onto triangles - and the edge-walk Dijkstra
+adds an anisotropic distortion on top (measured +8.5% mean, +36.7% p95,
++43.9% max vs exact distance). Refining the mesh samples those creases MORE
+faithfully; it can never remove them. That is why two rounds of density work
+did not close the artifact.
+
+DECIDED:
+- BAKE: _boundary_distance measures to the MOLLIFIED RIM CURVE - rim polyline
+  Laplacian-mollified along itself (6 passes, lambda 0.5: kills wavelengths
+  under ~6 rim edges, authored outline keeps 0.996 of its radius), a
+  multi-source walk recording each vertex ROOT rim vertex, then exact
+  point-to-SEGMENT distance restricted to segments within 3 rim-steps of that
+  root. Euclidean measurement is admissible ONLY because of that gate: across
+  the <=12 mm it can reach the chord/arc gap on R~120 mm is d^3/24R^2 ~ 0.005
+  mm, and no far-side sheet is reachable because the root came from a walk on
+  the surface (same discipline as _geodesic_trim). Level set re-zeroed by the
+  LARGEST rim residual so every rim vertex lands at exactly 0 with no
+  per-vertex pinning.
+- COMMIT: _authored_rim_field hands that closed form to _refine_footprint so
+  NEW vertices SAMPLE the authored falloff instead of interpolating the
+  coarse authored anchors. No interpolant can be smoother than the function
+  it interpolates, and IDW+harmonic is PINNED at the originals, so a coarse
+  scan anchor lattice printed its own kink ring into the wall (measured, same
+  mesh and field: p95 23.0 -> 16.9, >30deg edges 35 -> 10).
+- SELF-VALIDATING, no schema change: the reconstruction is compared against
+  the stored weights and rejected unless it agrees to 0.01 (new-formulation
+  region reconstructs to ~1e-9; legacy Dijkstra-baked deviates 0.138 at p95).
+  Library/style and legacy regions keep the IDW+harmonic path untouched.
+- REJECTED on measurement: heat method (needs a sparse factorization Blender
+  does not ship; the gated form is already exact to ~0.005 mm and C1); fast
+  marching (fixes metrication but NOT the creases - exact distance from a
+  jagged curve still creases at every reflex corner); mollifying the distance
+  FIELD instead of the rim curve (profile deviation 0.274 p95 = 5.5 mm shift
+  of the authored wall at 20 mm - violates the amount/profile contract).
+- INVERSION PREDICATE SPLIT (second, latent finding): normal.dot(pre) <= 0
+  asks one triangle whether it turned past 90deg, conflating the surface
+  FOLDING BACK with the surface legitimately TILTING under a steep authored
+  wall (15 mm through a 10 mm feather is 2.19 mm/mm = 65deg). paint15 face
+  53270: self-flip -0.049 yet every neighbour dihedral 0.77, no selfx, 2.14
+  mm^2 - and it threw a healthy refined commit away for the staircase.
+  Dropping the strict test from the repair TARGET set let REAL inversions
+  through (independent oracle caught inv=1..2 on five circle fixtures - which
+  is exactly what an independent oracle is for). Final: the repair still AIMS
+  at every rotated face; what may not SHIP is the surface-confirmed subset
+  (_FLIP_CONFIRM_DOT = 0.0, in the contract, asserted by contract_constants).
+
+MEASURED (A-model waist 20 mm / feather 15, the orthotist screenshot case):
+wall dihedral mean 12.2 -> 4.7, p95 31.1 -> 16.9, edges >30deg 91 -> 10,
+ridge edges 431 -> 87, seam defects at attempt 0 nine-in-seven-clusters -> 0,
+commit 9.0 s (dissolve ladder) -> 3.1 s (no ladder). paint15 refines +141
+with 0 defects; regiontest commit 6.06 -> 2.24 s.
+
+Full battery green: regionqualtest (failed_gates=[]), regiontest,
+regionstyletest, regionuitest, selftest, downstreamtest.
