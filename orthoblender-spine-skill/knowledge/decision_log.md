@@ -1587,3 +1587,47 @@ Two things in one report. Both answered with measurement.
    record of what was tried and why each failed.
 
 Suites green: selftest, selecttest.
+
+## DEC-0055 (2026-08-16) - #49k: the user's workflow never executed the #49e fix
+
+The orthotist asked whether the clinical workflow actually reaches the stage we
+keep fixing, after three rounds of "cause measured, code changed, battery green,
+screen unchanged". Instrumented instead of inferred: tools/userpathdbg.py and
+tools/routematrixdbg.py wrap the INSTALLED production functions and call
+through, so every branch is recorded at runtime. No production file was edited.
+
+VERDICT: the workflow does not execute it. Of six user routes that can produce
+a correction, exactly ONE - the painted region - reaches the #49e curve-distance
+field, and it is the only route the regression battery exercises. The
+orthotist's route (Library Pressure -> Import at Cursor -> Commit) has
+_authored_rim_field REJECT the region and fall back to the pre-#49e
+IDW+harmonic interpolation. Measured on the A-model waist at 20 mm / 15 mm:
+painted p95 17.57 / max 38.76; library v2 p95 27.22 / max 76.10; circle p95
+31.09; mirrored ridges 142.
+
+The fallback is by design and the design intent is sound (a saved correction
+must never be silently re-authored on reopen). What was wrong is that a fix was
+reported as answering a user-visible artifact when it could not run on the
+workflow that reported it, and no gate could notice because every gate paints.
+
+Phase D located the defect: the authored field is smooth at the original
+vertices on BOTH routes (field-only p95 6.34 library vs 8.95 painted, zero
+edges over 30 deg). The ridges are created inside commit. Ablation on the
+user's own route:
+
+    production (IDW+harmonic)          p95 27.22  max 76.10  >30deg 21
+    refinement disabled entirely       p95 23.88  max 38.31  >30deg  3
+    refinement fed a chart field       p95 21.50  max 38.91  >30deg  6
+
+Refinement - the stage that exists to raise quality - makes the user's wall
+WORSE than not refining at all. A library style already has a closed-form field
+(its stored grid in the chart frame); it is simply never handed to refinement.
+
+The 2 mm bilinear grid's C0 cell edges were hypothesised as the root cause and
+REJECTED on measurement (field-only p95 6.34).
+
+Recorded in knowledge/council_49k_route_audit.md. No production patch made -
+the orthotist gated further geometry patches on this audit, and the audit
+changes what the fix should be and which route the golden test must use.
+
+Suites: none re-run (no production change).
