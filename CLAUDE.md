@@ -46,3 +46,73 @@ Conventions:
 - Units: 1 Blender unit = 1 m. All UI values are millimetres; operators convert with `* 0.001`.
 - The painted-region system (`operators/select_ops.py`) is Edit-Mode native: the live face selection IS the region — no sculpt mask or vertex group. "Paint Area" switches to Edit Mode + face select, turns X-ray **off** (so the circle-select brush only hits visible front faces, not the hollow back of the scan), and activates `builtin.select_circle`. Region operators have both an `invoke()` path (interactive modal transform for the GUI) and an `execute()` path with a BMesh fallback (used by tests, which can't mouse-drag).
 - Mutating operators must carry `bl_options = {"REGISTER", "UNDO"}`; the add-on's promise to users is that every shaping step is undoable.
+
+# Expert Council / Geometry Skill System
+
+*(Added 2026-08-14. Advisory infrastructure only — it changes how work is decided, not
+what the add-on does.)*
+
+## Project posture
+
+This add-on is mature and in clinical-adjacent use. Preserve existing working behavior.
+Do not rewrite functioning architecture without repository evidence.
+
+Prefer `Preserve · Understand · Harden · Extend` over `Rewrite`.
+
+## Expert Council
+
+For any non-trivial problem involving geometry, mesh topology, Blender internals,
+procedural architecture, numerical robustness, correction regions, scoliosis-brace
+geometry, performance or reliability, consult:
+
+```text
+.ai/expert-council/skills/council-orchestrator/SKILL.md
+```
+
+It classifies the real root problem, routes the smallest sufficient expert set, runs
+adversarial cross-review, and emits one verdict. Nineteen skills are available
+(15 expert lenses + orchestrator, repo-audit, pressure-expansion-system,
+implementation-gate); the machine-readable index is `.ai/expert-council/REGISTRY.yaml`
+and the routing rules are `.ai/expert-council/ROUTING.md`.
+
+Use progressive disclosure. **Do not load all experts automatically**, and never load
+`.ai/expert-council/source/original-v3/ALL_EXPERT_CONTEXT_COMBINED.md` or
+`EXPERT_SKILLS_01_15_COMBINED.md` — they are archival bundles that defeat routing.
+Default council: 1 primary + 1–3 secondary, plus `geometry-reliability` for P0/P1 and
+`expert-manuel-rigo` when clinical semantics are touched.
+
+Skill contents live in the registry, not in this file. Reference them; do not inline them.
+
+## Mandatory workflow for substantial changes
+
+```text
+Investigate → classify → route experts → identify root cause →
+minimal plan → regression test → implement → verify
+```
+
+Never `guess → rewrite → hope`. Before substantial edits, pass through
+`.ai/expert-council/skills/implementation-gate/SKILL.md`: evidence, current
+architecture, root cause, council routing, candidate solutions, council verdict,
+minimal patch plan, regression test, risk analysis — then implement, then verify.
+
+## Clinical boundary
+
+Never infer clinical truth from geometry alone. A geometric offset is not physical
+pressure; label it `depth_mm` unless a validated mechanical model computes otherwise.
+A reusable Rigo correction must preserve clinical semantics (pairing, counterforce,
+sagittal constraints, classification applicability). `expert-manuel-rigo` and
+`expert-carl-eric-aubin` hold vetoes here.
+
+## Durable identity
+
+Object names and raw vertex indices are not durable identities. A `CorrectionTemplate`
+(reusable knowledge) is not a `CorrectionInstance` (patient placement), and neither may
+be stored as patient-specific vertex IDs across a topology change.
+
+## Existing process layer (unchanged)
+
+`orthoblender-spine-skill/` remains the project's operating contract and knowledge base:
+read `orthoblender-spine-skill/SKILL.md` and its `knowledge/` files each session, and
+update `learned_memory.md` / `decision_log.md` / `error_log.md` / `code_provenance.md`
+after each task. The expert council sits *above* that loop as review infrastructure; it
+does not replace it.

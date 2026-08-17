@@ -1,3 +1,15 @@
+# Third-party proprietary geometry — never published.
+# SpinalTech GLB/PNG references are used locally for regression comparison only
+# (tools/referenceprofile.py, tools/referenceaudit.py). Their own README forbids
+# redistribution, so they stay on disk but out of git.
+reference_assets/spinaltech_trimlines/
+
+# Verbatim transcript of LeoSpinal's commercial tutorial video. Kept locally as a
+# workflow reference (see CLAUDE.md) but not republished — it is their copy, not ours.
+# Original analysis derived from it lives in orthoblender-spine-skill/docs/.
+Leospinal tutorial.md
+README - Copy.md
+
 # Clinical / patient-adjacent scan & mold data — never pushed (clinical_safety_protocol.md)
 *.stl
 # .blend working files embed the scan mesh itself, so they are patient data too.

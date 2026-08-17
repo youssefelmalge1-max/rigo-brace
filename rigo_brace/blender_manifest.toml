@@ -7,7 +7,7 @@ tagline = "Fast Rigo-Cheneau spinal brace design for orthotists"
 maintainer = "Rigo Brace Project"
 type = "add-on"
 
-website = "https://example.com/rigo-brace"
+website = "https://github.com/youssefelmalge1-max/rigo-brace"
 tags = ["3D View", "Mesh", "Modeling"]
 
 blender_version_min = "4.2.0"

@@ -1,0 +1,384 @@
+version: 1
+name: blender-brace-expert-council
+description: Portable, progressively-disclosed expert-council skill system for the Rigo Brace Designer Blender add-on.
+
+# ---------------------------------------------------------------------------
+# Layout
+# ---------------------------------------------------------------------------
+# Canonical skills live here and are provider-neutral. The provider folders are
+# thin adapters that point back at the canonical SKILL.md; they never embed
+# expert knowledge.
+canonical_root: .ai/expert-council/skills
+source_archive: .ai/expert-council/source/original-v3
+adapters:
+  claude: .claude/skills
+  codex: .codex/skills
+
+# ---------------------------------------------------------------------------
+# Context budget — progressive disclosure is the point of this system
+# ---------------------------------------------------------------------------
+context_budget:
+  default_council: 1 primary + 1-3 secondary + geometry-reliability if P0/P1 + clinical governor if clinical
+  load_order: [council-orchestrator, routed SKILL.md files, references only when needed]
+  never_autoload:
+    - .ai/expert-council/source/original-v3/ALL_EXPERT_CONTEXT_COMBINED.md
+    - .ai/expert-council/source/original-v3/EXPERT_SKILLS_01_15_COMBINED.md
+
+# ---------------------------------------------------------------------------
+# Decision policy
+# ---------------------------------------------------------------------------
+decision_policy:
+  require_evidence_before_edit: true
+  prefer_minimal_patch: true
+  preserve_existing_behavior: true
+  require_regression_test_for_bug: true
+  reliability_review_for_p0_p1: true
+  recommendation_labels: [KEEP, HARDEN, REFACTOR, REPLACE KERNEL, DEFER]
+  vetoes:
+    clinical: expert-manuel-rigo
+    biomechanical_claim: expert-carl-eric-aubin
+    numerical_topology: expert-jonathan-shewchuk
+    blender_state: expert-campbell-barton
+
+# ---------------------------------------------------------------------------
+# Skills
+# ---------------------------------------------------------------------------
+skills:
+
+  council-orchestrator:
+    type: orchestrator
+    path: skills/council-orchestrator/SKILL.md
+    priority: critical
+    summary: Classifies the real root problem, routes the smallest sufficient expert set, runs cross-review, emits one verdict.
+    domain: [routing, classification, cross_review, disagreement_resolution, verdict]
+    references:
+      - skills/council-orchestrator/references/orchestrator-context.md
+      - skills/council-orchestrator/references/router.yaml
+      - skills/council-orchestrator/references/casebook.md
+      - skills/council-orchestrator/references/source-ledger.md
+    source: [00_MASTER_ORCHESTRATOR.md, 23_SKILL_ROUTER.yaml, 26_COUNCIL_CASEBOOK.md, 24_SOURCE_LEDGER.md]
+
+  expert-ryan-schmidt:
+    type: expert
+    path: skills/expert-ryan-schmidt/SKILL.md
+    priority: critical
+    summary: Interactive geometry systems, editable mesh representation, remeshing with constraints, preview/commit lifecycle.
+    domain: [interactive_geometry, mesh_editing, remeshing, geometry_kernels, spatial_structures, sdf_implicit, preview_commit, local_mesh_ops]
+    references: [skills/expert-ryan-schmidt/references/expert-context.md]
+    source: [01_RYAN_SCHMIDT_GEOMETRY_TOOLS.md]
+
+  expert-howard-trickey:
+    type: expert
+    path: skills/expert-howard-trickey/SKILL.md
+    priority: high
+    summary: Boolean and solid-geometry robustness; challenges whether Boolean is the right abstraction.
+    domain: [boolean, intersection, union_difference, coplanar_overlap, solid_topology, exact_solver]
+    references: [skills/expert-howard-trickey/references/expert-context.md]
+    source: [02_HOWARD_TRICKEY_ROBUST_BOOLEAN.md]
+
+  expert-jacques-lucke:
+    type: expert
+    path: skills/expert-jacques-lucke/SKILL.md
+    priority: critical
+    summary: Procedural and declarative architecture, correction stacks, template vs instance, caching and invalidation.
+    domain: [procedural_architecture, declarative_systems, dependency_graph, non_destructive, template_vs_instance, evaluator, caching_invalidation, schema_versioning]
+    references: [skills/expert-jacques-lucke/references/expert-context.md]
+    source: [03_JACQUES_LUCKE_PROCEDURAL_ARCHITECTURE.md]
+
+  expert-keenan-crane:
+    type: expert
+    path: skills/expert-keenan-crane/SKILL.md
+    priority: critical
+    summary: Discrete differential geometry, geodesics, tangent frames, parallel transport, surface fields.
+    domain: [geodesic, intrinsic_geometry, tangent_frames, parallel_transport, curvature, laplacian, surface_fields, signed_distance, differential_geometry]
+    references: [skills/expert-keenan-crane/references/expert-context.md]
+    source: [04_KEENAN_CRANE_DDG.md]
+
+  expert-alec-jacobson:
+    type: expert
+    path: skills/expert-alec-jacobson/SKILL.md
+    priority: high
+    summary: Robust geometry processing on dirty scans, winding numbers, validation, fold and inversion detection.
+    domain: [robust_geometry, self_intersection, inside_outside, winding_number, pathological_meshes, mesh_validation, constrained_deformation]
+    references: [skills/expert-alec-jacobson/references/expert-context.md]
+    source: [05_ALEC_JACOBSON_ROBUST_GEOMETRY.md]
+
+  expert-campbell-barton:
+    type: expert
+    path: skills/expert-campbell-barton/SKILL.md
+    priority: critical
+    veto: blender_state
+    summary: Blender platform integration - bpy, bmesh, context, modes, depsgraph, undo, modal tools, registration lifecycle.
+    domain: [bpy, bmesh, operators, context, edit_mode, depsgraph, undo, modal_tools, registration_lifecycle, datablock_ownership]
+    references: [skills/expert-campbell-barton/references/expert-context.md]
+    source: [06_CAMPBELL_BARTON_BLENDER_PLATFORM.md]
+
+  expert-mark-pauly:
+    type: expert
+    path: skills/expert-mark-pauly/SKILL.md
+    priority: medium
+    summary: Computational design, inverse design, optimization readiness, manufacturability; refuses premature optimization.
+    domain: [computational_design, inverse_design, optimization, manufacturability, fabrication_constraints, design_variables]
+    references: [skills/expert-mark-pauly/references/expert-context.md]
+    source: [07_MARK_PAULY_COMPUTATIONAL_DESIGN.md]
+
+  expert-carl-eric-aubin:
+    type: expert
+    path: skills/expert-carl-eric-aubin/SKILL.md
+    priority: critical
+    veto: biomechanical_claim
+    summary: Patient-specific brace biomechanics and FEM; audits every pressure/force/correction claim.
+    domain: [biomechanics, fem, simulated_contact, predicted_pressure, cad_cam_brace_simulation, validation_tiers]
+    references: [skills/expert-carl-eric-aubin/references/expert-context.md]
+    source: [08_CARL_ERIC_AUBIN_BIOMECHANICS.md]
+
+  expert-manuel-rigo:
+    type: expert
+    path: skills/expert-manuel-rigo/SKILL.md
+    priority: critical
+    veto: clinical
+    summary: Clinical Geometry Governor - Rigo-Cheneau contact and expansion areas, counterforces, classification, sagittal protection.
+    domain: [rigo_cheneau, clinical_geometry, pressure_areas, expansion_areas, curve_pattern, counterforces, sagittal, derotation_intent, trimline_clinical]
+    references: [skills/expert-manuel-rigo/references/expert-context.md]
+    source: [09_MANUEL_RIGO_CLINICAL_GEOMETRY.md]
+
+  expert-jonathan-shewchuk:
+    type: expert
+    path: skills/expert-jonathan-shewchuk/SKILL.md
+    priority: critical
+    veto: numerical_topology
+    summary: Floating-point robustness, geometric predicates, epsilon and scale analysis, constrained triangulation, mesh quality.
+    domain: [floating_point, geometric_predicates, orientation_tests, degeneracy, epsilon_misuse, constrained_triangulation, delaunay, mesh_quality, scale_dependence]
+    references: [skills/expert-jonathan-shewchuk/references/expert-context.md]
+    source: [10_JONATHAN_SHEWCHUK_ROBUST_PREDICATES_MESHING.md]
+
+  expert-olga-sorkine-hornung:
+    type: expert
+    path: skills/expert-olga-sorkine-hornung/SKILL.md
+    priority: critical
+    summary: Variational and ARAP deformation, handles and constraints, transition continuity, detail preservation.
+    domain: [deformation, arap, variational_deformation, handles, detail_preservation, smooth_transitions, deformation_energy, local_surface_manipulation]
+    references: [skills/expert-olga-sorkine-hornung/references/expert-context.md]
+    source: [11_OLGA_SORKINE_HORNUNG_DEFORMATION.md]
+
+  expert-bruno-levy:
+    type: expert
+    path: skills/expert-bruno-levy/SKILL.md
+    priority: high
+    summary: Surface parameterization, local 2D charts, LSCM-style reasoning, distortion and foldover control.
+    domain: [parameterization, lscm, local_2d_charts, uv_flattening, distortion, template_mapping_2d_to_3d, numerical_geometry]
+    references: [skills/expert-bruno-levy/references/expert-context.md]
+    source: [12_BRUNO_LEVY_PARAMETERIZATION_NUMERICAL_GEOMETRY.md]
+
+  expert-mario-botsch:
+    type: expert
+    path: skills/expert-mario-botsch/SKILL.md
+    priority: high
+    summary: Polygon mesh processing, half-edge and adjacency, decimation and remeshing quality, local mesh health.
+    domain: [polygon_mesh_processing, halfedge, adjacency, topology_vs_geometry, decimation, remeshing_quality, valence, mesh_health]
+    references: [skills/expert-mario-botsch/references/expert-context.md]
+    source: [13_MARIO_BOTSCH_POLYGON_MESH_PROCESSING.md]
+
+  expert-sybren-stuvel:
+    type: expert
+    path: skills/expert-sybren-stuvel/SKILL.md
+    priority: high
+    summary: Blender Python maintainability, add-on package architecture, registration and reload, error paths, duplicated abstractions.
+    domain: [blender_python_maintainability, addon_architecture, module_boundaries, registration_reload, exception_paths, duplicated_abstractions, ai_code_auditability]
+    references: [skills/expert-sybren-stuvel/references/expert-context.md]
+    source: [14_SYBREN_STUVEL_BLENDER_PYTHON_ENGINEERING.md]
+
+  geometry-reliability:
+    type: meta-expert
+    path: skills/geometry-reliability/SKILL.md
+    priority: critical
+    auto_activate_for: [P0, P1, geometry_kernel_change, migration, release]
+    summary: Regression fixtures, benchmark corpus, geometry metrics, determinism, p50/p95 performance, save-load and undo verification, release gates.
+    domain: [regression_testing, benchmark_corpus, geometry_metrics, determinism, performance_profiling, p50_p95, save_load_verification, undo_redo_verification, release_gates]
+    references: [skills/geometry-reliability/references/expert-context.md]
+    source: [15_GEOMETRY_RELIABILITY_BENCHMARK_ENGINEER.md]
+
+  repo-audit:
+    type: system
+    path: skills/repo-audit/SKILL.md
+    priority: high
+    summary: Scoped forensic audit of the add-on - inventory, workflow tracing, source-of-truth map, topology and state audits, KEEP/HARDEN/REFACTOR verdicts.
+    domain: [repository_audit, architecture_map, tool_inventory, source_of_truth, topology_audit, coordinate_space_audit, state_audit, architecture_verdict]
+    references: [skills/repo-audit/references/audit-playbook.md]
+    source: [21_REPO_AUDIT_PLAYBOOK.md]
+
+  pressure-expansion-system:
+    type: system
+    path: skills/pressure-expansion-system/SKILL.md
+    priority: critical
+    summary: Architecture governor for the reusable Pressure/Expansion correction library - template vs instance, durable surface attachment, honest units.
+    domain: [pressure_region, expansion_region, correction_template, correction_instance, reusable_correction, movable_patch, correction_library, surface_attachment, local_region_frame, preset]
+    references: [skills/pressure-expansion-system/references/architecture-rfc.md]
+    source: [20_PRESSURE_EXPANSION_LIBRARY_RFC.md]
+    default_council:
+      - expert-jacques-lucke
+      - expert-ryan-schmidt
+      - expert-keenan-crane
+      - expert-olga-sorkine-hornung
+      - expert-manuel-rigo
+      - geometry-reliability
+    conditional_council:
+      local_2d_parameterization: [expert-bruno-levy]
+      topology_change_or_local_remesh: [expert-mario-botsch, expert-jonathan-shewchuk]
+      blender_modal_or_undo: [expert-campbell-barton, expert-sybren-stuvel]
+      biomechanical_claim: [expert-carl-eric-aubin]
+      optimization: [expert-mark-pauly]
+      boolean: [expert-howard-trickey, expert-alec-jacobson]
+
+  implementation-gate:
+    type: system
+    path: skills/implementation-gate/SKILL.md
+    priority: critical
+    summary: Pre-implementation contract and post-implementation verification for the Primary Implementation Agent.
+    domain: [implementation_protocol, evidence_before_edit, minimal_patch, regression_test, risk_analysis, verification]
+    references: [skills/implementation-gate/references/implementation-protocol.md]
+    source: [22_FABLE_MASTER_PROMPT.md]
+
+# ---------------------------------------------------------------------------
+# Routing hints. Triggers are HINTS ONLY - the orchestrator classifies the real
+# root problem before routing (see ROUTING.md).
+# ---------------------------------------------------------------------------
+routing:
+
+  mesh_editing:
+    triggers: [mesh, remesh, simplify, dynamic_mesh, neighborhood, editable_representation]
+    primary: expert-ryan-schmidt
+    secondary: [expert-mario-botsch, expert-keenan-crane]
+
+  numerical_robustness:
+    triggers: [epsilon, precision, degenerate, collinear, coplanar, determinant, triangle_flip, triangulation, scale]
+    primary: expert-jonathan-shewchuk
+    secondary: [expert-alec-jacobson, expert-howard-trickey]
+
+  boolean:
+    triggers: [boolean, union, difference, intersect, cutter, coplanar_overlap, window, slot]
+    primary: expert-howard-trickey
+    secondary: [expert-alec-jacobson, expert-jonathan-shewchuk]
+
+  dirty_geometry:
+    triggers: [self_intersection, inside_outside, holes, non_manifold, winding, shards]
+    primary: expert-alec-jacobson
+    secondary: [expert-jonathan-shewchuk, expert-keenan-crane]
+
+  surface_math:
+    triggers: [geodesic, curvature, laplacian, tangent, parallel_transport, sdf, intrinsic, surface_field]
+    primary: expert-keenan-crane
+    secondary: [expert-ryan-schmidt, expert-bruno-levy]
+
+  deformation:
+    triggers: [deformation, arap, handle, smooth_transition, detail_preservation, variational, ring, spike]
+    primary: expert-olga-sorkine-hornung
+    secondary: [expert-keenan-crane, expert-ryan-schmidt, expert-alec-jacobson]
+
+  parameterization:
+    triggers: [uv, parameterization, flatten, lscm, chart, local_2d, distortion, foldover]
+    primary: expert-bruno-levy
+    secondary: [expert-keenan-crane, expert-olga-sorkine-hornung]
+
+  mesh_data_structure:
+    triggers: [halfedge, adjacency, decimation, mesh_health, valence, local_remesh]
+    primary: expert-mario-botsch
+    secondary: [expert-ryan-schmidt, expert-jonathan-shewchuk]
+
+  procedural_architecture:
+    triggers: [procedural, non_destructive, dependency, correction_stack, template, instance, evaluator, preset_versioning]
+    primary: expert-jacques-lucke
+    secondary: [expert-ryan-schmidt, expert-sybren-stuvel, expert-campbell-barton]
+
+  blender_platform:
+    triggers: [bpy, bmesh, operator, modal, context, undo, depsgraph, handler, selection_dependency]
+    primary: expert-campbell-barton
+    secondary: [expert-sybren-stuvel, expert-ryan-schmidt]
+
+  blender_python_maintainability:
+    triggers: [reload, registration, module, readability, duplicate_code, addon_package, exception_path]
+    primary: expert-sybren-stuvel
+    secondary: [expert-campbell-barton, geometry-reliability]
+
+  computational_design:
+    triggers: [optimization, inverse_design, manufacturing, fabrication, design_variables, lighter, material]
+    primary: expert-mark-pauly
+    secondary: [expert-carl-eric-aubin]
+
+  biomechanics:
+    triggers: [fem, force, predicted_pressure, simulation, brace_mechanics, patient_specific, cobb]
+    primary: expert-carl-eric-aubin
+    secondary: [expert-mark-pauly, expert-manuel-rigo]
+
+  rigo_clinical:
+    triggers: [rigo, cheneau, scoliosis, thoracic_pressure, expansion_area, derotation, sagittal, blueprint, curve_pattern]
+    primary: expert-manuel-rigo
+    secondary: [expert-carl-eric-aubin]
+
+  reliability:
+    triggers: [regression, benchmark, release, p95, deterministic, reproducibility, profiling]
+    primary: geometry-reliability
+    secondary: []
+
+  repository_audit:
+    triggers: [audit, unfamiliar_subsystem, architecture_map, systemic_bug, repo_health]
+    primary: repo-audit
+    secondary: [council-orchestrator]
+
+  pressure_expansion_library:
+    triggers: [pressure_library, expansion_library, correction_region, reusable_region, movable_region, correction_template, correction_instance, correction_style]
+    primary: pressure-expansion-system
+    required:
+      - expert-jacques-lucke
+      - expert-ryan-schmidt
+      - expert-keenan-crane
+      - expert-olga-sorkine-hornung
+      - expert-manuel-rigo
+      - geometry-reliability
+
+# ---------------------------------------------------------------------------
+# Deterministic routing scenarios (exercised by tools/test_routing.py)
+# ---------------------------------------------------------------------------
+scenarios:
+
+  - id: ring-after-move
+    input: Pressure patch develops a ring after moving it.
+    primary: expert-olga-sorkine-hornung
+    secondary: [expert-keenan-crane, expert-ryan-schmidt]
+    clinical: [expert-manuel-rigo]
+    verification: [geometry-reliability]
+    note: Transition energy discontinuity, not a smoothing-iteration shortage.
+
+  - id: correction-misplaced-after-remesh
+    input: The saved correction moves to the wrong location after remeshing.
+    primary: expert-ryan-schmidt
+    secondary: [expert-mario-botsch, expert-keenan-crane, expert-jacques-lucke]
+    verification: [geometry-reliability]
+    note: Persistent attachment likely depends on topology identity rather than geometric or anatomical identity.
+
+  - id: boolean-shards-some-scans
+    input: Boolean creates shards only on some patient scans.
+    primary: expert-howard-trickey
+    secondary: [expert-alec-jacobson, expert-jonathan-shewchuk, expert-ryan-schmidt]
+    verification: [geometry-reliability]
+    note: Classify Boolean intent and input validity before tolerance tuning.
+
+  - id: modal-tool-selection-dependent
+    input: Modal pressure tool works only if a certain object is selected.
+    primary: expert-campbell-barton
+    secondary: [expert-sybren-stuvel, expert-ryan-schmidt]
+    note: Blender context and state coupling, not geometry.
+
+  - id: reusable-oval-templates
+    input: I want reusable oval pressure templates that can be moved on any torso.
+    primary: pressure-expansion-system
+    secondary: [expert-jacques-lucke, expert-ryan-schmidt, expert-keenan-crane, expert-olga-sorkine-hornung, expert-bruno-levy]
+    clinical: [expert-manuel-rigo]
+    verification: [geometry-reliability]
+    note: Template versus instance, durable surface attachment, chart distortion.
+
+  - id: increase-pressure-20-to-25
+    input: Increase pressure from 20 to 25.
+    primary: expert-manuel-rigo
+    secondary: [expert-carl-eric-aubin]
+    note: Determine what pressure means. If it is geometric displacement, correct the terminology to geometric depth in mm unless a validated mechanical model exists.

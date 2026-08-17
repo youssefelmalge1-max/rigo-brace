@@ -1,0 +1,66 @@
+{
+  "version": 3,
+  "expert_count": 15,
+  "experts": [
+    {
+      "number": 1,
+      "file": "01_RYAN_SCHMIDT_GEOMETRY_TOOLS.md"
+    },
+    {
+      "number": 2,
+      "file": "02_HOWARD_TRICKEY_ROBUST_BOOLEAN.md"
+    },
+    {
+      "number": 3,
+      "file": "03_JACQUES_LUCKE_PROCEDURAL_ARCHITECTURE.md"
+    },
+    {
+      "number": 4,
+      "file": "04_KEENAN_CRANE_DDG.md"
+    },
+    {
+      "number": 5,
+      "file": "05_ALEC_JACOBSON_ROBUST_GEOMETRY.md"
+    },
+    {
+      "number": 6,
+      "file": "06_CAMPBELL_BARTON_BLENDER_PLATFORM.md"
+    },
+    {
+      "number": 7,
+      "file": "07_MARK_PAULY_COMPUTATIONAL_DESIGN.md"
+    },
+    {
+      "number": 8,
+      "file": "08_CARL_ERIC_AUBIN_BIOMECHANICS.md"
+    },
+    {
+      "number": 9,
+      "file": "09_MANUEL_RIGO_CLINICAL_GEOMETRY.md"
+    },
+    {
+      "number": 10,
+      "file": "10_JONATHAN_SHEWCHUK_ROBUST_PREDICATES_MESHING.md"
+    },
+    {
+      "number": 11,
+      "file": "11_OLGA_SORKINE_HORNUNG_DEFORMATION.md"
+    },
+    {
+      "number": 12,
+      "file": "12_BRUNO_LEVY_PARAMETERIZATION_NUMERICAL_GEOMETRY.md"
+    },
+    {
+      "number": 13,
+      "file": "13_MARIO_BOTSCH_POLYGON_MESH_PROCESSING.md"
+    },
+    {
+      "number": 14,
+      "file": "14_SYBREN_STUVEL_BLENDER_PYTHON_ENGINEERING.md"
+    },
+    {
+      "number": 15,
+      "file": "15_GEOMETRY_RELIABILITY_BENCHMARK_ENGINEER.md"
+    }
+  ]
+}

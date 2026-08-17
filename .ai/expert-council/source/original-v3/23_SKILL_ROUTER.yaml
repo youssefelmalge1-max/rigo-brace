@@ -1,0 +1,123 @@
+version: 3
+orchestrator: 00_MASTER_ORCHESTRATOR.md
+
+experts:
+  ryan_schmidt: 01_RYAN_SCHMIDT_GEOMETRY_TOOLS.md
+  howard_trickey: 02_HOWARD_TRICKEY_ROBUST_BOOLEAN.md
+  jacques_lucke: 03_JACQUES_LUCKE_PROCEDURAL_ARCHITECTURE.md
+  keenan_crane: 04_KEENAN_CRANE_DDG.md
+  alec_jacobson: 05_ALEC_JACOBSON_ROBUST_GEOMETRY.md
+  campbell_barton: 06_CAMPBELL_BARTON_BLENDER_PLATFORM.md
+  mark_pauly: 07_MARK_PAULY_COMPUTATIONAL_DESIGN.md
+  carl_eric_aubin: 08_CARL_ERIC_AUBIN_BIOMECHANICS.md
+  manuel_rigo: 09_MANUEL_RIGO_CLINICAL_GEOMETRY.md
+  jonathan_shewchuk: 10_JONATHAN_SHEWCHUK_ROBUST_PREDICATES_MESHING.md
+  olga_sorkine_hornung: 11_OLGA_SORKINE_HORNUNG_DEFORMATION.md
+  bruno_levy: 12_BRUNO_LEVY_PARAMETERIZATION_NUMERICAL_GEOMETRY.md
+  mario_botsch: 13_MARIO_BOTSCH_POLYGON_MESH_PROCESSING.md
+  sybren_stuvel: 14_SYBREN_STUVEL_BLENDER_PYTHON_ENGINEERING.md
+  geometry_reliability: 15_GEOMETRY_RELIABILITY_BENCHMARK_ENGINEER.md
+
+routing:
+  mesh_editing:
+    triggers: [mesh, remesh, simplify, sculpt, dynamic_mesh, neighborhood]
+    primary: ryan_schmidt
+    secondary: [mario_botsch, keenan_crane]
+
+  numerical_robustness:
+    triggers: [epsilon, precision, degenerate, collinear, coplanar, determinant, triangle_flip, triangulation]
+    primary: jonathan_shewchuk
+    secondary: [alec_jacobson, howard_trickey]
+
+  boolean:
+    triggers: [boolean, union, difference, intersect, cutter, coplanar_overlap]
+    primary: howard_trickey
+    secondary: [alec_jacobson, jonathan_shewchuk]
+
+  dirty_geometry:
+    triggers: [self_intersection, inside_outside, holes, non_manifold, winding]
+    primary: alec_jacobson
+    secondary: [jonathan_shewchuk, keenan_crane]
+
+  surface_math:
+    triggers: [geodesic, curvature, laplacian, tangent, parallel_transport, sdf, intrinsic]
+    primary: keenan_crane
+    secondary: [ryan_schmidt, bruno_levy]
+
+  deformation:
+    triggers: [deformation, arap, handle, smooth_transition, detail_preservation, variational]
+    primary: olga_sorkine_hornung
+    secondary: [keenan_crane, ryan_schmidt, alec_jacobson]
+
+  parameterization:
+    triggers: [uv, parameterization, flatten, lscm, chart, local_2d, distortion]
+    primary: bruno_levy
+    secondary: [keenan_crane, olga_sorkine_hornung]
+
+  mesh_data_structure:
+    triggers: [halfedge, adjacency, openmesh, decimation, mesh_health, valence]
+    primary: mario_botsch
+    secondary: [ryan_schmidt, jonathan_shewchuk]
+
+  procedural_architecture:
+    triggers: [procedural, non_destructive, dependency, correction_stack, template, instance, evaluator]
+    primary: jacques_lucke
+    secondary: [ryan_schmidt, sybren_stuvel, campbell_barton]
+
+  blender_platform:
+    triggers: [bpy, bmesh, operator, modal, context, undo, depsgraph, handler]
+    primary: campbell_barton
+    secondary: [sybren_stuvel, ryan_schmidt]
+
+  blender_python_maintainability:
+    triggers: [reload, registration, module, readability, duplicate_code, addon_package, async]
+    primary: sybren_stuvel
+    secondary: [campbell_barton, geometry_reliability]
+
+  computational_design:
+    triggers: [optimization, inverse_design, manufacturing, fabrication, design_variables]
+    primary: mark_pauly
+    secondary: [carl_eric_aubin]
+
+  biomechanics:
+    triggers: [fem, force, predicted_pressure, simulation, brace_mechanics, patient_specific]
+    primary: carl_eric_aubin
+    secondary: [mark_pauly, manuel_rigo]
+
+  rigo_clinical:
+    triggers: [rigo, cheneau, scoliosis, thoracic_pressure, expansion_area, derotation, sagittal, blueprint]
+    primary: manuel_rigo
+    secondary: [carl_eric_aubin]
+
+  reliability:
+    triggers: [regression, benchmark, release, p95, deterministic, reproducibility, profiling]
+    primary: geometry_reliability
+    secondary: []
+
+  pressure_expansion_library:
+    triggers: [pressure_library, expansion_library, correction_region, reusable_region, movable_region]
+    primary: jacques_lucke
+    required:
+      - ryan_schmidt
+      - keenan_crane
+      - olga_sorkine_hornung
+      - manuel_rigo
+      - geometry_reliability
+    conditional:
+      local_2d_parameterization: bruno_levy
+      topology_change_or_local_remesh: [mario_botsch, jonathan_shewchuk]
+      blender_modal_or_undo: [campbell_barton, sybren_stuvel]
+      biomechanical_claim: carl_eric_aubin
+      optimization: mark_pauly
+      boolean: [howard_trickey, alec_jacobson]
+
+decision_policy:
+  require_evidence_before_edit: true
+  prefer_minimal_patch: true
+  preserve_existing_behavior: true
+  require_regression_test_for_bug: true
+  reliability_review_for_p0_p1: true
+  clinical_veto: manuel_rigo
+  biomechanical_claim_veto: carl_eric_aubin
+  numerical_topology_veto: jonathan_shewchuk
+  blender_state_veto: campbell_barton
