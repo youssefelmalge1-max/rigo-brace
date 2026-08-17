@@ -1682,3 +1682,54 @@ the step-4 library-vs-painted residual.
 
 Suites green: selftest, regionqualtest, regiontest, regionstyletest,
 regionuitest, selecttest, scancleantest, downstreamtest.
+
+## DEC-0057 (2026-08-17) - #49l/#49m: native smoothing diverges; Commit crashed on quad scans
+
+From one orthotist report ("I did not use the sculpt smooth brush, I just used
+the smooth mesh edit, and the mesh collapses when I increase the smoothing"),
+with a screenshot of the pad shredded into spikes and, later, of Blender's
+"has stopped working" dialog.
+
+#49l. The collapse is Blender's own Mesh > Smooth Vertices, not our code, and
+it is arithmetic rather than a bug: p <- p + factor*(mean(neighbours) - p) is a
+contraction only for 0 < factor < 1. At the orthotist's 1.9146 the
+highest-frequency mode is multiplied by about |1 - 2*factor| ~ 2.8 per pass.
+Measured on a committed 20/10 pad: 1 pass 4.93 mm, 5 passes 17.45 mm, 10 passes
+184.64 mm, 20 passes 48678 mm with 57 slivers. Our Smooth Area cannot do this -
+factor is hard-capped at 1.0, passes at 50, and the HC-Laplacian pulls back
+toward the original points; at the UI maximum the worst vertex moves 1.71 mm.
+Guidance to the orthotist: the native slider is not a strength control with a
+safe top end, it is the step size of an iteration that diverges above 1.
+
+#49m. While measuring that, the probe hit a P0: BVHTree.FromPolygons(...,
+all_triangles=True) is a hard ASSERTION and three sites relied on it, but the
+patient scan is routinely not triangles - our own Remesh emits 100% quads
+(89144 triangles in, 46098 quads out) and the Exoside Quad Remesher output is
+adopted verbatim. Remesh -> Paint -> Commit therefore died with a Python
+traceback. NO SUITE HAD EVER COMMITTED ON A QUAD MESH - another route with
+different semantics and no gate, the #49k lesson repeating.
+
+Fixed with _tri_bvh, a shared fan-triangulating helper returning a triangle ->
+owning-face map (ours, not Blender's internal tessellation, so hit indices
+still resolve). Gated by quad_scan.* in goldenroutetest, red before / green
+after. Equivalence on triangles was PROVEN by differential test
+(tools/tribvhequivdbg.py) against verbatim copies of the three old bodies, not
+argued: identical self-intersection sets, identical cross-sheet pairs, and the
+same 107155 static faces in the same order.
+
+OPEN, MEASURED, NOT GATED: with the crash gone the quad route commits at full
+depth (19.95 of 20 mm) but its wall is the worst of any route - p95 59.61, max
+134.59, 86 edges over 30 deg, against painted 17.57 / 38.76 / 8. A 134 degree
+dihedral is a fold. It is the leading suspect for the plate in the orthotist's
+screenshots. Not gated on quality: a second permanently-red gate would
+normalise a red suite, and that is the orthotist's call.
+
+TEST-HARNESS LESSON. regionqualtest crashed Blender natively three times during
+this work (C++ exception in deg_evaluate_on_refresh) at the step that puts a
+SUBSURF on the 89144-face scan. It was the MACHINE, not the build: the same
+suite on the same build passes in 134s with RAM available and dies at the same
+gate at 0.6 GB free (committed 56.5 of 63.9 GB). A crashed Blender holds its
+dialog open and stays resident, so crashes compound by holding memory. Kill
+stray blender.exe before a battery, and never read a green suite without first
+confirming install.ps1 ran - one green regionqualtest during this work was
+against a stale install and was discarded.

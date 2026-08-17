@@ -278,3 +278,98 @@ contract for free where it does apply.
 
 Not implemented: per the lesson this audit exists to teach, the circular route
 needs its own permanent end-to-end gate FIRST.
+
+---
+
+# #49l — why `Mesh ▸ Smooth Vertices` collapses the patient mesh
+
+The orthotist dragged Blender's native **Smooth Vertices** to factor 1.9146 and
+the corrected pad shredded into spikes. Not the sculpt brush, not our Smooth
+Area — Blender's own Edit-Mode operator.
+
+Blender's operator is a plain Laplacian step per pass:
+
+    p  <-  p + factor * (mean(neighbours) - p)
+
+A contraction only for `0 < factor < 1`. At `factor = 1` a vertex lands exactly
+on its neighbours' centroid; above 1 it **overshoots past** the centroid, and
+the overshoot is amplified every pass. For the highest-frequency mesh mode the
+per-pass multiplier is about `|1 - 2·factor|`, which at 1.9146 is ≈ 2.8 — so
+the error grows ~2.8× per pass. Measured (`tools/smoothsafetydbg.py`,
+A-model, committed 20 mm / 10 mm pad, factor 1.9146):
+
+| repeats | max vertex move | longest edge | slivers | |
+|---|---|---|---|---|
+| 1 | 4.93 mm | 8.83 mm | 0 | bounded |
+| 5 | 17.45 mm | 24.72 mm | 0 | bounded |
+| 10 | **184.64 mm** | 356.59 mm | 2 | COLLAPSED |
+| 20 | **48 678 mm** | 97 075 mm | 57 | COLLAPSED |
+
+48 metres of travel from a 20 mm correction. The blow-up is exponential in the
+pass count, exactly as the eigenvalue predicts — this is not a defect in the
+add-on, it is the operator being driven past its stability limit.
+
+By factor at 5 passes: 0.5 → 2.86 mm, 0.9 → 3.86, 1.0 → 4.08, 1.5 → 5.88,
+1.9146 → 17.45 mm with the longest edge stretching 8.83 → 24.72 mm. The tearing
+starts the moment factor exceeds 1.
+
+**Our Smooth Area cannot do this.** `select_smooth_factor` is hard-capped at
+1.0 and `select_smooth_iters` at 50 (`core/__init__.py`), and the kernel is the
+Vollmer HC-Laplacian, which pulls back toward the original points each pass.
+Measured at the maximum the UI allows: strength 1.0 × 50 passes → max move
+**1.71 mm**, zero slivers. Fifty passes move less than five passes of the
+native operator at 0.5.
+
+Guidance for the orthotist: keep native Smooth Vertices below 1.0 — it is not a
+"strength" slider with a safe top end, it is the step size of an iteration that
+diverges above 1.
+
+# #49m — Commit crashed on any quad scan (P0, found by accident)
+
+Surfaced while measuring the above: the smoothing probe remeshed the scan and
+the commit died.
+
+    ValueError: BVHTree.FromPolygons: non triangle found at index 0
+                with length of 4
+    _static_faces_bvh (region_ops.py:593)  <-  RIGO_OT_region_apply
+
+`BVHTree.FromPolygons(..., all_triangles=True)` is a hard ASSERTION, not a
+hint. Three sites in `region_ops.py` used it — `_footprint_self_intersections`,
+`_static_faces_bvh`, `_cross_sheet_pairs` — and the patient scan is routinely
+NOT triangles:
+
+* the Mesh stage's own **Remesh** emits 100 % quads — measured, 89 144
+  triangles in → **46 098 quads** out;
+* the **Exoside Quad Remesher** result is adopted verbatim by
+  `RIGO_OT_use_quad_remesh_result` with no triangulation.
+
+So `Remesh → Paint → Commit` — an ordinary workflow, and the one the
+orthotist's screenshots are taken on — ended in a Python traceback popup. **No
+suite in the battery had ever committed a region on a quad mesh.** Another
+route with different semantics and no gate, exactly the #49k lesson.
+
+Fixed with one shared helper, `_tri_bvh`, which fan-triangulates and returns a
+triangle → owning-face map. Fan-triangulating ourselves rather than passing
+`all_triangles=False` keeps the hit indices meaningful: callers look faces up
+by the index the tree reports, so the owner map has to be ours. Two triangles
+of the same quad are excluded from self-intersection pairs.
+
+Gated by `quad_scan.*` in `tools/goldenroutetest.py`, demonstrated RED on the
+unfixed code (`commit_does_not_crash=FAIL RAISED`) and green after.
+
+## …and the quad route's wall quality is the worst measured
+
+With the crash gone, the commit completes and delivers full depth (core
+19.95 mm of 20 mm) — but the wall is far worse than any other route:
+
+| route | p95 | max | >30° | shading max |
+|---|---|---|---|---|
+| painted (triangles) | 17.57 | 38.76 | 8 | 17.71 |
+| library v2 (triangles) | 20.73 | 38.91 | 3 | 20.04 |
+| circular (triangles) | 31.09 | 58.47 | 22 | — |
+| **quad remesh, painted** | **59.61** | **134.59** | **86** | **51.30** |
+
+A 134° dihedral is a fold, not a crease. This is very likely what the
+orthotist's screenshots show — the hard plate down the left side of the pad on
+a quad-remeshed model. Recorded as the next defect; **not** gated on quality
+yet, because a second permanently-red gate would normalise a red suite.

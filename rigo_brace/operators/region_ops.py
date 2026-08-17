@@ -549,28 +549,61 @@ def _faired_normals(me, weights, mean_edge):
     return faired, adjacency
 
 
-def _footprint_self_intersections(me, member, faces=None):
-    """Indices of footprint faces that intersect a non-adjacent face."""
+def _tri_bvh(me, faces):
+    """BVH over ``faces``, fan-triangulated, plus a triangle -> owning-face map.
+
+    The patient scan is NOT always triangles (#49m).  The Mesh stage's own
+    Remesh emits 100 % quads — measured on the A-model, 89 144 triangles in,
+    46 098 quads out — and the Exoside Quad Remesher's output is adopted
+    verbatim as the patient scan.  ``BVHTree.FromPolygons(...,
+    all_triangles=True)`` is a hard ASSERTION, not a hint: it raises
+    ``ValueError: non triangle found`` on the first quad.  Committing a
+    correction on a quad scan therefore died with a Python traceback in the
+    orthotist's face, on the ordinary Remesh -> Paint -> Commit path.
+
+    Fan-triangulating here rather than passing ``all_triangles=False`` keeps
+    the hit indices meaningful: callers look the face up by the index the tree
+    reports, so the owner map must be ours, not Blender's internal
+    tessellation.  Returns ``(tree, owner, polys)``.
+    """
     from mathutils.bvhtree import BVHTree
 
+    if not faces:
+        return None, [], []
+    used = sorted({vi for p in faces for vi in p.vertices})
+    local = {vi: n for n, vi in enumerate(used)}
+    verts = [me.vertices[vi].co.copy() for vi in used]
+    polys = []
+    owner = []
+    for poly in faces:
+        idx = [local[vi] for vi in poly.vertices]
+        for k in range(1, len(idx) - 1):
+            polys.append((idx[0], idx[k], idx[k + 1]))
+            owner.append(poly)
+    if not polys:
+        return None, [], []
+    return BVHTree.FromPolygons(verts, polys, all_triangles=True), owner, polys
+
+
+def _footprint_self_intersections(me, member, faces=None):
+    """Indices of footprint faces that intersect a non-adjacent face."""
     if faces is None:
         faces = [
             p for p in me.polygons if any(vi in member for vi in p.vertices)
         ]
-    if not faces:
+    tree, owner, polys = _tri_bvh(me, faces)
+    if tree is None:
         return set()
-    # Local vertex table: only the footprint-face vertices, not the whole scan.
-    used = sorted({vi for p in faces for vi in p.vertices})
-    local = {vi: n for n, vi in enumerate(used)}
-    verts = [me.vertices[vi].co for vi in used]
-    polys = [tuple(local[vi] for vi in p.vertices) for p in faces]
-    tree = BVHTree.FromPolygons(verts, polys, all_triangles=True)
     bad = set()
     for a, b in tree.overlap(tree):
-        if a == b or set(polys[a]) & set(polys[b]):
+        # Two triangles of the SAME quad always share an edge — they are not
+        # a self-intersection.
+        if a == b or owner[a] is owner[b]:
             continue
-        bad.add(faces[a].index)
-        bad.add(faces[b].index)
+        if set(polys[a]) & set(polys[b]):
+            continue
+        bad.add(owner[a].index)
+        bad.add(owner[b].index)
     return bad
 
 
@@ -579,18 +612,11 @@ def _static_faces_bvh(me, member):
     during a commit).  These are exactly the faces the footprint-local checks
     cannot see — the opposite body wall, adjacent anatomical sheets (#48
     Wave 1, P0)."""
-    from mathutils.bvhtree import BVHTree
-
     faces = [
         p for p in me.polygons if not any(vi in member for vi in p.vertices)
     ]
-    if not faces:
-        return None, []
-    used = sorted({vi for p in faces for vi in p.vertices})
-    local = {vi: n for n, vi in enumerate(used)}
-    verts = [me.vertices[vi].co.copy() for vi in used]
-    polys = [tuple(local[vi] for vi in p.vertices) for p in faces]
-    return BVHTree.FromPolygons(verts, polys, all_triangles=True), faces
+    tree, owner, _polys = _tri_bvh(me, faces)
+    return tree, owner
 
 
 def _wall_blocked_points(me, weights, faired, offset, static_tree):
@@ -628,18 +654,14 @@ def _cross_sheet_pairs(me, static_tree, static_faces, affected):
     Pairs sharing a vertex (the footprint's own boundary ring) are ignored;
     pre-existing contacts are baselined out by the caller.
     """
-    from mathutils.bvhtree import BVHTree
-
     if static_tree is None or not affected:
         return set()
-    used = sorted({vi for p in affected for vi in p.vertices})
-    local = {vi: n for n, vi in enumerate(used)}
-    verts = [me.vertices[vi].co.copy() for vi in used]
-    polys = [tuple(local[vi] for vi in p.vertices) for p in affected]
-    moved = BVHTree.FromPolygons(verts, polys, all_triangles=True)
+    moved, moved_owner, _polys = _tri_bvh(me, affected)
+    if moved is None:
+        return set()
     pairs = set()
     for a, b in moved.overlap(static_tree):
-        face_a = affected[a]
+        face_a = moved_owner[a]
         face_b = static_faces[b]
         if set(face_a.vertices) & set(face_b.vertices):
             continue

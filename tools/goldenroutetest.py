@@ -496,6 +496,68 @@ def _run_painted_route():
     return {"commit": after_commit, "smooth": after_smooth}
 
 
+def _quad_scan_route():
+    """Route gate (#49m): Remesh -> Paint -> Commit on a QUAD scan.
+
+    The Mesh stage's Remesh emits 100 % quads and the Exoside Quad Remesher's
+    output is adopted verbatim, so the patient scan is routinely not
+    triangles.  Commit used to die with `ValueError: non triangle found`
+    inside BVHTree.FromPolygons — a Python traceback in the orthotist's face
+    on an ordinary workflow.  No suite committed anything on a quad mesh.
+    """
+    _clear()
+    obj = _import_scan()
+    result = bpy.ops.rigo.remesh()
+    obj = bpy.context.scene.rigo_brace.scan_object
+    mix = {}
+    for poly in obj.data.polygons:
+        mix[len(poly.vertices)] = mix.get(len(poly.vertices), 0) + 1
+    non_tri = sum(n for k, n in mix.items() if k != 3)
+    _gate(
+        "quad_scan.remesh_really_makes_quads",
+        non_tri > 0,
+        f"remesh -> {result} faces={mix}",
+    )
+    seed = _waist_seed(obj)
+    _settings()
+    _paint_radius(obj, seed, _PAINT_RADIUS_M)
+    if "FINISHED" not in bpy.ops.rigo.region_add():
+        _gate("quad_scan.region_add", False)
+        return
+    _gate("quad_scan.region_add", True)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    region = obj.rigo_regions[obj.rigo_region_index]
+    pre_mesh = obj.data.copy()
+    try:
+        result = bpy.ops.rigo.region_apply()
+        raised = ""
+    except Exception as exc:  # noqa: BLE001
+        result = "RAISED"
+        raised = str(exc).strip().splitlines()[-1][:160]
+    _gate(
+        "quad_scan.commit_does_not_crash",
+        result != "RAISED",
+        f"{result} {raised}",
+    )
+    if result == "RAISED":
+        bpy.data.meshes.remove(pre_mesh)
+        return
+    _gate(
+        "quad_scan.commit_finished",
+        "FINISHED" in result,
+        f"commit -> {result}",
+    )
+    if "FINISHED" in result:
+        committed = _group_weights(obj, region.surface_mask)
+        stats = _measure(obj, region, committed, pre_mesh, "QUAD commit")
+        _gate(
+            "quad_scan.core_depth",
+            stats["core_depth_mm"] >= _AMOUNT_MM * 0.90,
+            f"core={stats['core_depth_mm']:.2f}mm of {_AMOUNT_MM}mm",
+        )
+    bpy.data.meshes.remove(pre_mesh)
+
+
 def _apply_gates(library, painted):
     # Diagnostics that were BUILT as independent defect detectors and REJECTED
     # on measurement: both rate the defective library route BETTER than the
@@ -614,6 +676,9 @@ def _run():
         _mark("")
         _mark("=== painted route parity reference (same body, same numbers) ===")
         painted = _run_painted_route()
+        _mark("")
+        _mark("=== quad_scan — Remesh -> Paint -> Commit on a QUAD mesh ===")
+        _quad_scan_route()
         _mark("")
         if library:
             _apply_gates(library, painted)
