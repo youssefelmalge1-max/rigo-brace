@@ -373,3 +373,49 @@ A 134° dihedral is a fold, not a crease. This is very likely what the
 orthotist's screenshots show — the hard plate down the left side of the pad on
 a quad-remeshed model. Recorded as the next defect; **not** gated on quality
 yet, because a second permanently-red gate would normalise a red suite.
+
+---
+
+# #49n — the quad route: the biggest remaining quality lever
+
+The orthotist quad-remeshes before correcting. After the #49m crash fix that
+route commits, but its wall was the worst measured. Ablation on the A-model
+waist at 20 mm / 10 mm (`tools/quadqualitydbg.py`, `tools/quadlocaldbg.py`):
+
+| arm | wall p95 | max | >30° | mean |
+|---|---|---|---|---|
+| A raw triangle scan, production | 20.26 | 102.33 | 24 | 5.73 |
+| B remeshed quads, production | **58.52** | **179.80** | 151 | 14.54 |
+| C remeshed quads, no refinement | 45.94 | 78.94 | 47 | 21.50 |
+| D remeshed, **triangulated first** | **18.05** | 69.92 | 23 | 5.57 |
+
+A 179.8° dihedral is a fully folded face. In arm B the damage is concentrated
+on refinement-born edges (p95 59.88, max 179.80) against pre-existing edges
+(49.91 / 70.35), so refinement on quads is producing degenerate geometry.
+
+**Mechanism.** `_refine_footprint` subdivides one edge of a face and then runs
+`bmesh.ops.triangulate` over `[f for f in bm.faces if len(f.verts) > 3]`. On a
+triangle mesh a split face becomes a quad, so that filter is exactly right. On
+a QUAD mesh a split face becomes a 5-gon **and every untouched quad also
+matches the filter** — so the whole body is triangulated mid-refinement,
+interleaved with subdivision and the Phong lift, rather than cleanly up front.
+
+**Two separable consequences, both measured:**
+
+1. *Quality.* Triangulating before the region is authored gives p95 18.05 — a
+   3.2× improvement, and better than the raw triangle scan (20.26 / max
+   102.33). Uniform remesh density genuinely helps; it is only the
+   quad-ness that hurts. Triangulating just the **pad + 10 mm** is enough:
+   identical numbers to triangulating the whole body (18.05 / 69.92 / 23 /
+   5.57), so the operation can stay local.
+
+2. *Topology.* The quad remesh is **already destroyed by a normal commit** —
+   46 098 quads in, **0 quads out**, 92 800 triangles. So pre-triangulating
+   costs the orthotist nothing that commit was not already taking. Restoring
+   quad survival is a separate, bounded change: triangulate only the faces the
+   subdivide actually produced, not every face with more than three verts.
+
+**Recommendation.** Pre-triangulate the footprint neighbourhood when the scan
+is not already triangles — largest measured win available on the route the
+orthotist actually uses, at zero topological cost. Then, separately, narrow the
+refinement triangulation filter so quads outside the pad survive.
