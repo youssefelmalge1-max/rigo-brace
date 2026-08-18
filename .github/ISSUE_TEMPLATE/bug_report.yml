@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in the add-on crashed, or produced geometry it should not have.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach a patient scan.** Torso scans and `.blend` files are
+        patient-identifiable. Describe the mesh instead, or reproduce it on a synthetic
+        body. A viewport screenshot is fine and is usually the most useful thing here.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage?
+      options:
+        - File (import scan)
+        - Scan (scale / align / clean)
+        - Landmarks
+        - Mesh Edit (derotate / correct / remold)
+        - Design (trimline / pads / thickness / export)
+        - Install or registration
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Import a torso scan (~120k tris, mm units)
+        2. Go to Design, set wall thickness 4 mm
+        3. Click Generate Brace
+        4. Inner surface self-intersects at the axilla
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: For anything geometric, a viewport screenshot is worth more than prose.
+
+  - type: input
+    id: operator
+    attributes:
+      label: Operator name (if known)
+      placeholder: rigo.generate_brace
+
+  - type: input
+    id: versions
+    attributes:
+      label: Blender version and OS
+      placeholder: Blender 5.0, Windows 11
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text
+      description: From Window > Toggle System Console, or the relevant tools/*_result.txt.
+      render: shell

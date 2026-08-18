@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Clinical safety boundary
+    url: https://github.com/youssefelmalge1-max/rigo-brace/blob/main/orthoblender-spine-skill/knowledge/clinical_safety_protocol.md
+    about: What this software does and does not claim. Read before filing anything clinical.
+  - name: Security or patient-data concern
+    url: https://github.com/youssefelmalge1-max/rigo-brace/security/advisories/new
+    about: Report privately rather than in a public issue.

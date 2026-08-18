@@ -1,0 +1,61 @@
+name: Clinical feedback
+description: The software worked, but what it produced is clinically wrong. (Orthotists/CPOs — this is the most valuable report you can file.)
+labels: ["clinical", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for cases where the geometry is technically fine but the
+        *clinical result* is wrong — bad coverage, a correction that would not work or
+        would hurt, a trimline in the wrong place, a pressure without its expansion.
+
+        This project can verify that a mesh is manifold. It cannot verify that a brace is
+        clinically correct. That judgement has to come from you.
+
+        **Do not attach patient scans or X-rays.** Describe the case in general terms.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: What is clinically wrong?
+      options:
+        - Trimline placement or coverage
+        - Pressure zone location, shape, or depth
+        - Expansion / relief room (missing or insufficient)
+        - Pressure and expansion not properly coupled
+        - Derotation or curve correction behaviour
+        - Sagittal profile not preserved
+        - Laterality / mirroring incorrect
+        - Contraindicated pressure (bony prominence, breast, axilla, abdomen)
+        - Breathing restriction
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should it have done?
+      description: What would you have done by hand, and why?
+    validations:
+      required: true
+
+  - type: input
+    id: curve-type
+    attributes:
+      label: Curve pattern / Rigo classification (if relevant)
+      placeholder: A2, B1, C2, E1...
+
+  - type: textarea
+    id: reference
+    attributes:
+      label: Supporting reference
+      description: Published literature or established practice, if there is one. Not required — clinical experience is a valid basis for this report.
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I understand this software guides design and does not prescribe treatment, and that every brace requires orthotist review before fabrication.
+          required: true
