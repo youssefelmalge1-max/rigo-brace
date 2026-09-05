@@ -1097,3 +1097,4 @@ in wrinkled zones (nearest point lands on another fold flank) - never let it
 vote on sub-millimetre monotonicity; use index-exact displacements of
 surviving originals for that.
 - 2026-08-18 #51: profile BEFORE optimising - 77% of a 58 s brace build was one pure-Python point-in-polygon loop; numpy batch of the same arithmetic gave 5x with 0 mismatches over 90484 faces.
+- 2026-09-05 #52: the slow part of slots/rivets/emboss was never the boolean - it was five shared Python validators walking the whole brace; fix the shared helper once and every cut gets it (slots 4.4->2.3 s, rivets 4.2->2.3 s, emboss 8.5->5.9 s), then prove equivalence with verbatim old bodies, not by eye.

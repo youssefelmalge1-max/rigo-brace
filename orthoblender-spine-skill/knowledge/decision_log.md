@@ -1771,3 +1771,56 @@ numpy (already here) -> Blender's own C++ ops -> a compiled wheel in the
 extension manifest only for kernels numpy cannot express. The remaining 11.5 s
 is spread thin (largest item 0.77 s) - further gains need many small changes,
 not one.
+
+## DEC-0059 (2026-09-05) - #52: finishing ops 1.5-1.9x faster by vectorising the shared validators
+
+After #51 the orthotist asked for the same treatment on the rest of the
+compute-heavy tools (emboss, cutting, lattice, strap slots).  Profiled first
+(tools/finishtimedbg.py: real A-model RIGO_CHENEAU brace, 4 mm, each finishing
+operator run on a fresh copy of the same brace):
+
+    operation                         pre      post    Blender C part
+    cut_slots (1 slot)              4.43 s   2.31 s   0.90 s boolean
+    cut_rivets (1 hole)             4.22 s   2.25 s   0.83 s boolean
+    emboss_text RIGO raised         8.52 s   5.87 s   4.28 s remesh+boolean
+    vent_grid (400-face patch)      0.76 s   0.72 s   (already C-bound)
+    build_lattice_pattern CUT       1.36 s   1.32 s   (already C-bound)
+    generate_curve_corset           11.46 s  11.36 s  (shares the rim gate)
+
+The Python time was not in the operators themselves but in five SHARED
+helpers every cut routes through (design_ops.py): _validate_finished_rim and
+its three counters (_mesh_edge_use_counts, _connected_component_count,
+_zero_area_triangle_count), _surface_euler_characteristic, _mesh_volume,
+_slot_boundary_edges, _remove_slot_slivers, and the emboss-only
+_remove_exact_fillet_degenerates zero-area pass.  Each walked 67k vertices /
+118k faces in pure Python or through a throwaway bmesh.
+
+Fix (same arithmetic, batch evaluated): foreach_get arrays for coordinates,
+loop-triangle indices, loop vertex/edge indices; edge-use counts via
+np.unique on packed (low, high) keys; connected components by vectorised
+hooking + pointer jumping; capsule-outline distance vectorised
+(_capsule_boundary_distances) as a pre-filter so only candidate edges reach
+bmesh; slot-sliver cleanup classifies "near a slot" once with numpy and walks
+only the linked edges/faces of those vertices (a merge/dissolve/collapse
+always keeps one of its inputs, so the survivor set stays complete).
+vent_grid and lattice were left alone: nothing to gain.
+
+Exactness, not assumed (tools/finishequivdbg.py carries the verbatim OLD
+bodies and compares at the exact mesh state production hands each helper):
+18/18 checks - eligible edge index lists identical (164, 84), sliver-cleanup
+and emboss-degenerate meshes identical by V/E/F + sorted-coordinate
+fingerprint, rim statistics identical before every validate call, Euler
+identical.  _mesh_volume differs by 2.9e-7 relative: bmesh.calc_volume sums
+float32 tetrahedra, numpy sums float64; callers compare two volumes from the
+same function against changes >= 1e-5 relative, so this cannot flip a verdict.
+
+Guard suites: slotbracetest, slottest, rivettest, embosstest,
+latticepatterntest, thicknesstest, downstreamtest PASS.  venttest RED with the
+pre-existing #50 refusal on the A trim fixture (ERR-0033) - the probe's
+A-fixture phase shows old and new counters both report (0 open, 2
+non-manifold) at that state, so the verdict is unchanged.
+
+Open (not done, needs the orthotist's call): emboss is now 73% Blender C
+(voxel remesh of the text tool + EXACT boolean).  The only lever left is the
+boolean solver (MANIFOLD, as vent_grid already tries) or a coarser tool
+remesh - both change geometry and need their own gate first.

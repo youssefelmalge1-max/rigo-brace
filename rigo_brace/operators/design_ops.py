@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import bpy
 import bmesh
+import numpy as np
 from bpy.types import Operator
 from bpy_extras import view3d_utils
 from mathutils import Matrix, Vector
@@ -700,6 +701,40 @@ def _capsule_boundary_distance(point, width, height):
     return abs(distance - radius)
 
 
+def _capsule_boundary_distances(points, width, height):
+    """`_capsule_boundary_distance` for an (N, 3) array of local points."""
+    x = np.abs(points[:, 0])
+    y = np.abs(points[:, 1])
+    if width >= height:
+        radius = height * 0.5
+        distance = np.hypot(np.maximum(x - (width - height) * 0.5, 0.0), y)
+    else:
+        radius = width * 0.5
+        distance = np.hypot(x, np.maximum(y - (height - width) * 0.5, 0.0))
+    return np.abs(distance - radius)
+
+
+def _vertex_coordinates(mesh):
+    """(V, 3) float64 array of the mesh's vertex coordinates."""
+    coordinates = np.empty(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", coordinates)
+    return coordinates.reshape(-1, 3)
+
+
+def _local_coordinates(mesh, marker, corset):
+    """Every vertex of `mesh` expressed in `marker`'s local frame."""
+    transform = np.array(marker.matrix_world.inverted() @ corset.matrix_world)
+    return _vertex_coordinates(mesh) @ transform[:3, :3].T + transform[:3, 3]
+
+
+def _triangle_arrays(mesh):
+    """(coordinates (V, 3) float64, triangles (T, 3) int64) of the mesh."""
+    mesh.calc_loop_triangles()
+    triangles = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get("vertices", triangles)
+    return _vertex_coordinates(mesh), triangles.reshape(-1, 3).astype(np.int64)
+
+
 def _vertical_surface_rotation(normal):
     """Orient local Y vertically within the tangent plane and local Z outward."""
     normal = normal.normalized()
@@ -739,25 +774,31 @@ def _new_slot_marker(context, placement):
 
 
 def _mesh_volume(mesh):
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    try:
-        return abs(bm.calc_volume(signed=True))
-    finally:
-        bm.free()
+    """Unsigned enclosed volume: sum of signed origin tetrahedra over the
+    loop triangles (what `bmesh.calc_volume` computes, without the bmesh)."""
+    coordinates, triangles = _triangle_arrays(mesh)
+    if triangles.size == 0:
+        return 0.0
+    first = coordinates[triangles[:, 0]]
+    second = coordinates[triangles[:, 1]]
+    third = coordinates[triangles[:, 2]]
+    return abs(float(np.einsum("ij,ij->i", first, np.cross(second, third)).sum()) / 6.0)
 
 
 def _surface_euler_characteristic(mesh):
     """Euler characteristic of face-bearing geometry, excluding loose debris."""
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    try:
-        used_faces = list(bm.faces)
-        used_edges = {edge for face in used_faces for edge in face.edges}
-        used_vertices = {vertex for face in used_faces for vertex in face.verts}
-        return len(used_vertices) - len(used_edges) + len(used_faces)
-    finally:
-        bm.free()
+    loop_count = len(mesh.loops)
+    if loop_count == 0:
+        return 0
+    vertex_indices = np.empty(loop_count, dtype=np.int32)
+    edge_indices = np.empty(loop_count, dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", vertex_indices)
+    mesh.loops.foreach_get("edge_index", edge_indices)
+    return (
+        len(np.unique(vertex_indices))
+        - len(np.unique(edge_indices))
+        + len(mesh.polygons)
+    )
 
 
 def _restore_slot_cut_mesh(corset, original_mesh):
@@ -769,32 +810,32 @@ def _restore_slot_cut_mesh(corset, original_mesh):
 
 def _slot_boundary_edges(corset, slots):
     """Locate only the sharp Boolean loops created by the capsule cutters."""
-    bm = bmesh.new()
-    bm.from_mesh(corset.data)
-    transforms = []
-    for slot in slots:
-        transforms.append(
-            (
-                slot.matrix_world.inverted() @ corset.matrix_world,
-                float(slot.get("rigo_h", 12.0)) * 0.001,
-                float(slot.get("rigo_w", 40.0)) * 0.001,
-            )
-        )
-    eligible = []
+    mesh = corset.data
     tolerance = 0.0006
-    for edge in bm.edges:
+    edge_vertices = np.empty(len(mesh.edges) * 2, dtype=np.int32)
+    mesh.edges.foreach_get("vertices", edge_vertices)
+    edge_vertices = edge_vertices.reshape(-1, 2)
+    # Cheap geometric pre-filter over every vertex at once: an edge is a
+    # candidate when both ends lie on the same cutter's capsule outline.
+    candidate = np.zeros(len(mesh.edges), dtype=bool)
+    for slot in slots:
+        on_outline = _capsule_boundary_distances(
+            _local_coordinates(mesh, slot, corset),
+            float(slot.get("rigo_h", 12.0)) * 0.001,
+            float(slot.get("rigo_w", 40.0)) * 0.001,
+        ) <= tolerance
+        candidate |= on_outline[edge_vertices[:, 0]] & on_outline[edge_vertices[:, 1]]
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.edges.ensure_lookup_table()
+    eligible = []
+    for index in np.flatnonzero(candidate):
+        edge = bm.edges[int(index)]
         if len(edge.link_faces) != 2:
             continue
         if edge.calc_face_angle(0.0) < math.radians(25.0):
             continue
-        for transform, width, height in transforms:
-            local_points = [transform @ vertex.co for vertex in edge.verts]
-            if all(
-                _capsule_boundary_distance(point, width, height) <= tolerance
-                for point in local_points
-            ):
-                eligible.append(edge)
-                break
+        eligible.append(edge)
     return bm, eligible
 
 
@@ -839,53 +880,72 @@ def _round_slot_edges(corset, slots, requested_radius_mm, thickness_mm):
 
 def _remove_slot_slivers(corset, slots):
     """Remove only microscopic degeneracy inside the edited slot regions."""
+    mesh = corset.data
+    near = np.zeros(len(mesh.vertices), dtype=bool)
+    for slot in slots:
+        local = np.abs(_local_coordinates(mesh, slot, corset))
+        near |= (
+            (local[:, 0] <= float(slot.get("rigo_h", 12.0)) * 0.0005 + 0.002)
+            & (local[:, 1] <= float(slot.get("rigo_w", 40.0)) * 0.0005 + 0.002)
+            & (local[:, 2] <= 0.012)
+        )
+    if not near.any():
+        return
     bm = bmesh.new()
-    bm.from_mesh(corset.data)
-    transforms = [
-        (
-            slot.matrix_world.inverted() @ corset.matrix_world,
-            float(slot.get("rigo_h", 12.0)) * 0.0005 + 0.002,
-            float(slot.get("rigo_w", 40.0)) * 0.0005 + 0.002,
-        )
-        for slot in slots
-    ]
-    def near_slot(vertex):
-        return any(
-            abs((transform @ vertex.co).x) <= half_width
-            and abs((transform @ vertex.co).y) <= half_height
-            and abs((transform @ vertex.co).z) <= 0.012
-            for transform, half_width, half_height in transforms
-        )
-
-    local_vertices = [vertex for vertex in bm.verts if near_slot(vertex)]
+    bm.from_mesh(mesh)
     try:
-        if local_vertices:
-            bmesh.ops.remove_doubles(bm, verts=local_vertices, dist=5.0e-6)
-            local_set = {vertex for vertex in bm.verts if near_slot(vertex)}
-            local_edges = [
-                edge for edge in bm.edges if all(vertex in local_set for vertex in edge.verts)
-            ]
-            if local_edges:
-                bmesh.ops.dissolve_degenerate(bm, edges=local_edges, dist=5.0e-5)
-            local_faces = [
-                face for face in bm.faces if all(vertex in local_set for vertex in face.verts)
-            ]
-            non_triangles = [face for face in local_faces if len(face.verts) > 3]
-            if non_triangles:
-                bmesh.ops.triangulate(bm, faces=non_triangles)
-            for _iteration in range(2):
-                zero_edges = {
-                    min(face.edges, key=lambda edge: edge.calc_length())
-                    for face in bm.faces
-                    if face.calc_area() <= 1.0e-12
-                    and all(near_slot(vertex) for vertex in face.verts)
-                }
-                if not zero_edges:
-                    break
-                bmesh.ops.collapse(bm, edges=list(zero_edges))
-            bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
-            bm.to_mesh(corset.data)
-            corset.data.update()
+        bm.verts.ensure_lookup_table()
+        local_vertices = [bm.verts[int(index)] for index in np.flatnonzero(near)]
+        bmesh.ops.remove_doubles(bm, verts=local_vertices, dist=5.0e-6)
+        # Merges, dissolves and collapses below only ever keep one of the
+        # vertices they consume, so the survivors of this list stay the
+        # complete "near a slot" set; walk their links instead of the mesh.
+        local_set = {vertex for vertex in local_vertices if vertex.is_valid}
+
+        def local_edges():
+            bm.edges.index_update()
+            return sorted(
+                {
+                    edge
+                    for vertex in local_set
+                    for edge in vertex.link_edges
+                    if edge.other_vert(vertex) in local_set
+                },
+                key=lambda edge: edge.index,
+            )
+
+        def local_faces():
+            bm.faces.index_update()
+            return sorted(
+                {
+                    face
+                    for vertex in local_set
+                    for face in vertex.link_faces
+                    if all(corner in local_set for corner in face.verts)
+                },
+                key=lambda face: face.index,
+            )
+
+        edges = local_edges()
+        if edges:
+            bmesh.ops.dissolve_degenerate(bm, edges=edges, dist=5.0e-5)
+            local_set = {vertex for vertex in local_set if vertex.is_valid}
+        non_triangles = [face for face in local_faces() if len(face.verts) > 3]
+        if non_triangles:
+            bmesh.ops.triangulate(bm, faces=non_triangles)
+        for _iteration in range(2):
+            zero_edges = {
+                min(face.edges, key=lambda edge: edge.calc_length())
+                for face in local_faces()
+                if face.calc_area() <= 1.0e-12
+            }
+            if not zero_edges:
+                break
+            bmesh.ops.collapse(bm, edges=list(zero_edges))
+            local_set = {vertex for vertex in local_set if vertex.is_valid}
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        bm.to_mesh(mesh)
+        mesh.update()
     finally:
         bm.free()
 
@@ -2129,16 +2189,11 @@ def _remove_exact_fillet_degenerates(corset):
     bm.free()
     mesh.update()
     for _pass in range(2):
-        mesh.calc_loop_triangles()
+        all_coordinates, triangles = _triangle_arrays(mesh)
         repaired = False
-        for triangle in mesh.loop_triangles:
-            indices = tuple(triangle.vertices)
+        for flat in np.flatnonzero(_triangle_areas(all_coordinates, triangles) <= 1.0e-12):
+            indices = tuple(int(index) for index in triangles[flat])
             coordinates = [mesh.vertices[index].co for index in indices]
-            area = 0.5 * (coordinates[1] - coordinates[0]).cross(
-                coordinates[2] - coordinates[0]
-            ).length
-            if area > 1.0e-12:
-                continue
             pairs = (
                 ((indices[0], indices[1]), (coordinates[0] - coordinates[1]).length),
                 ((indices[1], indices[2]), (coordinates[1] - coordinates[2]).length),
@@ -2153,63 +2208,77 @@ def _remove_exact_fillet_degenerates(corset):
         if not repaired:
             break
         mesh.update()
-    for polygon in mesh.polygons:
-        polygon.use_smooth = True
+    mesh.polygons.foreach_set("use_smooth", np.ones(len(mesh.polygons), dtype=bool))
 
 
 def _mesh_edge_use_counts(triangles):
-    uses = {}
-    for triangle in triangles:
-        for first, second in (
-            (triangle[0], triangle[1]),
-            (triangle[1], triangle[2]),
-            (triangle[2], triangle[0]),
-        ):
-            edge = tuple(sorted((first, second)))
-            uses[edge] = uses.get(edge, 0) + 1
-    return uses
+    """How many triangles use each undirected edge (one entry per edge)."""
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if triangles.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    first = triangles[:, [0, 1, 2]].ravel()
+    second = triangles[:, [1, 2, 0]].ravel()
+    low = np.minimum(first, second)
+    high = np.maximum(first, second)
+    _edges, counts = np.unique(low * (int(high.max()) + 1) + high, return_counts=True)
+    return counts
+
+
+def _triangle_areas(coordinates, triangles):
+    first = coordinates[triangles[:, 0]]
+    return 0.5 * np.linalg.norm(
+        np.cross(coordinates[triangles[:, 1]] - first, coordinates[triangles[:, 2]] - first),
+        axis=1,
+    )
 
 
 def _zero_area_triangle_count(coordinates, triangles):
-    count = 0
-    for first, second, third in triangles:
-        cross = (coordinates[second] - coordinates[first]).cross(
-            coordinates[third] - coordinates[first]
-        )
-        count += 0.5 * cross.length <= 1.0e-12
-    return count
+    coordinates = np.asarray(coordinates, dtype=np.float64).reshape(-1, 3)
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if triangles.size == 0:
+        return 0
+    return int((_triangle_areas(coordinates, triangles) <= 1.0e-12).sum())
 
 
 def _connected_component_count(triangles, vertex_count):
-    """Number of connected pieces in a triangle soup, by union-find."""
-    parent = list(range(vertex_count))
+    """Number of connected pieces in a triangle soup, by union-find.
 
-    def root(index):
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    used = set()
-    for triangle in triangles:
-        used.update(triangle)
-        first = root(triangle[0])
-        for vertex in triangle[1:]:
-            second = root(vertex)
-            if first != second:
-                parent[second] = first
-    return len({root(vertex) for vertex in used})
+    Vectorised hooking + pointer jumping: every root points to a smaller
+    index, so the forest never cycles and each round merges every component
+    that still touches another one.
+    """
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if triangles.size == 0:
+        return 0
+    first = triangles[:, [0, 1]].ravel()
+    second = triangles[:, [1, 2]].ravel()
+    parent = np.arange(vertex_count)
+    while True:
+        root_first = parent[first]
+        root_second = parent[second]
+        differs = root_first != root_second
+        if not differs.any():
+            break
+        np.minimum.at(
+            parent,
+            np.maximum(root_first[differs], root_second[differs]),
+            np.minimum(root_first[differs], root_second[differs]),
+        )
+        while True:
+            jumped = parent[parent]
+            if np.array_equal(jumped, parent):
+                break
+            parent = jumped
+    return len(np.unique(parent[np.unique(triangles)]))
 
 
 def _validate_finished_rim(corset):
     """Fail transactionally before a folded/degenerate brace can replace one."""
     mesh = corset.data
-    mesh.calc_loop_triangles()
-    coordinates = [vertex.co.copy() for vertex in mesh.vertices]
-    triangles = [tuple(triangle.vertices) for triangle in mesh.loop_triangles]
+    coordinates, triangles = _triangle_arrays(mesh)
     edge_uses = _mesh_edge_use_counts(triangles)
-    boundary_edges = sum(count == 1 for count in edge_uses.values())
-    nonmanifold_edges = sum(count > 2 for count in edge_uses.values())
+    boundary_edges = int((edge_uses == 1).sum())
+    nonmanifold_edges = int((edge_uses > 2).sum())
     if boundary_edges or nonmanifold_edges:
         raise TrimRimQualityError(
             boundary_edges=boundary_edges,
@@ -2224,7 +2293,9 @@ def _validate_finished_rim(corset):
     zero_area = _zero_area_triangle_count(coordinates, triangles)
     if zero_area:
         raise TrimRimQualityError(zero_area=zero_area)
-    intersections = triangle_intersection_pairs(coordinates, triangles)
+    intersections = triangle_intersection_pairs(
+        coordinates.tolist(), triangles.tolist()
+    )
     if intersections:
         raise TrimRimQualityError(intersections=len(intersections))
     corset["rigo_generation_rim_intersections"] = 0
