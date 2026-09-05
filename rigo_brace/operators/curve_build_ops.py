@@ -127,6 +127,44 @@ class _ProjectedPerimeter:
             self.theta_max,
         )
 
+    def contains_many(self, world_xyz):
+        """Vectorised ``contains`` for an (M, 3) float array of world points.
+
+        Same arithmetic as the scalar path, evaluated with numpy across all
+        points at once: profiled, the per-face scalar test was 44.7 s of a
+        57.8 s brace generation (88 797 calls). Returns a bool array.
+        """
+        import numpy as np
+
+        ax, ay = self.axis
+        fx, fy = self.front
+        vx = world_xyz[:, 0] - ax
+        vy = world_xyz[:, 1] - ay
+        angle = np.arctan2(vx * (-fy) + vy * fx, vx * fx + vy * fy) % math.tau
+        height = world_xyz[:, 2]
+        lowest = np.ceil((self.theta_min - angle) / math.tau).astype(int)
+        highest = np.floor((self.theta_max - angle) / math.tau).astype(int)
+        poly = np.asarray(self.polygon, dtype=float)
+        x1, y1 = poly[:, 0], poly[:, 1]
+        x0, y0 = np.roll(x1, 1), np.roll(y1, 1)
+        inside_any = np.zeros(len(angle), dtype=bool)
+        for step in range(int(lowest.min()), int(highest.max()) + 1):
+            active = (step >= lowest) & (step <= highest)
+            if not active.any():
+                continue
+            x = angle[active] + step * math.tau
+            y = height[active]
+            inside = np.zeros(len(x), dtype=bool)
+            for i in range(len(x1)):
+                if y1[i] == y0[i]:
+                    continue  # the scalar test never crosses a flat edge
+                crosses = (y0[i] > y) != (y1[i] > y)
+                inside ^= crosses & (
+                    x < (x1[i] - x0[i]) * (y - y0[i]) / (y1[i] - y0[i]) + x0[i]
+                )
+            inside_any[active] |= inside
+        return inside_any
+
 
 @dataclass(frozen=True)
 class _OrientedProjectedRegion:
@@ -135,6 +173,9 @@ class _OrientedProjectedRegion:
 
     def contains(self, world_coordinate):
         return self.projected.contains(world_coordinate) == self.keep_inside
+
+    def contains_many(self, world_xyz):
+        return self.projected.contains_many(world_xyz) == self.keep_inside
 
 
 @dataclass(frozen=True)
@@ -397,13 +438,18 @@ def _face_is_inside(surface, face, retained_region):
 
 
 def _keep_curve_interior(surface, retained_region):
+    import numpy as np
+
+    mesh = surface.data
+    centres = np.empty(len(mesh.polygons) * 3)
+    mesh.polygons.foreach_get("center", centres)
+    matrix = np.array(surface.matrix_world)
+    world = centres.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+    inside = retained_region.contains_many(world)
     bm = bmesh.new()
-    bm.from_mesh(surface.data)
-    outside = [
-        face
-        for face in bm.faces
-        if not _face_is_inside(surface, face, retained_region)
-    ]
+    bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    outside = [bm.faces[int(i)] for i in np.flatnonzero(~inside)]
     bmesh.ops.delete(bm, geom=outside, context="FACES")
     loose = [vertex for vertex in bm.verts if not vertex.link_faces]
     if loose:

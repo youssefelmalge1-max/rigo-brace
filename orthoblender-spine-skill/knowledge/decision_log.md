@@ -1733,3 +1733,41 @@ dialog open and stays resident, so crashes compound by holding memory. Kill
 stray blender.exe before a battery, and never read a green suite without first
 confirming install.ps1 ran - one green regionqualtest during this work was
 against a stale install and was discarded.
+
+## DEC-0058 (2026-08-18) - #51: brace generation 57.8 s -> 11.5 s by vectorising ONE loop
+
+The orthotist asked whether the compute-heavy parts could leave Python. Profiled
+first (tools/gentimedbg.py, A-model, RIGO_CHENEAU reference trim, 4 mm):
+
+    pre   generate_curve_corset  WALL 57.76 s   brace_faces 117726
+    of which _inside_polygon     44.69 s  (77%)  88797 calls
+
+One function: the scalar odd-even point-in-polygon test, called once per face
+of the 90484-face cut surface from _keep_curve_interior, each call walking the
+trim polygon in pure Python. Everything else was under 1 s.
+
+Fix: _ProjectedPerimeter.contains_many / _OrientedProjectedRegion.contains_many
+evaluate the SAME arithmetic with numpy across all points at once (numpy 1.26
+is bundled with Blender 5.0; nothing to install), and _keep_curve_interior reads
+face centres with polygons.foreach_get("center") and classifies in one call.
+The scalar contains() is untouched for its remaining small callers
+(_inside_mask_agreement samples <= 256 points).
+
+    post  generate_curve_corset  WALL 11.46 s   brace_faces 117726  (5.0x)
+    contains_many                 0.31 s
+
+Exactness, not assumed: RIGO_GEN_CHECK=1 makes the probe run the old scalar
+test beside the new batch on the very surface the cut classifies -
+90484 faces, 0 mismatches.
+
+Guard suites: thicknesstest PASS, downstreamtest PASS. designtest and
+customtrimtest are RED with the identical pre-existing #50 refusal ("Trim rim
+cannot be built safely, 2 non-manifold edges") - reproduced on the A fixture
+BEFORE this change and already recorded red-at-baseline; the painted-region
+step inside customtrimtest itself FINISHED.
+
+Opinion recorded for the orthotist: no Blender fork, no rewrite. Order is
+numpy (already here) -> Blender's own C++ ops -> a compiled wheel in the
+extension manifest only for kernels numpy cannot express. The remaining 11.5 s
+is spread thin (largest item 0.77 s) - further gains need many small changes,
+not one.

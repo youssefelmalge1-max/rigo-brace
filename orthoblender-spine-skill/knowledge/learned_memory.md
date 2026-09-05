@@ -1096,3 +1096,4 @@ nearest-point signed-distance oracle misreads displacement by up to 2.1 mm
 in wrinkled zones (nearest point lands on another fold flank) - never let it
 vote on sub-millimetre monotonicity; use index-exact displacements of
 surviving originals for that.
+- 2026-08-18 #51: profile BEFORE optimising - 77% of a 58 s brace build was one pure-Python point-in-polygon loop; numpy batch of the same arithmetic gave 5x with 0 mismatches over 90484 faces.
