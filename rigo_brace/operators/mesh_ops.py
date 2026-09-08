@@ -236,6 +236,46 @@ class RIGO_OT_smooth(Operator):
         return {"FINISHED"}
 
 
+class RIGO_OT_subdivide_scan(Operator):
+    """Split every face into four with the new points lifted onto a curved
+    surface, so pressures and expansions commit with a rounder wall
+    (measured #53: wall p95 23 -> 15 deg at 4x faces).  Not the Subdivision
+    Surface modifier — that one crashes Blender 5.0.1 above ~22k faces."""
+
+    bl_idname = "rigo.subdivide_scan"
+    bl_label = "Subdivide Scan (smooth)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    # ponytail: hard cap so a second press on a dense scan cannot push every
+    # downstream op past what this class of PC handles; raise when measured.
+    MAX_RESULT_FACES = 600_000
+
+    def execute(self, context):
+        obj = _active_mesh(context)
+        if obj is None:
+            self.report({"ERROR"}, "Select the scan mesh first")
+            return {"CANCELLED"}
+        faces = len(obj.data.polygons)
+        if faces * 4 > self.MAX_RESULT_FACES:
+            self.report(
+                {"ERROR"},
+                f"{faces} faces would become {faces * 4}; the cap is "
+                f"{self.MAX_RESULT_FACES}. Remesh coarser first.",
+            )
+            return {"CANCELLED"}
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.subdivide(number_cuts=1, smoothness=1.0)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        from .scan_ops import shade_smooth_scan
+        shade_smooth_scan(obj.data)
+        self.report(
+            {"INFO"}, f"Subdivided: {faces} -> {len(obj.data.polygons)} faces"
+        )
+        return {"FINISHED"}
+
+
 class RIGO_OT_thickness(Operator):
     """Give the brace a solid wall thickness (shell)"""
 
@@ -263,6 +303,7 @@ _CLASSES = (
     RIGO_OT_quad_remesh,
     RIGO_OT_use_quad_remesh_result,
     RIGO_OT_smooth,
+    RIGO_OT_subdivide_scan,
     RIGO_OT_thickness,
 )
 

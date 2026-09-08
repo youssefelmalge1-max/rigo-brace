@@ -1098,3 +1098,22 @@ vote on sub-millimetre monotonicity; use index-exact displacements of
 surviving originals for that.
 - 2026-08-18 #51: profile BEFORE optimising - 77% of a 58 s brace build was one pure-Python point-in-polygon loop; numpy batch of the same arithmetic gave 5x with 0 mismatches over 90484 faces.
 - 2026-09-05 #52: the slow part of slots/rivets/emboss was never the boolean - it was five shared Python validators walking the whole brace; fix the shared helper once and every cut gets it (slots 4.4->2.3 s, rivets 4.2->2.3 s, emboss 8.5->5.9 s), then prove equivalence with verbatim old bodies, not by eye.
+
+## LM-0045 — 2026-09-05 — Shell latency: separate historical profiles from current resource pressure
+Source: shell_performance_audit_2026_09_05.md; saved generation profiles; live Windows CIM probes.
+Observation: saved reference generation is 7.73 s unprofiled / 11.36 s profiled, with 64% of profiled time in cut/boundary preparation. Current RAM available is only 359–444 MiB and committed memory 96–97%. Installed code matches source, but the running Blender predates the latest design_ops update.
+Underlying principle: installed files, loaded modules and measured runtime are separate evidence. Do not attribute cProfile overhead or paging delays from unrelated runs, or launch another geometry process under severe memory pressure.
+Clinical implication: no geometry settings changed. Blender-geometry implication: prioritize redundant interior scans/sorts in boundary repair, preserving operation order.
+Reusable feature: existing gentimedbg/finishtimedbg probes. Template update needed: no.
+Test case needed: fresh same-case unprofiled repetitions after memory pressure is relieved, then ordered-candidate and full-output equivalence for a future optimization.
+Risk: actual user-case latency remains unmeasured. Confidence: high for recorded stage costs and current memory pressure; provisional for their contribution to the user's delay.
+Next action: save/restart Blender, free unused application memory, collect a controlled baseline.
+
+### LM-0045 follow-up — 2026-09-06
+Fresh-process evidence now exists: genbench runs 8.82494/8.68290/9.12768 s (median 8.82494), all FINISHED at 117,726 faces. Separate fresh cProfile: 11.87 s, cut 7.386 s (~62%), resampling nested 3.681 s. Physical RAM still scarce; no paging-free claim. Fresh loading eliminates old-session module state as a requirement for reproducing the roughly nine-second sample cost. No production optimization made. See shell_performance_audit_2026_09_05.md follow-up.
+
+## LM-0046 — 2026-09-06 — A native crash that survives freed RAM and -t 1 is the library, not the machine
+DEC-0057 filed the SUBSURF crash under memory pressure because it stopped when RAM came back. Today the same crash reproduced with 4.6 GB free, headless, on a primitive sphere, single-threaded. The discriminating tests are cheap: (1) primitive instead of patient mesh, (2) headless without the add-on, (3) -t 1, (4) shrink the input until it passes. Run those four before attributing a crash to the machine. Also: the Edit-mode Subdivide operator with smoothness is a separate code path from OpenSubdiv and gave a 1.6x wall improvement on a library pressure for 0.8 s of work.
+
+## LM-0047 — 2026-09-08 — "Equivalent primitive" is not "equivalent pipeline": diverge-trace before arguing
+The local collapse matched weld_verts on every single call (faces, weights, winding) and the commit still differed. Three hidden couplings surfaced only by tracing both arms op by op with fingerprints (tools/refinetracedbg.py): (1) weld_verts renumbers element indices and later sorts key on them; (2) length-only sorts tie on refinement midpoints and fall back to pool order; (3) stale wrappers alias reused slots (ERR-0037). Rule: when a differential test says the unit is identical but the whole is not, fingerprint the state before/after every mutating call in both arms and report the first event whose INPUT matches but OUTPUT differs — that names the coupling. Also: numpy for selection/indexing only, mathutils for the arithmetic that feeds a threshold, keeps vectorised code bit-identical (vecequivdbg: 28/28 checks).

@@ -1824,3 +1824,49 @@ Open (not done, needs the orthotist's call): emboss is now 73% Blender C
 (voxel remesh of the text tool + EXACT boolean).  The only lever left is the
 boolean solver (MANIFOLD, as vent_grid already tries) or a coarser tool
 remesh - both change geometry and need their own gate first.
+
+## DEC-0060 — 2026-09-05 — Diagnose shell latency without a concurrent Blender benchmark
+Decision: document the performance audit; defer production edits and a fresh second Blender process.
+Reason: existing source/profile evidence establishes boundary-processing cost; live machine probes show 359–444 MiB available RAM and 96–97% committed memory. A second geometry workload could disrupt the user's existing session and confound measurements.
+Alternatives: unconditional benchmark launch, base caching, coarser meshes, or a rewrite. Why rejected: resource pressure, only 0.474 s measured base-preparation cost, or unmeasured geometry changes and excessive scope.
+Clinical risk: none introduced. Technical risk: historical timings are not the current user's case; loaded-module version is unknown even though installed hashes match.
+Rollback plan: documentation only. Files affected: shell_performance_audit_2026_09_05.md and the four session ledgers.
+Tests required: controlled unprofiled same-case baseline, then deterministic candidate/output comparisons before any future optimization. No fresh Blender test run in this audit.
+
+### DEC-0060 follow-up — 2026-09-06
+User authorized retry after closing Blender. With no existing Blender and committed memory down to 85%, ran one instance at a time: three fresh unprofiled builds plus one profile. Added diagnostic-only tools/genbench.py; no geometry or installed-code change, hence no reinstall. All builds FINISHED. Median 8.82494 s; cut remains ~62% of profiled runtime. Retain HARDEN recommendation; production patch remains outside this measurement step. Physical memory/paging remains a timing confounder; no hardware-failure or causal restart-speedup claim.
+
+## DEC-0061 — 2026-09-06 — #53: "make the pad fully smooth" measured; Blender's Subdivision Surface crashes here, Edit-mode Subdivide (smooth) is the working route
+Question: the orthotist sees polygons in library pressures and asked for Blender's "make it fully smooth" tool (Subdivision Surface, Ctrl+1) to be used before the library pad.
+Evidence (tools/subdivshot.py, A-model, 15 mm / 10 mm feather PRESSURE, same seed, one Blender per arm):
+    production (89144 faces)            commit 6.0 s   wall p50 3.68  p95 23.16  max 54.59  >30deg 31
+    Subdivide smooth x1 first (356576)  commit 21.5 s  wall p50 2.94  p95 14.51  max 47.65  >30deg 10
+Pictures: subdivshot_compare.png (solid + wireframe, same camera). The subdivided rim is visibly rounder; the production rim shows tufted facets along the feather band.
+Decision: no production change yet. Pre-subdividing the scan is a measured 1.6x wall improvement at 4x faces and 3.6x commit time. If adopted it is ONE Mesh-stage button that runs bpy.ops.mesh.subdivide(number_cuts=1, smoothness=1.0) on the whole scan, guarded by a face-count cap, NOT the SUBSURF modifier.
+Why not SUBSURF: Blender 5.0.1 (a3db93c5b259) dies with a C++ exception (0xe06d7363, rethrown through tbb into deg_evaluate_on_refresh) on ANY mesh above roughly 22k faces on this machine: ico sphere subdivisions=7, the A scan, the B sample, clean or raw, headless with no add-on, with 4.6 GB free, and single-threaded (-t 1). A 22k-face decimated scan subdivides fine in 4.3 s. DEC-0057 attributed the same crash to RAM; that attribution is now WRONG for this build - it reproduces with memory available. The orthotist's "Ctrl+1 showed nothing" is this crash or the stripped template hiding the modifier panel.
+Alternatives: shading only (already done, DEC-0054 lineage); post-commit Smooth Selection (exists, #49f); Multires (same OpenSubdiv backend, untested, assumed same crash).
+Clinical risk: none introduced. Technical risk: 4x faces on every downstream op (brace generation is 8.8 s today, DEC-0060). Rollback: none needed.
+Tests required before any button: face-count cap, regionqualtest on a subdivided scan, genbench on a subdivided scan.
+
+## DEC-0062 — 2026-09-08 — #53: region commit 1.8-2.0x faster (local collapse + numpy scans), purge made allocation-independent, Subdivide Scan button
+Request: "make the load be on numpy, use the speed of compiled code, not Python scripts" after the subdivision experiment (DEC-0061) showed the commit growing from 6 s to 21.5 s on a 4x-denser scan.
+Profile first (tools/subdivshot.py RIGO_PROFILE=1): ONE function, _link_safe_collapse, was 61% of the commit at both sizes (4.1 of 6.8 s at 89k faces, 19.1 of 31 s at 357k). Not Python arithmetic: bmesh.ops.weld_verts walks the WHOLE mesh per call (29 ms / 188 ms) and a commit makes ~100-140 collapses.
+Changes (rigo_brace/operators/region_ops.py):
+1. _fan_collapse: on a manifold all-triangle star the v->n collapse is "vert_dissolve + fan face_split from n", three local bmesh.utils calls; anything else keeps the mesh-wide weld verbatim. Followed by index_update on verts/edges/faces because weld_verts renumbers elements and every later sort keys on indices (tools/refinetracedbg.py found this as the first divergence).
+2. _ekey/_fkey tie-breaks on every length-sorted candidate list (refinement midpoints make exactly-equal lengths common; the fallback was BMesh pool order).
+3. Purge pass rewritten as a worklist with identity check (fkey stored beside the wrapper): the old purge processed STALE face wrappers that BMesh's slot reuse had silently re-pointed at different live faces, so its outcome depended on the allocator history. Collapse-born faces are queued immediately (deferring them left a 125 deg fold on the painted golden route); rotation-born faces wait for the next pass (queueing them looped forever: one commit ran 62 CPU-minutes). Passes: up to 8, stop on first pass with no change.
+4. numpy for the whole-mesh scans: _faces_by_membership (both `any(vi in member ...)` listcomps), _mean_touching_edge (numpy selects, mathutils float32 lengths summed exactly as before), _faired_normals ring/adjacency, _tri_bvh all-triangle path, _nonmanifold_count. tools/vecequivdbg.py: every helper bit-identical to a verbatim copy of the old body, pre and post commit.
+5. mesh_ops.RIGO_OT_subdivide_scan ("Subdivide Scan (smooth)" in the Mesh stage): Edit-mode subdivide smoothness=1, capped at 600k result faces. NOT the SUBSURF modifier (ERR-0036).
+Evidence, old primitive vs new (same purge), tools/collapseequivdbg.py, oriented faces by index + max vertex deviation:
+    L0 seed A  5.16 -> 2.91 s  identical topology, dev 2.8e-7 m
+    L0 seed B  4.05 -> 2.10 s  identical,           dev 3.0e-8 m
+    L0 seed C  1.74 -> 1.58 s  identical,           dev 1.5e-8 m
+    L1 (357k)  13.41 -> 6.63 s identical,           dev 3.0e-8 m
+    golden route commit 1.77 -> 1.30 s; every MEASURE line identical to baseline on both routes
+Behaviour change vs pre-#53 baseline comes only from (3), measured on the same seeds: p95 wall equal or better everywhere (23.16->22.35, 23.18->22.45, 15.25 same, golden 20.73 same); single-edge max: seed A 54.6->62.0, seed B 179.8->45.1 (a fold removed), seed C same, L1 47.7->137.6 (a fold appeared). Max dihedral is one edge and is chaotic under any purge-order change; it is NOT gated and was already red on the baseline (179.8, quad 134.6).
+Gates: selftest ALL_PASS; goldenroutetest identical to baseline including its pre-existing red shading_tail (20.04 vs 20.0 on the untouched baseline too, DEC-0057 lineage).
+Remaining profile at L1 after this work: see subdivshot_L1_editsub_profile.txt (vertex-group weight extraction, _authored_rim_field, BMesh from_mesh/to_mesh — none is a whole-mesh Python loop any more).
+Clinical risk: none introduced; amounts, feathers and falloffs untouched. Rollback: revert region_ops.py, mesh_ops.py, panels.py, selftest.py to ed5a052.
+
+### DEC-0062 final rerun before commit — 2026-09-08
+Fresh install, one Blender per test, all from tools/: selftest ALL_PASS=True; goldenroutetest identical to baseline on every MEASURE line (L commit p95 20.73 max 38.91 over30 3; P commit p95 17.57 max 38.76 over30 8; commit 1.32 s), only the pre-existing shading_tail red (20.04 vs 20.0); vecequivdbg L0 VEC_EQUIVALENT=True (28/28); collapseequivdbg old-vs-new EQUIVALENT=True at L0 (5.25 -> 3.12 s, dev 2.8e-7 m) and L1 (14.70 -> 7.53 s, dev 3.0e-8 m), identical topology both.

@@ -565,3 +565,31 @@ live-region DISPLACE previews regenerate displacement on top of a smoothed
 base - "smoothing did nothing" was mechanically correct observation, fixed
 with an explicit WARNING + modifier-order fix. See DEC-0047 /
 council_49b_coarse_scans.md.
+
+## ERR-0035 — 2026-09-05 — Reported shell generation latency, diagnosis only
+Where: rigo.generate_curve_corset; curve_build_ops.py boundary preparation.
+Error message: none reported. Symptoms: user reports too many seconds generating the shell.
+Likely cause: measured cut/boundary preparation dominates the saved profile; whole-mesh edge sorting and face traversal offer bounded optimization candidates. Severe current memory pressure and possibly older loaded modules are separate confounders, not proven timing causes.
+Fix applied: none; no geometry or production code modified.
+Regression test: existing saved runs show 7.73 s unprofiled and 11.36 s profiled; no new timing test under 96–97% memory commit.
+Prevention rule: verify loaded revision and resource conditions; separate instrumented attribution from ordinary elapsed time.
+Files affected: shell_performance_audit_2026_09_05.md and session ledgers. Status: performance finding open; no new geometry defect established.
+
+### ERR-0035 follow-up — 2026-09-06
+Reproduced fresh sample latency: 8.68–9.13 s across three successful unprofiled processes; separate profile 11.87 s with boundary preparation dominant. No exceptions or generation failures in these four runs. Memory pressure persists, but stale loaded code is not needed to reproduce this sample runtime. No production fix applied. Evidence: genbench_20260906_{1,2,3}_result.txt and gentimedbg_20260906_result.txt.
+
+## ERR-0036 — 2026-09-06 — SUBSURF modifier crashes Blender 5.0.1 on meshes above ~22k faces
+Where: bpy.ops.object.modifier_apply on a SUBSURF modifier, or the first depsgraph update after adding it; also Ctrl+1 in the viewport.
+Error message: "Microsoft C++ Exception 0xe06d7363" in KERNELBASE.dll, stack tbb -> BLI_task_pool_work_and_wait -> deg_evaluate_on_refresh; exit code 11; blender.crash.txt written.
+Cause: Blender/OpenSubdiv itself, not the add-on and not RAM: reproduces headless without the add-on, on an ico sphere, with 4.6 GB free, with -t 1. Threshold between 22k and 89k faces. Supersedes the RAM attribution in DEC-0057.
+Fix applied: none possible in the add-on. Workaround: Edit-mode bpy.ops.mesh.subdivide(smoothness=1.0), 0.8 s on 89k faces, no crash.
+Regression test: tools/subdivshot.py with RIGO_SUBDIV=1 RIGO_SUBDIV_MODE=subsurf keeps the crash reproducible; scratch cases documented in DEC-0061.
+Prevention rule: never put a SUBSURF/Multires modifier on a patient scan in this build; a crashed Blender stays resident with its dialog open, kill it before the next run.
+
+## ERR-0037 — 2026-09-08 — Stale BMesh wrappers alias re-used slots; purge outcome depended on the allocator
+Where: _refine_footprint sliver purge, region_ops.py.
+Symptom: replacing weld_verts by an equivalent local collapse (proven identical on 138/138 collapses in situ) still changed the committed topology.
+Cause: the purge held a list of BMFace wrappers while collapsing; killed slots were reused by new faces, so a stale wrapper became is_valid again pointing at a DIFFERENT face and was processed as if it were the original. Which slot is reused depends on the sequence of kills/creates, i.e. on the primitive, not on geometry.
+Fix: store _fkey beside each wrapper and skip when the key no longer matches; worklist re-queues collapse-born faces explicitly.
+Second defect found on the way: queueing rotation-born faces ping-pongs (rotate, re-queue, rotate back) — a commit never returned (62 CPU-minutes). Only collapse targets grow the queue; each collapse removes a vertex, so it terminates.
+Prevention rule: never keep BMesh element wrappers across an operation that kills elements of the same type without an identity check; never grow a worklist from an operation that does not strictly reduce something.

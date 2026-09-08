@@ -293,3 +293,39 @@ generation rejects disconnected, undersized, insufficient-wrap, or unsafe geomet
 Test added: `tools/customtrimtest.py` (paint colors/API, black-stroke recovery,
 surface fit, no UV crossings, mask agreement, manifold shell generation).
 Notes: the paint mask is design input, not an automated clinical prescription.
+
+## PROV-0015 — 2026-09-05 — Shell performance diagnosis
+Source project: user-owned Rigo Brace Designer repository and local Windows resource counters.
+Path/source files: curve_build_ops.py, design_ops.py, trimverify_ops.py, gentimedbg_result.txt, finishtimedbg_result.txt; details in shell_performance_audit_2026_09_05.md.
+License/copyright: existing project terms; no external code or assets acquired.
+Permission basis: user-requested local performance investigation.
+Copied|modified|rewritten|learned-from-only: learned-from-only; original diagnostic documentation.
+Target file: knowledge/shell_performance_audit_2026_09_05.md and session ledgers.
+Reason: distinguish implementation costs from machine/session confounders.
+Changes: documentation only. Compatibility risk: none. Clinical risk: none introduced.
+Test added: none; reviewed saved timing artifacts and compared installed/source hashes; live read-only resource probes.
+Notes: no external source reuse, new production code, or fresh Blender benchmark claimed.
+
+### PROV-0015 follow-up — 2026-09-06
+Original diagnostic harness tools/genbench.py uses the existing user-owned tools/bracefixture.py and repository GUI timer/result-file convention; existing project license/permission basis applies. No external source or assets copied. Records unprofiled elapsed times and build metadata in separate fresh processes. Verified by three successful runs against the unchanged installed add-on; separate existing gentimedbg.py profile also completed. No production geometry or clinical behavior changed.
+
+## PROV-0016 — 2026-09-06 — tools/subdivshot.py subdivision before/after probe
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: tools/subdivshot.py (new, diagnostic only), built from the existing tools/smoothdbg.py chain and tools/rimshot.py camera/shading helpers.
+License/copyright: existing project terms; no external code or assets.
+Permission basis: user-requested test with pictures.
+Copied|modified|rewritten|learned-from-only: modified from in-repo probes.
+Target file: tools/subdivshot.py; outputs subdivshot_L*.png/.txt and subdivshot_compare.png in the project root.
+Reason: measure and show whether pre-subdividing the scan smooths a committed library pressure.
+Changes: none to the add-on. Compatibility risk: none. Clinical risk: none.
+Test added: the probe itself (RIGO_SUBDIV=0|1, RIGO_SUBDIV_MODE=editsub|subsurf), one Blender process per arm.
+
+## PROV-0017 — 2026-09-08 — #53 region commit speed-up and Subdivide Scan
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: rigo_brace/operators/region_ops.py (_fan_collapse, _ekey/_fkey, worklist purge, numpy helpers), rigo_brace/operators/mesh_ops.py (RIGO_OT_subdivide_scan), rigo_brace/ui/panels.py (button), tools/selftest.py (registration check), tools/collapseequivdbg.py, tools/collapsereplaydbg.py, tools/refinetracedbg.py, tools/vecequivdbg.py, tools/subdivshot.py (all diagnostic).
+License/copyright: existing project terms; numpy is bundled with Blender; no external code copied.
+Permission basis: user request ("make the load be on numpy / compiled code").
+Copied|modified|rewritten|learned-from-only: modified in place; old bodies kept verbatim inside the probes for differential proof.
+Reason: 61% of commit time was one mesh-wide bmesh op called per collapse; the rest whole-mesh Python loops.
+Changes: see DEC-0062. Compatibility risk: purge order semantics (documented). Clinical risk: none.
+Test added: the four probes above; selftest op_subdivide_scan.

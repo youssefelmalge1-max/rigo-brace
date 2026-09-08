@@ -18,6 +18,7 @@ import math
 
 import bpy
 import bmesh
+import numpy as np
 from bpy.props import StringProperty
 from bpy.types import Operator
 from mathutils import Vector, kdtree
@@ -497,6 +498,71 @@ def _connected_subset(scan, weights, coords, target_world):
     return {i: weights[i] for i in keep}
 
 
+# --------------------------------------------------------------------------- #
+# Whole-mesh scans in numpy (#53).  These replace Python loops over every
+# edge/loop/polygon of the scan (60-90 % of the non-collapse commit time on a
+# 357k-face scan).  Rule: numpy SELECTS and INDEXES; any arithmetic whose
+# float bits feed a threshold (edge lengths, normals) stays in mathutils on
+# the selected subset, so every result is bit-identical to the loop it
+# replaced (tools/vecequivdbg.py proves it on real regions).
+# --------------------------------------------------------------------------- #
+def _vertex_mask(count, member):
+    mask = np.zeros(count, dtype=bool)
+    if member:
+        mask[np.fromiter(member, dtype=np.int64, count=len(member))] = True
+    return mask
+
+
+def _edge_pairs(me):
+    ev = np.empty(2 * len(me.edges), dtype=np.int32)
+    me.edges.foreach_get("vertices", ev)
+    return ev.reshape(-1, 2)
+
+
+def _loop_arrays(me):
+    """Per-loop vertex index plus per-polygon loop start/total (int32)."""
+    vidx = np.empty(len(me.loops), dtype=np.int32)
+    me.loops.foreach_get("vertex_index", vidx)
+    starts = np.empty(len(me.polygons), dtype=np.int32)
+    me.polygons.foreach_get("loop_start", starts)
+    totals = np.empty(len(me.polygons), dtype=np.int32)
+    me.polygons.foreach_get("loop_total", totals)
+    return vidx, starts, totals
+
+
+def _faces_by_membership(me, member):
+    """(faces holding at least one ``member`` vertex, faces holding none),
+    both in polygon-index order — ``any(vi in member for vi in p.vertices)``
+    evaluated for the whole mesh at once."""
+    polys = me.polygons
+    if not len(polys):
+        return [], []
+    vidx, starts, _totals = _loop_arrays(me)
+    hit = np.add.reduceat(
+        _vertex_mask(len(me.vertices), member)[vidx].astype(np.int32), starts
+    ) > 0
+    return (
+        [polys[i] for i in np.flatnonzero(hit).tolist()],
+        [polys[i] for i in np.flatnonzero(~hit).tolist()],
+    )
+
+
+def _mean_touching_edge(me, member):
+    """Mean length of the edges with at least one end in ``member`` (edge
+    order, mathutils float32 lengths summed in Python exactly as before);
+    ``None`` when no edge touches."""
+    ev = _edge_pairs(me)
+    mask = _vertex_mask(len(me.vertices), member)
+    pairs = ev[mask[ev[:, 0]] | mask[ev[:, 1]]].tolist()
+    if not pairs:
+        return None
+    verts = me.vertices
+    total = 0.0
+    for a, b in pairs:
+        total += (verts[a].co - verts[b].co).length
+    return total / len(pairs)
+
+
 def _faired_normals(me, weights, mean_edge):
     """Displacement directions: normals averaged over a geodesic radius.
 
@@ -516,18 +582,15 @@ def _faired_normals(me, weights, mean_edge):
     member = {i for i, w in weights.items() if w > 0.0}
     # Two-pass zone-restricted adjacency (member + ~2 rings) — building the
     # whole scan's adjacency per commit costs more than the fairing itself.
+    ev = _edge_pairs(me)
+    mask = _vertex_mask(len(me.vertices), member)
     ring1 = set(member)
-    for edge in me.edges:
-        a, b = edge.vertices
-        if a in member or b in member:
-            ring1.add(a)
-            ring1.add(b)
+    ring1.update(ev[mask[ev[:, 0]] | mask[ev[:, 1]]].ravel().tolist())
+    r1 = _vertex_mask(len(me.vertices), ring1)
     adjacency = {}
-    for edge in me.edges:
-        a, b = edge.vertices
-        if a in ring1 or b in ring1:
-            adjacency.setdefault(a, []).append(b)
-            adjacency.setdefault(b, []).append(a)
+    for a, b in ev[r1[ev[:, 0]] | r1[ev[:, 1]]].tolist():
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
     faired = {}
     for i in member:
         dist = {i: 0.0}
@@ -570,6 +633,23 @@ def _tri_bvh(me, faces):
 
     if not faces:
         return None, [], []
+    # All-triangle input (the usual case): gather the corner indices in one
+    # shot; np.unique's sorted output is exactly ``sorted(set)`` and its
+    # inverse is exactly the ``local`` map below.
+    fi = np.fromiter((p.index for p in faces), dtype=np.int64, count=len(faces))
+    vidx, starts, totals = _loop_arrays(me)
+    if np.all(totals[fi] == 3):
+        tri = vidx[starts[fi][:, None] + np.arange(3)]
+        used_np, inv = np.unique(tri, return_inverse=True)
+        co = np.empty(3 * len(me.vertices), dtype=np.float32)
+        me.vertices.foreach_get("co", co)
+        verts = co.reshape(-1, 3)[used_np].tolist()
+        polys = [tuple(t) for t in inv.reshape(-1, 3).tolist()]
+        return (
+            BVHTree.FromPolygons(verts, polys, all_triangles=True),
+            list(faces),
+            polys,
+        )
     used = sorted({vi for p in faces for vi in p.vertices})
     local = {vi: n for n, vi in enumerate(used)}
     verts = [me.vertices[vi].co.copy() for vi in used]
@@ -588,9 +668,7 @@ def _tri_bvh(me, faces):
 def _footprint_self_intersections(me, member, faces=None):
     """Indices of footprint faces that intersect a non-adjacent face."""
     if faces is None:
-        faces = [
-            p for p in me.polygons if any(vi in member for vi in p.vertices)
-        ]
+        faces = _faces_by_membership(me, member)[0]
     tree, owner, polys = _tri_bvh(me, faces)
     if tree is None:
         return set()
@@ -612,9 +690,7 @@ def _static_faces_bvh(me, member):
     during a commit).  These are exactly the faces the footprint-local checks
     cannot see — the opposite body wall, adjacent anatomical sheets (#48
     Wave 1, P0)."""
-    faces = [
-        p for p in me.polygons if not any(vi in member for vi in p.vertices)
-    ]
+    faces = _faces_by_membership(me, member)[1]
     tree, owner, _polys = _tri_bvh(me, faces)
     return tree, owner
 
@@ -770,7 +846,8 @@ def _apply_dissolve(temp_me, plans, n_start):
         for v in plan_refs:
             if not v.is_valid:
                 continue
-            for e in sorted(v.link_edges, key=lambda e: e.calc_length()):
+            for e in sorted(v.link_edges,
+                            key=lambda e: (e.calc_length(), _ekey(e))):
                 n = e.other_vert(v)
                 if n in plan_set or not n.is_valid:
                     continue
@@ -778,7 +855,8 @@ def _apply_dissolve(temp_me, plans, n_start):
                     # prefer an ORIGINAL target if one is also safe
                     better = None
                     for e3 in sorted(v.link_edges,
-                                     key=lambda e3: e3.calc_length()):
+                                     key=lambda e3: (e3.calc_length(),
+                                                     _ekey(e3))):
                         m = e3.other_vert(v)
                         if (m.index < n_start and m not in plan_set
                                 and m.is_valid):
@@ -848,18 +926,9 @@ def _refine_footprint(temp_me, group_index, offset,
                 break
     if not weights:
         return 0, 0.0
-    edge_total = 0.0
-    edge_count = 0
-    for e in temp_me.edges:
-        a, b = e.vertices
-        if a in weights or b in weights:
-            edge_total += (
-                temp_me.vertices[a].co - temp_me.vertices[b].co
-            ).length
-            edge_count += 1
-    if not edge_count:
+    mean_edge = _mean_touching_edge(temp_me, weights)
+    if mean_edge is None:
         return 0, 0.0
-    mean_edge = edge_total / edge_count
     amount_mm = abs(offset) * 1000.0
 
     # Per-edge sampling requirement (no global feather guess): the local
@@ -975,6 +1044,10 @@ def _refine_footprint(temp_me, group_index, offset,
                 marked.append(e)
         if not marked:
             break
+        # #53: subdivide_edges numbers the round's new vertices in INPUT
+        # order, and every later sort keys on those numbers — so the input
+        # order must not be the disk-cycle/pool order left by earlier edits.
+        marked.sort(key=_ekey)
         # Single-cut rounds: each round halves the offending edges, then
         # re-marks with RE-EVALUATED weights — simple, deterministic, and
         # free of cross-call reference invalidation.  Subdivision never
@@ -1005,7 +1078,11 @@ def _refine_footprint(temp_me, group_index, offset,
         )
         ngons = [f for f in bm.faces if len(f.verts) > 3]
         if ngons:
+            ngons.sort(key=_fkey)
             bmesh.ops.triangulate(bm, faces=ngons)
+        # Fresh vertices are created with index -1; the #53 tie-break keys
+        # need every vertex uniquely numbered (new ones are the tail).
+        bm.verts.index_update()
         bm.verts.ensure_lookup_table()
         new_verts = list(bm.verts[n_before:])
         if lift_map:
@@ -1041,7 +1118,8 @@ def _refine_footprint(temp_me, group_index, offset,
         for v in sorted(new_set, key=lambda v: v.index):
             if not v.is_valid:
                 continue
-            for e in sorted(v.link_edges, key=lambda e: e.calc_length()):
+            for e in sorted(v.link_edges,
+                            key=lambda e: (e.calc_length(), _ekey(e))):
                 if e.calc_length() >= short_limit:
                     break
                 # weld the NEW vert onto its neighbour — link-gated (#49d)
@@ -1063,9 +1141,11 @@ def _refine_footprint(temp_me, group_index, offset,
                     if len(e.link_faces) == 2:
                         interior.append(e)
         if interior:
-            # Deterministic input order (sets iterate by pointer): flips
-            # must be bit-reproducible run to run.
+            # Deterministic input order (sets iterate by pointer, disk
+            # cycles by edit history): flips must be bit-reproducible run
+            # to run and independent of the collapse primitive (#53).
             bm.faces.index_update()
+            interior.sort(key=_ekey)
             seen = set()
             faces = []
             for e in interior:
@@ -1073,6 +1153,7 @@ def _refine_footprint(temp_me, group_index, offset,
                     if f not in seen:
                         seen.add(f)
                         faces.append(f)
+            faces.sort(key=_fkey)
             bmesh.ops.beautify_fill(bm, faces=faces, edges=interior)
         # Cap sweep: a face whose two short edges were split but whose long
         # edge was not becomes a collinear sliver beautify may refuse to
@@ -1087,11 +1168,12 @@ def _refine_footprint(temp_me, group_index, offset,
                 if f not in cap_seen:
                     cap_seen.add(f)
                     cap_faces.append(f)
+        cap_faces.sort(key=_fkey)
         for f in cap_faces:
             if len(f.verts) != 3:
                 continue
             els = [(e.calc_length(), e) for e in f.edges]
-            longest, e_long = max(els, key=lambda t: t[0])
+            longest, e_long = max(els, key=lambda t: (t[0], _ekey(t[1])))
             area = f.calc_area()
             if longest > 1e-9 and 2.0 * area / longest < 0.35 * h_target \
                     and len(e_long.link_faces) == 2:
@@ -1103,6 +1185,7 @@ def _refine_footprint(temp_me, group_index, offset,
                 if e.is_valid and e not in seen:
                     seen.add(e)
                     unique.append(e)
+            unique.sort(key=_ekey)
             try:
                 bmesh.ops.rotate_edges(bm, edges=unique, use_ccw=False)
             except RuntimeError:
@@ -1111,8 +1194,13 @@ def _refine_footprint(temp_me, group_index, offset,
         # the sampling target has a numerically unstable normal that folds
         # under displacement (measured: every stubborn fold was such a
         # sliver).  Collapse its shortest new-vertex edge — deterministic,
-        # never moves an original vertex, repeated until clean.
-        for _purge in range(2):
+        # never moves an original vertex, repeated until clean.  Each pass
+        # sees only the faces alive at its start (see the alias note below),
+        # so the collapses' own new faces wait for the next pass; the loop
+        # ends on the first pass that collapses nothing (measured: the old
+        # two-pass cap only converged because aliased wrappers happened to
+        # reach the new faces early — #53).
+        for _purge in range(8):
             new_set = {v for v in new_set if v.is_valid}
             purge_seen = set()
             purge_faces = []
@@ -1121,43 +1209,73 @@ def _refine_footprint(temp_me, group_index, offset,
                     if f not in purge_seen:
                         purge_seen.add(f)
                         purge_faces.append(f)
+            # Keep each face's identity beside its wrapper (#53): collapses
+            # later in this same pass kill faces and create new ones, and
+            # BMesh reuses freed slots, so a stale wrapper can come back
+            # is_valid while pointing at a DIFFERENT face.  Which slot gets
+            # reused depends on the allocator's history, not the geometry —
+            # the old purge silently processed such aliases.
+            # Worklist: the faces alive at the start of the pass, then every
+            # face a collapse or rotation creates, examined right away —
+            # a fresh sliver next to a just-collapsed vertex must not wait
+            # for the next pass (measured: deferring it left a 125 degree
+            # fold on the painted golden route).
+            queue = sorted(
+                ((_fkey(f), f) for f in purge_faces), key=lambda t: t[0]
+            )
             any_collapsed = False
-            for f in purge_faces:
-                if not f.is_valid or len(f.verts) != 3:
+            qi = 0
+            while qi < len(queue):
+                fk, f = queue[qi]
+                qi += 1
+                if not f.is_valid or len(f.verts) != 3 or _fkey(f) != fk:
                     continue
                 els = [(e.calc_length(), e) for e in f.edges]
                 longest = max(length for length, _e in els)
-                if longest < 1e-9 or 2.0 * f.calc_area() / longest \
-                        >= 0.3 * h_target:
+                if longest < 1e-9 or 2.0 * f.calc_area() / longest                         >= 0.3 * h_target:
                     continue
-                done = False
-                for _length, e in sorted(els, key=lambda t: t[0]):
+                touched = None
+                for _length, e in sorted(
+                        els, key=lambda t: (t[0], _ekey(t[1]))):
                     if not e.is_valid:
                         continue
                     va, vb = e.verts
                     if va in new_set and _link_safe_collapse(bm, va, vb):
-                        done = True
+                        touched = [vb]
                         break
                     if vb in new_set and _link_safe_collapse(bm, vb, va):
-                        done = True
+                        touched = [va]
                         break
-                if not done:
+                if touched is None:
                     # No link-safe collapse: rotate the sliver's long edge
                     # instead — position-preserving, manifold-safe, and the
                     # classical escape for an uncollapsible thin triangle
                     # (#49d: one such survivor displaced into an inverted
                     # face on the decim065 fixture).
-                    _l, e_long = max(els, key=lambda t: t[0])
+                    _l, e_long = max(els, key=lambda t: (t[0], _ekey(t[1])))
                     if e_long.is_valid and len(e_long.link_faces) == 2:
                         try:
                             bmesh.ops.rotate_edges(
                                 bm, edges=[e_long], use_ccw=False
                             )
-                            done = True
+                            # Rotation-born faces wait for the next pass:
+                            # queueing them here lets two slivers rotate
+                            # the same edge back and forth forever
+                            # (measured: a commit that never returned).
+                            touched = []
                         except RuntimeError:
                             pass
-                if done:
+                if touched is not None:
                     any_collapsed = True
+                    # Only collapse targets grow the queue — every collapse
+                    # removes a vertex, so this terminates.
+                    grown = []
+                    for v in touched:
+                        if v.is_valid:
+                            grown.extend(v.link_faces)
+                    queue.extend(sorted(
+                        ((_fkey(g), g) for g in grown), key=lambda t: t[0]
+                    ))
             if not any_collapsed:
                 break
         bm.normal_update()
@@ -1227,6 +1345,20 @@ def _refine_footprint(temp_me, group_index, offset,
     return added, h_target * 1000.0
 
 
+def _ekey(e):
+    """Order-independent edge identity for tie-breaks (#53): refinement
+    midpoints make exactly equal edge lengths common, and a length-only sort
+    then falls back to BMesh's internal element order, which depends on the
+    history of creates and kills — so the refined topology depended on which
+    collapse primitive ran.  Vertex indices survive every local edit."""
+    a, b = e.verts[0].index, e.verts[1].index
+    return (a, b) if a < b else (b, a)
+
+
+def _fkey(f):
+    return tuple(sorted(v.index for v in f.verts))
+
+
 def _link_safe_collapse(bm, v, n):
     """Collapse ``v`` onto its edge-neighbour ``n`` iff the classical LINK
     CONDITION holds (their shared neighbours are exactly the two opposite
@@ -1240,7 +1372,49 @@ def _link_safe_collapse(bm, v, n):
     nbrs_n = {e.other_vert(n) for e in n.link_edges}
     if len(nbrs_v & nbrs_n) != 2:
         return False
+    # #53 perf: bmesh.ops.weld_verts walks the WHOLE mesh per call (29 ms at
+    # 89k faces, 188 ms at 357k) and a commit makes ~100 collapses — 60% of
+    # commit time at either size.  On a manifold all-triangle star the edge
+    # collapse v->n is exactly "dissolve v into one polygon, fan-triangulate
+    # from n" (the two faces on edge v-n vanish, every other (v,a,b) becomes
+    # (n,a,b)): three local bmesh.utils calls, O(valence).  Anything else
+    # (boundary, non-manifold, n-gons) keeps the mesh-wide weld verbatim.
+    if (
+        n in nbrs_v
+        and v.is_manifold
+        and not v.is_boundary
+        and all(len(f.verts) == 3 for f in v.link_faces)
+        and _fan_collapse(v, n, nbrs_v - {n})
+    ):
+        # bmesh.ops calls renumber every element table on exit; the local
+        # utils do not.  Every later pass sorts on .index, so keep the
+        # numbering identical to what the weld left (measured: without
+        # this the refined topology differs from the first collapse on).
+        bm.verts.index_update()
+        bm.edges.index_update()
+        bm.faces.index_update()
+        return True
     bmesh.ops.weld_verts(bm, targetmap={v: n})
+    return True
+
+
+def _fan_collapse(v, n, link):
+    """Local v->n collapse: dissolve ``v`` (its star becomes one polygon over
+    ``link``), then split that polygon into a fan from ``n``.  False only
+    when the dissolve refuses before touching anything."""
+    if not bmesh.utils.vert_dissolve(v):
+        return False
+    poly = None
+    for f in n.link_faces:
+        if len(f.verts) > 3 and link <= set(f.verts):
+            poly = f
+            break
+    while poly is not None and len(poly.verts) > 3:
+        verts = [loop.vert for loop in poly.loops]
+        other = verts[(verts.index(n) + 2) % len(verts)]
+        new_face, _loop = bmesh.utils.face_split(poly, n, other)
+        if len(new_face.verts) > len(poly.verts):
+            poly = new_face
     return True
 
 
@@ -1249,12 +1423,10 @@ def _nonmanifold_count(me):
     dissolution welds are the commit's only topology-editing step and must
     never change the mesh's manifoldness — a fin or duplicate face that the
     local weld cleanup missed must never ship."""
-    counts = [0] * len(me.edges)
-    edge_indices = [0] * len(me.loops)
+    edge_indices = np.empty(len(me.loops), dtype=np.int32)
     me.loops.foreach_get("edge_index", edge_indices)
-    for i in edge_indices:
-        counts[i] += 1
-    return sum(1 for c in counts if c != 2)
+    counts = np.bincount(edge_indices, minlength=len(me.edges))
+    return int(np.count_nonzero(counts != 2))
 
 
 def _sliver_dissolve_plan(temp, remaining, n_orig):
@@ -1324,9 +1496,7 @@ def _repair_folds(me, weights, pre_face_normals, pre_vertex_normals,
     if not member:
         return set()
     if affected is None:
-        affected = [
-            p for p in me.polygons if any(vi in member for vi in p.vertices)
-        ]
+        affected = _faces_by_membership(me, member)[0]
 
     def defective(strict=True):
         """``strict`` drives what the repair AIMS at; the relaxed reading
@@ -2691,10 +2861,7 @@ class RIGO_OT_region_apply(Operator):
                             weights[vertex.index] = g.weight
                             break
                 member = {i for i, w in weights.items() if w > 0.0}
-                affected = [
-                    p for p in temp.polygons
-                    if any(vi in member for vi in p.vertices)
-                ]
+                affected = _faces_by_membership(temp, member)[0]
                 pre_face_normals = {
                     p.index: p.normal.copy() for p in affected
                 }
@@ -2704,16 +2871,9 @@ class RIGO_OT_region_apply(Operator):
                 pre_vertex_normals = {
                     i: temp.vertices[i].normal.copy() for i in zone
                 }
-                edge_total = 0.0
-                edge_count = 0
-                for edge in temp.edges:
-                    a, b = edge.vertices
-                    if a in member or b in member:
-                        edge_total += (
-                            temp.vertices[a].co - temp.vertices[b].co
-                        ).length
-                        edge_count += 1
-                mean_edge = edge_total / edge_count if edge_count else 0.003
+                mean_edge = _mean_touching_edge(temp, member)
+                if mean_edge is None:
+                    mean_edge = 0.003
 
                 # Pre-existing defects on a dirty scan are not ours to fix
                 # or to block on — baseline them out of the repair verdict.

@@ -159,6 +159,7 @@ def _draw_scan(layout, context):
     col.prop(settings, "smooth_iterations")
     col.prop(settings, "smooth_factor")
     col.operator("rigo.smooth", text="Smooth (whole mesh)")
+    col.operator("rigo.subdivide_scan", text="Subdivide Scan (smooth)", icon="MOD_SUBSURF")
 
     # Verify-clean gate: highlight problems before closing the mesh.
     vbox = layout.box()

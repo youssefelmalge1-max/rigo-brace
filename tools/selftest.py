@@ -74,6 +74,7 @@ def _check():
         "op_center_model": _is_registered(registered, "center_model"),
         "op_verify_clean": _is_registered(registered, "verify_clean"),
         "op_quad_remesh": _is_registered(registered, "quad_remesh"),
+        "op_subdivide_scan": _is_registered(registered, "subdivide_scan"),
         "op_region_add": _is_registered(registered, "region_add"),
         "op_region_add_circle": _is_registered(registered, "region_add_circle"),
         "op_region_edit": _is_registered(registered, "region_edit"),
