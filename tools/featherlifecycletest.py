@@ -450,8 +450,17 @@ def _selected_faces(obj):
     return {face.index for face in bm.faces if face.select}
 
 
+def _find_outline(mask):
+    """The outline object of ``mask`` (named <scan>.<mask>.outline)."""
+    suffix = "." + mask + ".outline"
+    for candidate in bpy.data.objects:
+        if candidate.name.endswith(suffix) or candidate.name == mask + ".outline":
+            return candidate
+    return None
+
+
 def _outline(mask):
-    outline = bpy.data.objects.get(mask + ".outline")
+    outline = _find_outline(mask)
     empty = {
         "valid": False, "inner": frozenset(), "outer": frozenset(),
         "detail": "exists=0 loops=0 vertices=0 edges=0",
@@ -880,7 +889,7 @@ def _commit(ctx):
         f"post_max_deg={post_quality['max']:.6f}",
     )
     had_outline = ctx.get("outline5", {}).get("valid", False)
-    exists = bpy.data.objects.get(ctx["source_mask"] + ".outline") is not None
+    exists = _find_outline(ctx["source_mask"]) is not None
     _gate(
         "outline_gone_when_committed",
         finished and had_outline and not exists,
@@ -969,7 +978,7 @@ def _mirror(ctx):
             _remove_region(obj, mask)
     exists = (
         created_mask is not None
-        and bpy.data.objects.get(created_mask + ".outline") is not None
+        and _find_outline(created_mask) is not None
     )
     valid_before = bool(before_outline and before_outline["valid"])
     _gate(
@@ -1019,10 +1028,10 @@ def _overlap_fixture(ctx):
     )
 
     second_outline = _outline(second)
-    first_gone = bpy.data.objects.get(first + ".outline") is None
+    first_gone = _find_outline(first) is None
     _activate(obj, first)
     restored_first = _outline(first)
-    second_gone = bpy.data.objects.get(second + ".outline") is None
+    second_gone = _find_outline(second) is None
     _activate(obj, second)
     _gate(
         "outline_gone_when_inactive",

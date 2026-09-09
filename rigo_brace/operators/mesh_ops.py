@@ -256,6 +256,7 @@ class RIGO_OT_subdivide_scan(Operator):
             self.report({"ERROR"}, "Select the scan mesh first")
             return {"CANCELLED"}
         faces = len(obj.data.polygons)
+        n_before = len(obj.data.vertices)
         if faces * 4 > self.MAX_RESULT_FACES:
             self.report(
                 {"ERROR"},
@@ -270,6 +271,11 @@ class RIGO_OT_subdivide_scan(Operator):
         bpy.ops.object.mode_set(mode="OBJECT")
         from .scan_ops import shade_smooth_scan
         shade_smooth_scan(obj.data)
+        # #54 Task 7: live regions keep a per-vertex definition; the new
+        # vertices need a place in it (else a fresh 0.0 reads as pad).
+        from . import region_ops
+        region_ops.extend_region_attributes(obj, n_before)
+        region_ops.sync_outline(obj)
         self.report(
             {"INFO"}, f"Subdivided: {faces} -> {len(obj.data.polygons)} faces"
         )

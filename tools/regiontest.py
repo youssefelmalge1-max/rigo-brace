@@ -72,6 +72,14 @@ def _run():
         bpy.context.view_layer.objects.active = scan
         settings.scan_units = "mm"
         bpy.ops.rigo.apply_units()
+        # #54 Task 7 (ERR-0043): a full-depth outward pad on the raw 3.7 mm
+        # sample folds the scan's own needle faces and Commit now REFUSES
+        # it; the flow runs on the once-subdivided sample, the product's
+        # route for painted pads.
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.subdivide(number_cuts=1, smoothness=1.0)
+        bpy.ops.object.mode_set(mode="OBJECT")
 
         # ---- paint a region (300-face patch on one side) ---- #
         bpy.ops.object.mode_set(mode="EDIT")
@@ -204,7 +212,9 @@ def _run():
         # wrinkled 53k paint measures ~4.5 s before the fallback decides
         # (measured 6.06 s total; deep >10 mm presses may ladder further
         # but are not this fixture).
-        time_ok = dt < 7.0
+        # Once-subdivided sample since #54 Task 7 (215k verts, 4x the raw
+        # fixture): measured 5.2-7.4 s under load, was < 7 s on the raw mesh.
+        time_ok = dt < 12.0
         apply_ok = (disp_ok and preview_gone and count_ok and nonman_ok
                     and time_ok)
         _mark(

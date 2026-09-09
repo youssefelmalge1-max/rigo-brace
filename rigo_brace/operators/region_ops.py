@@ -208,6 +208,15 @@ def _drop_contact(me, mask):
         me.attributes.remove(attribute)
 
 
+def _outward_contact(me, region):
+    """The painted set of an OUTWARD region, or None.  `feather_outside`
+    is the single switch (Codex round C, Q7): a stale `.contact` on a
+    region flagged inward is ignored, and a bare falloff string is legacy."""
+    if isinstance(region, str) or not getattr(region, "feather_outside", False):
+        return None
+    return _load_contact(me, region.surface_mask)
+
+
 def _band_weights(d_out_mm, feather_mm, falloff_kind, profile=(0.0, 0.0, 0.0)):
     """Outward band (#54 Task 7): weight = profile(feather - d_out), the same
     Smooth/Linear/Sharp/Rounded shapes as the inward path, no clamp."""
@@ -330,8 +339,11 @@ def _outward_fields_from_contact(me, contact, feather_mm, falloff_kind,
     return weights, depth_mm, band_mm
 
 
-def _outline_name(region):
-    return f"{region.surface_mask}{_OUTLINE_SUFFIX}"
+def _outline_name(obj, region):
+    # The scan's name is part of it: history copies keep their mask names
+    # (Codex round C, Q5), so a bare mask name could resolve to another
+    # object's outline.  Blender object names are capped at 63 bytes.
+    return f"{obj.name}.{region.surface_mask}{_OUTLINE_SUFFIX}"[-63:]
 
 
 def _delete_outline_object(outline):
@@ -373,10 +385,10 @@ def _region_member_flags(obj, region):
     stored attributes (fast) or the vertex group (legacy without distance)."""
     me = obj.data
     n = len(me.vertices)
-    contact = _load_contact(me, region.surface_mask)
+    contact = _outward_contact(me, region)
     depth = _load_distance(me, region.surface_mask)
     if contact is not None and depth is not None:
-        band = (~contact) & (~np.isnan(depth)) & (-depth <= region.feather_mm + 1e-9)
+        band = (~contact) & (depth < 0.0) & (-depth <= region.feather_mm + 1e-9)
         return contact, contact | band
     if depth is not None:
         return None, depth >= 0.0
@@ -438,7 +450,7 @@ def sync_outline(obj):
             and not obj.get(_committed_key(region), False)
             and not obj.data.is_editmode
             and obj.vertex_groups.get(region.surface_mask) is not None):
-        want = _outline_name(region)
+        want = _outline_name(obj, region)
     for other in list(bpy.data.objects):
         if (other.name.endswith(_OUTLINE_SUFFIX) and other.parent == obj
                 and other.name != want):
@@ -447,7 +459,7 @@ def sync_outline(obj):
         return
     verts, edges = _outline_geometry(obj, region)
     existing = bpy.data.objects.get(want)
-    if existing is not None:
+    if existing is not None and existing.parent == obj:
         _delete_outline_object(existing)
     if not edges:
         return
@@ -653,7 +665,7 @@ def reevaluate_region(obj, region):
     if group is None or depth is None:
         _sync_preview(obj, region)
         return False
-    contact = _load_contact(me, region.surface_mask)
+    contact = _outward_contact(me, region)
     if contact is not None:
         return _reevaluate_outward(obj, region, group, depth, contact)
     members = np.flatnonzero(depth >= 0.0)
@@ -678,7 +690,10 @@ def _reevaluate_outward(obj, region, group, depth, contact):
     """#54 Task 7: the painted set stays at 1.0; the band is re-cut at the
     feather from the stored candidates — members beyond it are REMOVED, so
     a narrower feather releases the surface it no longer reaches."""
-    candidates = np.flatnonzero((~contact) & (~np.isnan(depth)))
+    # Band = strictly NEGATIVE stored distance (Codex round C, Q2): a stray
+    # 0.0 (fresh attribute after Subdivide Scan) must never read as a band
+    # vertex at the outline, i.e. full weight.
+    candidates = np.flatnonzero((~contact) & (depth < 0.0))
     d_out = -depth[candidates]
     keep = d_out <= region.feather_mm + 1e-9
     drop = candidates[~keep].tolist()
@@ -1420,6 +1435,28 @@ def _face_height(me, verts, index):
         (verts[vs[k]].co - verts[vs[(k + 1) % 3]].co).length for k in range(3)
     )
     return 2.0 * me.polygons[index].area / longest if longest > 1e-12 else 0.0
+
+
+def _pad_fold_faces(me, fold_pairs, pre_face_normals, contact):
+    """Faces touching an ORIGINAL painted-pad vertex that folded shut in the
+    displacement itself, before any repair (the repair then slides those
+    original vertices; the commit note discloses it)."""
+    n = len(contact)
+
+    def touches_pad(index):
+        return any(v < n and contact[v] for v in me.polygons[index].vertices)
+
+    folded = set()
+    for a, b in fold_pairs:
+        if not (touches_pad(a) or touches_pad(b)):
+            continue
+        pre = pre_face_normals[a].dot(pre_face_normals[b])
+        if pre <= _FOLD_PRE_DOT:
+            continue
+        if me.polygons[a].normal.dot(me.polygons[b].normal) < _FOLD_DOT:
+            folded.add(a)
+            folded.add(b)
+    return folded
 
 
 def _surface_confirmed_flips(me, flipped, fold_pairs):
@@ -2695,10 +2732,7 @@ def _authored_rim_field(me, group_index, region):
                 break
     if len(weights) < 12:
         return None
-    contact = (
-        None if isinstance(region, str)
-        else _load_contact(me, region.surface_mask)
-    )
+    contact = _outward_contact(me, region)
     if contact is not None:
         return _outward_rim_field(me, region, weights, contact)
     coords = {i: me.vertices[i].co.copy() for i in weights}
@@ -2816,6 +2850,7 @@ def _outward_rim_field(me, region, weights, contact):
     coords = {i: me.vertices[i].co.copy() for i in weights}
     adjacency = {i: [] for i in weights}
     rim = set()
+    rim_outside = {}  # rim vertex -> its non-pad neighbours (member or not)
     for edge in me.edges:
         a, b = edge.vertices
         a_in, b_in = a in adjacency, b in adjacency
@@ -2824,12 +2859,34 @@ def _outward_rim_field(me, region, weights, contact):
             adjacency[b].append(a)
         if a_in and contact[a] and not contact[b]:
             rim.add(a)
+            rim_outside.setdefault(a, []).append(b)
         if b_in and contact[b] and not contact[a]:
             rim.add(b)
+            rim_outside.setdefault(b, []).append(a)
     if len(rim) < 3:
         return None
     _dist, evaluate = _boundary_distance(coords, adjacency, rim)
     raw = evaluate.raw
+    # Side of the outline for a refinement-born vertex: nearer to a band
+    # member than to a pad member = band (ties -> band).  Codex round C
+    # (Q6) objected to the jump at the pad/band bisector; the alternative —
+    # the sign against the nearest rim vertex's outward direction, which
+    # is continuous on the rim — MEASURED worse on a jagged painted rim
+    # (cornertest 4/3 shoulder max 152.5 deg vs 38.6, and the lifecycle
+    # commit shipped two hinges), so the nearest-member rule stays and the
+    # bisector jump (0.03 in weight for Smooth f10) is accepted.
+    pad_tree = kdtree.KDTree(len(weights))
+    band_tree = kdtree.KDTree(len(weights))
+    n_pad = n_band = 0
+    for i in weights:
+        if contact[i]:
+            pad_tree.insert(coords[i], i)
+            n_pad += 1
+        else:
+            band_tree.insert(coords[i], i)
+            n_band += 1
+    pad_tree.balance()
+    band_tree.balance()
     kind = region.falloff_type
     amount_m = abs(region.magnitude_mm) * 0.001
     if kind == "ROUNDED":
@@ -2874,25 +2931,6 @@ def _outward_rim_field(me, region, weights, contact):
     )
     if deviation[int(len(deviation) * 0.95)] > _RIM_FIELD_TOLERANCE:
         return None
-
-    # Side of the outline for a refinement-born vertex: nearer to a band
-    # member than to a pad member = band.  A rim-adjacent midpoint is
-    # equidistant and goes to the BAND on purpose: reading it as pad put a
-    # steep profile's full amount half an edge outside the outline
-    # (measured: refined outward commits failed their repair, 670 defective
-    # faces, and the ladder fell back to the unrefined commit).
-    pad_tree = kdtree.KDTree(len(weights))
-    band_tree = kdtree.KDTree(len(weights))
-    n_pad = n_band = 0
-    for i in weights:
-        if contact[i]:
-            pad_tree.insert(coords[i], i)
-            n_pad += 1
-        else:
-            band_tree.insert(coords[i], i)
-            n_band += 1
-    pad_tree.balance()
-    band_tree.balance()
 
     def distance(co):
         # x from the outline toward the pad: the pad is the plateau (f),
@@ -3350,7 +3388,7 @@ class RIGO_OT_region_edit(Operator):
         group_index = vg.index
         # #54 Task 7: an outward region edits its PAINTED set; the band is
         # derived and must never be absorbed into the pad by an Update.
-        contact = _load_contact(obj.data, region.surface_mask)
+        contact = _outward_contact(obj.data, region)
         included = (
             set(np.flatnonzero(contact).tolist()) if contact is not None else set()
         )
@@ -3834,6 +3872,8 @@ class RIGO_OT_region_apply(Operator):
         # anchors.  Returns None (and changes nothing) for library/style and
         # legacy regions, which is verified by reconstruction, not assumed.
         rim_field = _authored_rim_field(me, group.index, region)
+        contact_pad = _outward_contact(me, region)
+        pad_fold_count = 0
         if rim_field is None:
             # #49k: a PLACED STYLE owns a continuous field too — the grid (v2)
             # or sample cloud (v1) it was authored from, recorded on the region
@@ -3929,6 +3969,17 @@ class RIGO_OT_region_apply(Operator):
                 for i in faired:
                     temp.vertices[i].co += faired[i] * (offset * weights[i])
                 temp.update()
+                if contact_pad is not None:
+                    # ERR-0043: the full-depth pad folds in the scan's own
+                    # needle faces before any repair — measured 2–9 faces on
+                    # EVERY fixture, subdivided ones included, all repaired.
+                    # Codex round C asked for a transactional refusal; that
+                    # would have blocked the orthotist's normal route, so it
+                    # is a commit NOTE (the repair's tangential slide on
+                    # original pad vertices is what it discloses).
+                    pad_fold_count = max(pad_fold_count, len(_pad_fold_faces(
+                        temp, fold_pairs, pre_face_normals, contact_pad
+                    )))
                 remaining = _repair_folds(
                     temp, weights, pre_face_normals, pre_vertex_normals,
                     adjacency, baseline, affected, fold_pairs,
@@ -4021,6 +4072,13 @@ class RIGO_OT_region_apply(Operator):
                 f"{drawable:.1f} mm or more, a wider feather, or Subdivide "
                 "Scan first"
             )
+        if pad_fold_count:
+            pad_note = (
+                f"{pad_fold_count} faces at the painted pad folded in the "
+                "displacement and were repaired by sliding — Subdivide Scan "
+                "or clean the scan for a cleaner pad"
+            )
+            note = f"{note}; {pad_note}" if note else pad_note
         region.commit_note = note
         region.refined_added = added
         region.refined_edge_mm = refine_mm
@@ -4264,29 +4322,65 @@ class RIGO_OT_region_mirror(Operator):
 
 
 def _mark_refined_nonmember(obj, region, n_original):
-    """Refinement-born vertices are NOT members of any OTHER live region:
-    a fresh point attribute reads 0.0, which the signed encoding would take
-    for a pad vertex at the outline (#54 Task 7, Codex round 3 blind spot)."""
+    """Kept name; see ``extend_region_attributes``."""
+    extend_region_attributes(obj, n_original, skip=region)
+
+
+def extend_region_attributes(obj, n_original, skip=None):
+    """Give vertices born after ``n_original`` (commit refinement, Subdivide
+    Scan) a consistent place in every OTHER live region's definition.
+
+    A fresh point attribute reads 0.0 / False, which the signed encoding
+    would take for a pad vertex at the outline; and the deform layer gives
+    those vertices INTERPOLATED group weights, so with NaN distance they
+    would keep that weight through every later Feather edit (Codex round
+    C, Q1: phantom influence).  Here each new vertex takes its stored
+    distance from its original neighbours: a band neighbour -> band (mean
+    of their negative distances); only pad neighbours -> pad; nothing known
+    -> NaN, non-member.  Legacy regions keep -1 (non-member), as before."""
     me = obj.data
     n = len(me.vertices)
     if n <= n_original:
         return
+    neighbours = None
     for other in obj.rigo_regions:
-        if other == region or not other.surface_mask:
+        if other == skip or not other.surface_mask:
+            continue
+        if obj.get(_committed_key(other), False):
             continue
         depth = _load_distance(me, other.surface_mask)
         if depth is None:
             continue
-        contact = _load_contact(me, other.surface_mask)
-        depth[n_original:] = np.nan if contact is not None else -1.0
-        me.attributes[_dist_name(other.surface_mask)].data.foreach_set(
-            "value", depth.astype(np.float32)
-        )
-        if contact is not None:
-            contact[n_original:] = False
+        contact = _outward_contact(me, other)
+        if contact is None:
+            depth[n_original:] = -1.0
+        else:
+            if neighbours is None:
+                neighbours = _mesh_neighbours(me)
+            for v in range(n_original, n):
+                band, pad = [], []
+                for j in neighbours(v):
+                    if j >= n_original:
+                        continue
+                    if contact[j]:
+                        pad.append(depth[j])
+                    elif depth[j] < 0.0:
+                        band.append(depth[j])
+                if band:
+                    depth[v] = float(np.mean(band))
+                    contact[v] = False
+                elif pad:
+                    depth[v] = float(np.mean(pad))
+                    contact[v] = True
+                else:
+                    depth[v] = np.nan
+                    contact[v] = False
             me.attributes[_contact_name(other.surface_mask)].data.foreach_set(
                 "value", contact
             )
+        me.attributes[_dist_name(other.surface_mask)].data.foreach_set(
+            "value", depth.astype(np.float32)
+        )
 
 
 class RIGO_OT_region_remove(Operator):

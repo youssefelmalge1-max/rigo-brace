@@ -124,6 +124,7 @@ def _run():
         settings.region_style = _STYLE_ID["value"]
         bpy.context.scene.cursor.location = target.matrix_world @ Vector(source_center)
         before = [vertex.co.copy() for vertex in target.data.vertices]
+        before_normals = [vertex.normal.copy() for vertex in target.data.vertices]
         import_status = bpy.ops.rigo.region_style_import()
         imported = target.rigo_regions[target.rigo_region_index]
         preview = _evaluated_coordinates(target)
@@ -172,16 +173,30 @@ def _run():
             for vertex in target.data.vertices
             if vertex.index < len(before)
         )
-        # Total vector length: the normal component is exactly 8.0 (gated in
-        # regionqualtest.py); commit-time fold repair may add a ~1 mm
-        # tangential slide on decimated slivers, so allow that margin here.
+        # The clinical promise is the NORMAL component: exactly 8.0 on the
+        # pad.  Commit-time fold repair slides originals tangentially on this
+        # decimated sample — ~1 mm inward (pre-#54), 2.5 mm with the outward
+        # pad (ERR-0043, measured 8.383 mm total) — and since DEC-0072 the
+        # commit note DISCLOSES repaired pad folds, so a slide beyond the old
+        # 0.30 mm margin is accepted only when that disclosure is present.
+        normal_max_mm = max(
+            abs((vertex.co - before[vertex.index]).dot(before_normals[vertex.index]))
+            * 1000.0
+            for vertex in target.data.vertices
+            if vertex.index < len(before)
+        )
+        overshoot = committed_max_mm - 8.0
+        disclosed = "painted pad folded" in imported.commit_note
         commit_ok = (
-            -0.05 < committed_max_mm - 8.0 < 0.30
+            abs(normal_max_mm - 8.0) < 0.05
+            and -0.05 < overshoot < 0.60
+            and (overshoot < 0.30 or disclosed)
             and target.modifiers.get(
                 f"RIGO_REGION_PREVIEW_{imported.surface_mask}"
             ) is None
         )
-        _mark(f"phase=commit max={committed_max_mm:.3f}mm commit_ok={commit_ok}")
+        _mark(f"phase=commit max={committed_max_mm:.3f}mm normal={normal_max_mm:.3f}mm "
+              f"disclosed={disclosed} note='{imported.commit_note}' commit_ok={commit_ok}")
 
         settings.region_style = _STYLE_ID["value"]
         deleted = bpy.ops.rigo.region_style_delete() == {"FINISHED"}

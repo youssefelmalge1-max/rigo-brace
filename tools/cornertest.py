@@ -194,7 +194,9 @@ def _run():
         _gate("rounded_6_6_drawn_clean", p506 <= 12.0 and p956 <= 20.0
               and mx6 <= 45.0 and growth6 <= 2.6,
               f"p50={p506:.1f} p95={p956:.1f} max={mx6:.1f} growth={growth6:.2f}")
-        _gate("rounded_6_6_no_note", region6.commit_note == "",
+        # DEC-0072: the note may also disclose repaired pad folds; this gate
+        # is about the CORNER being drawable.
+        _gate("rounded_6_6_no_note", "Corner" not in region6.commit_note,
               f"note='{region6.commit_note}'")
 
         # ---- 3. Smooth f10 ---- #
