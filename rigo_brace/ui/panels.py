@@ -278,6 +278,9 @@ def _draw_guided_box(layout, context):
     col.prop(settings, "region_magnitude")
     col.prop(settings, "region_feather")
     col.prop(settings, "region_falloff", text="Falloff")
+    if settings.region_falloff == "ROUNDED":
+        col.prop(settings, "region_top_radius")
+        col.prop(settings, "region_bottom_radius")
     box.operator("rigo.region_add", text="Create Live Region", icon="ADD")
     col = box.column(align=True)
     col.prop(settings, "region_radius")
@@ -294,7 +297,37 @@ def _draw_guided_box(layout, context):
             col = box.column(align=True)
             col.prop(region, "kind", text="")
             col.prop(region, "magnitude_mm")
+            # #54: feather and falloff are live while the region still owns
+            # its outline distance; imported styles / mirrors / older regions
+            # keep the Edit Selection → Update route, committed ones are baked.
+            committed = obj.get(f"rigo_committed_{region.surface_mask}", False)
+            has_distance = (
+                obj.data.attributes.get(f"{region.surface_mask}.dist") is not None
+            )
+            profile = col.column(align=True)
+            profile.enabled = bool(has_distance and not committed)
+            profile.prop(
+                region, "feather_mm",
+                text="Feather (mm), outside" if region.feather_outside
+                else "Feather (mm)",
+            )
+            profile.prop(region, "falloff_type", text="Falloff")
+            if region.falloff_type == "ROUNDED":
+                profile.prop(region, "top_radius_mm")
+                profile.prop(region, "bottom_radius_mm")
+            if region.feather_mm > 0.0:
+                from ..operators.region_ops import transition_readout
+                text, warn = transition_readout(region)
+                profile.label(text=text, icon="ERROR" if warn else "CURVE_BEZCIRCLE")
             col.prop(region, "anatomical_label", text="")
+            if committed:
+                box.label(text="Committed — undo to change its shape.", icon="LOCKED")
+                if region.commit_note:
+                    box.label(text=region.commit_note, icon="ERROR")
+            elif not has_distance:
+                box.label(
+                    text="Feather: Edit Selection → Update Preview.", icon="INFO"
+                )
         row = box.row(align=True)
         row.operator("rigo.region_edit", text="Edit Selection", icon="EDITMODE_HLT")
         row.operator("rigo.region_update", text="Update Preview", icon="FILE_REFRESH")

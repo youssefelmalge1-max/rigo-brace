@@ -21,7 +21,7 @@ import bmesh
 import numpy as np
 from bpy.props import StringProperty
 from bpy.types import Operator
-from mathutils import Vector, kdtree
+from mathutils import Matrix, Vector, kdtree
 
 from ..core import (
     CORSET_BASE_NAME,
@@ -54,6 +54,18 @@ _FOLD_PRE_DOT = -0.5
 # wide margin below the benign case measured on paint15 face 53270 (every
 # neighbour dihedral 0.77, no self-intersection, 2.14 mm² area).
 _FLIP_CONFIRM_DOT = 0.0
+# #54 Task 6: the fold test above fires only when two neighbouring faces turn
+# ANTIPARALLEL (past 162°).  A two-face hinge folded back to 100–160° passed
+# it (measured: 123° on a corner-refined smoothstep trial, 150.9° on the
+# DEC-0064 EASEOUT arm — both shipped as FINISHED).  A pair that was smoother
+# than _HINGE_PRE_DEG before the commit and is past _HINGE_DEG after it is a
+# fold we made: a repair target and, unrepaired, a refusal.  Legitimate steep
+# walls measured at most ~70° per edge, well below 100°.
+_HINGE_DEG = 100.0
+_HINGE_PRE_DEG = 60.0
+_HINGE_DOT = math.cos(math.radians(_HINGE_DEG))
+_HINGE_PRE_DOT = math.cos(math.radians(_HINGE_PRE_DEG))
+_HINGE_MIN_HEIGHT_M = 0.0001  # 0.1 mm: below this a face has no normal to judge
 
 
 def _preview_name(region):
@@ -89,6 +101,608 @@ def _remove_preview(obj, region):
     modifier = _preview_modifier(obj, region)
     if modifier is not None:
         obj.modifiers.remove(modifier)
+
+
+# --------------------------------------------------------------------------- #
+# #54 Task 1: the region's CONTINUOUS definition is the surface distance from
+# the painted outline (mm, per vertex, -1 outside the region), stored as a
+# float point attribute next to the mask.  The vertex-group weights are a
+# VIEW of it — amount × falloff(min(d, f) / f) — re-evaluated whenever the
+# orthotist edits feather/falloff, so nothing is baked before Commit.
+# --------------------------------------------------------------------------- #
+_DIST_SUFFIX = ".dist"
+_CONTACT_SUFFIX = ".contact"   # #54 Task 7: the painted (full-depth) set
+_OUTLINE_SUFFIX = ".outline"   # #54 Task 7: the drawn pad / band outlines
+_BAND_CAP_MM = 60.0            # feather_mm's hard max: the band is stored once
+_BAND_WALK = 1.4               # candidate walk past the cap (DEC-0070: 36.7 % p95)
+# #54 Task 3: corner-aware sampling.  A fillet of radius r is drawn cleanly
+# when each edge turns at most _CORNER_TURN radians (edge <= 0.25 r); below
+# _CORNER_EDGE_FLOOR_M (or half the mesh's own edge) refinement would be a
+# remesh, so the corner is reported instead of silently creased.
+_CORNER_TURN = 0.2
+_CORNER_EDGE_FLOOR_M = 0.0005
+# A corner that would STILL turn more than this per edge after the one
+# halving the floor allows is not drawn by refining it: measured, corners at
+# 1.0–1.45 mesh edges got WORSE (golden painted route, 1.9 mm corner on
+# ~1.3 mm edges: wall p95 17.6° → 20.8–22.3°; a 1.1 mm smoothstep corner on
+# 2 mm edges went from a 54° crease to a 123° hinge) while a corner at 2
+# edges improved (shoulder dihedral 21° → 8° median).  0.3 rad = corners of
+# at least 1.67 mesh edges.  Below that the corner is left exactly as it was
+# and named in the commit note.
+_CORNER_SKIP_TURN = 0.3
+
+
+def _corner_edge_floor(mean_edge_m):
+    return max(_CORNER_EDGE_FLOOR_M, 0.5 * mean_edge_m)
+
+
+def _drawable_corner_mm(edge_mm):
+    """Smallest corner radius (mm) this mesh draws without a crease."""
+    if edge_mm <= 0.0:
+        return None
+    return _corner_edge_floor(edge_mm * 0.001) / _CORNER_TURN * 1000.0
+
+
+def _dist_name(mask):
+    return mask + _DIST_SUFFIX
+
+
+def _store_distance(me, mask, depth_mm, band_mm=None):
+    """``depth_mm``: {vertex index: inward distance in mm} for every member.
+
+    Outward regions (#54 Task 7) also pass ``band_mm`` {index: outward
+    distance in mm} for the stored band candidates; those are written as
+    NEGATIVE values and non-members as NaN (legacy encoding: -1)."""
+    name = _dist_name(mask)
+    attribute = me.attributes.get(name)
+    if attribute is not None:
+        me.attributes.remove(attribute)
+    attribute = me.attributes.new(name, "FLOAT", "POINT")
+    fill = np.nan if band_mm is not None else -1.0
+    values = np.full(len(me.vertices), fill, dtype=np.float32)
+    if depth_mm:
+        index = np.fromiter(depth_mm.keys(), dtype=np.int64, count=len(depth_mm))
+        values[index] = np.fromiter(
+            depth_mm.values(), dtype=np.float64, count=len(depth_mm)
+        )
+    if band_mm:
+        index = np.fromiter(band_mm.keys(), dtype=np.int64, count=len(band_mm))
+        # strictly negative: a band vertex is never mistaken for pad (0.0)
+        values[index] = -np.maximum(np.fromiter(
+            band_mm.values(), dtype=np.float64, count=len(band_mm)
+        ), 1e-6)
+    attribute.data.foreach_set("value", values)
+
+
+def _contact_name(mask):
+    return f"{mask}{_CONTACT_SUFFIX}"
+
+
+def _store_contact(me, mask, indices):
+    """#54 Task 7: the painted set, stored explicitly — never reconstructed
+    from the field (its rim re-zeroing leaves a zero plateau)."""
+    name = _contact_name(mask)
+    attribute = me.attributes.get(name)
+    if attribute is not None:
+        me.attributes.remove(attribute)
+    attribute = me.attributes.new(name, "BOOLEAN", "POINT")
+    values = np.zeros(len(me.vertices), dtype=bool)
+    indices = list(indices)
+    if indices:
+        values[np.asarray(indices, dtype=np.int64)] = True
+    attribute.data.foreach_set("value", values)
+
+
+def _load_contact(me, mask):
+    attribute = me.attributes.get(_contact_name(mask))
+    if attribute is None or attribute.domain != "POINT":
+        return None
+    values = np.empty(len(me.vertices), dtype=bool)
+    attribute.data.foreach_get("value", values)
+    return values
+
+
+def _drop_contact(me, mask):
+    attribute = me.attributes.get(_contact_name(mask))
+    if attribute is not None:
+        me.attributes.remove(attribute)
+
+
+def _band_weights(d_out_mm, feather_mm, falloff_kind, profile=(0.0, 0.0, 0.0)):
+    """Outward band (#54 Task 7): weight = profile(feather - d_out), the same
+    Smooth/Linear/Sharp/Rounded shapes as the inward path, no clamp."""
+    d_out_mm = np.asarray(d_out_mm, dtype=np.float64)
+    if d_out_mm.size == 0:
+        return d_out_mm
+    f = float(feather_mm)
+    if f <= 1e-6:
+        return np.zeros_like(d_out_mm)
+    x = np.clip(f - d_out_mm, 0.0, f)
+    if falloff_kind == "ROUNDED":
+        amount, top, bottom = profile
+        _theta, _rt, _rb, evaluate = _rounded_profile(amount, f, top, bottom)
+        return evaluate(x)
+    return _falloff_np(x / f, falloff_kind)
+
+
+def _band_members(band_mm, feather_mm, falloff_kind, profile=(0.0, 0.0, 0.0)):
+    """{index: weight} for the stored band candidates within the feather."""
+    if not band_mm or feather_mm <= 1e-6:
+        return {}
+    order = [i for i, d in band_mm.items() if d <= feather_mm + 1e-9]
+    if not order:
+        return {}
+    values = _band_weights(
+        [band_mm[i] for i in order], feather_mm, falloff_kind, profile
+    )
+    return dict(zip(order, np.maximum(values, _MASK_EDGE_WEIGHT).tolist()))
+
+
+def _outward_distance(contact, neighbours, co, cap_m):
+    """Outline distance for the painted set AND an outward band (#54 Task 7).
+
+    ``contact``: vertex indices of the painted pad; ``neighbours(i)`` yields
+    neighbour indices; ``co(i)`` the position in metres.  Walks from the
+    painted rim through NON-painted vertices to ``_BAND_WALK`` x ``cap_m``
+    (the root walk overestimates by up to 37 % p95, DEC-0070), then measures
+    every vertex with the same mollified-rim field the inside uses
+    (``_boundary_distance``).  Returns ``(inward_m, outward_m, evaluate)`` —
+    inward for every contact vertex, outward for band candidates within the
+    cap — or ``(None, None, None)`` for a closed selection.
+    """
+    rim = {i for i in contact if any(j not in contact for j in neighbours(i))}
+    if not rim:
+        return None, None, None
+    reach = cap_m * _BAND_WALK
+    seen = {i: 0.0 for i in rim}
+    heap = [(0.0, i) for i in rim]
+    heapq.heapify(heap)
+    while heap:
+        d, i = heapq.heappop(heap)
+        if d > seen.get(i, 1e30):
+            continue
+        ci = co(i)
+        for j in neighbours(i):
+            if j in contact:
+                continue
+            nd = d + (ci - co(j)).length
+            if nd <= reach and nd < seen.get(j, 1e30):
+                seen[j] = nd
+                heapq.heappush(heap, (nd, j))
+    candidates = {j for j in seen if j not in contact}
+    members = contact | candidates
+    coords = {i: co(i).copy() for i in members}
+    adjacency = {i: [j for j in neighbours(i) if j in members] for i in members}
+    dist, evaluate = _boundary_distance(coords, adjacency, rim)
+    inward = {i: dist.get(i, 0.0) for i in contact}
+    # The inside re-zeroes by the largest rim residual so every painted rim
+    # vertex sits at exactly 0.  Applied outward, that same shift puts the
+    # band's first ring AT 0 (weight 1) and the pad grows by a ring
+    # (measured: 338 band vertices displaced the full amount).  The band
+    # therefore uses the RAW distance to the mollified rim: strictly > 0.
+    raw = getattr(evaluate, "raw", dist)
+    outward = {
+        j: max(raw[j], 1e-9) for j in candidates if raw.get(j, 1e30) <= cap_m
+    }
+    return inward, outward, evaluate
+
+
+def _stored_band_mm(outward_m):
+    """Band distances in mm as they will be STORED (float32, >= 1e-6): the
+    attribute is the region's definition, so the first evaluation must use
+    exactly the values every later re-evaluation reads back."""
+    return {
+        i: float(np.float32(max(d * 1000.0, 1e-6))) for i, d in outward_m.items()
+    }
+
+
+def _mesh_neighbours(me):
+    """``neighbours(i)`` over a Mesh (Object mode) from its edge table."""
+    n = len(me.vertices)
+    ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    a = np.concatenate([ev[:, 0], ev[:, 1]])
+    b = np.concatenate([ev[:, 1], ev[:, 0]])
+    order = np.argsort(a, kind="stable")
+    a, b = a[order], b[order]
+    starts = np.searchsorted(a, np.arange(n + 1))
+    return lambda i: b[starts[i]:starts[i + 1]].tolist()
+
+
+def _outward_fields_from_contact(me, contact, feather_mm, falloff_kind,
+                                 profile=(0.0, 0.0, 0.0)):
+    """Weights + stored distances for an outward region given only its
+    painted set (imported styles and mirrors, #54 Task 7).  Returns
+    ``(weights, depth_mm, band_mm)`` or None."""
+    contact = set(contact)
+    verts = me.vertices
+    inward, outward, _evaluate = _outward_distance(
+        contact, _mesh_neighbours(me), lambda i: verts[i].co,
+        _BAND_CAP_MM * 0.001,
+    )
+    if inward is None:
+        return None
+    depth_mm = {i: d * 1000.0 for i, d in inward.items()}
+    band_mm = _stored_band_mm(outward)
+    weights = {i: 1.0 for i in contact}
+    weights.update(_band_members(band_mm, feather_mm, falloff_kind, profile))
+    return weights, depth_mm, band_mm
+
+
+def _outline_name(region):
+    return f"{region.surface_mask}{_OUTLINE_SUFFIX}"
+
+
+def _delete_outline_object(outline):
+    mesh = outline.data
+    bpy.data.objects.remove(outline, do_unlink=True)
+    if mesh is not None and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+
+
+def _boundary_edge_pairs(me, inside):
+    """Edges with both ends ``inside`` that border a face not fully inside
+    (numpy over the loop table; no Python per-face loop)."""
+    n_edges = len(me.edges)
+    if n_edges == 0 or len(me.polygons) == 0:
+        return np.zeros((0, 2), dtype=np.int64)
+    ev = np.empty(n_edges * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    both = inside[ev[:, 0]] & inside[ev[:, 1]]
+    loop_edge = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("edge_index", loop_edge)
+    loop_vert = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("vertex_index", loop_vert)
+    totals = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("loop_total", totals)
+    face_of_loop = np.repeat(np.arange(len(me.polygons)), totals)
+    face_inside = np.ones(len(me.polygons), dtype=bool)
+    np.logical_and.at(face_inside, face_of_loop, inside[loop_vert])
+    inside_count = np.bincount(
+        loop_edge[face_inside[face_of_loop]], minlength=n_edges
+    )
+    total_count = np.bincount(loop_edge, minlength=n_edges)
+    boundary = both & (inside_count >= 1) & (inside_count < total_count)
+    return ev[boundary]
+
+
+def _region_member_flags(obj, region):
+    """(contact flags or None, member flags) over the vertices, from the
+    stored attributes (fast) or the vertex group (legacy without distance)."""
+    me = obj.data
+    n = len(me.vertices)
+    contact = _load_contact(me, region.surface_mask)
+    depth = _load_distance(me, region.surface_mask)
+    if contact is not None and depth is not None:
+        band = (~contact) & (~np.isnan(depth)) & (-depth <= region.feather_mm + 1e-9)
+        return contact, contact | band
+    if depth is not None:
+        return None, depth >= 0.0
+    group = obj.vertex_groups.get(region.surface_mask)
+    member = np.zeros(n, dtype=bool)
+    if group is not None:
+        gi = group.index
+        for vertex in me.vertices:
+            for g in vertex.groups:
+                if g.group == gi and g.weight > 0.0:
+                    member[vertex.index] = True
+                    break
+    return None, member
+
+
+def _outline_geometry(obj, region):
+    """Vertices (local space, on the EVALUATED surface) and edges of the
+    painted outline and, for an outward region, the band's outer edge."""
+    me = obj.data
+    n = len(me.vertices)
+    contact, member = _region_member_flags(obj, region)
+    coords = np.empty(n * 3, dtype=np.float64)
+    me.vertices.foreach_get("co", coords)
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = obj.evaluated_get(depsgraph)
+        me_e = evaluated.to_mesh()
+        if me_e is not None and len(me_e.vertices) == n:
+            me_e.vertices.foreach_get("co", coords)
+        if me_e is not None:
+            evaluated.to_mesh_clear()
+    except (RuntimeError, AttributeError):
+        pass
+    coords = coords.reshape(-1, 3)
+    verts, edges = [], []
+    loops = [contact] if contact is not None else []
+    loops.append(member)
+    for flags in loops:
+        pairs = _boundary_edge_pairs(me, flags)
+        if pairs.size == 0:
+            continue
+        unique, inverse = np.unique(pairs.ravel(), return_inverse=True)
+        base = len(verts)
+        verts.extend(coords[unique].tolist())
+        edges.extend((base + inverse.reshape(-1, 2)).tolist())
+    return verts, edges
+
+
+def sync_outline(obj):
+    """#54 Task 7: draw the ACTIVE live region's outline — the painted pad
+    edge and, for an outward region, the band's outer edge — as a wire
+    object parented to the scan; remove every other region's outline.
+    Idempotent; safe when nothing is active or the object is missing."""
+    if obj is None or getattr(obj, "type", None) != "MESH":
+        return
+    region = _active_region(obj)
+    want = None
+    if (region is not None and region.surface_mask
+            and not obj.get(_committed_key(region), False)
+            and not obj.data.is_editmode
+            and obj.vertex_groups.get(region.surface_mask) is not None):
+        want = _outline_name(region)
+    for other in list(bpy.data.objects):
+        if (other.name.endswith(_OUTLINE_SUFFIX) and other.parent == obj
+                and other.name != want):
+            _delete_outline_object(other)
+    if want is None:
+        return
+    verts, edges = _outline_geometry(obj, region)
+    existing = bpy.data.objects.get(want)
+    if existing is not None:
+        _delete_outline_object(existing)
+    if not edges:
+        return
+    mesh = bpy.data.meshes.new(want)
+    mesh.from_pydata(verts, edges, [])
+    outline = bpy.data.objects.new(want, mesh)
+    collections = obj.users_collection
+    (collections[0] if collections else bpy.context.scene.collection).objects.link(outline)
+    outline.parent = obj
+    outline.matrix_parent_inverse = Matrix()
+    outline.hide_select = True
+    outline.hide_render = True
+    outline.display_type = "WIRE"
+    outline.show_in_front = True
+    outline.color = (1.0, 0.55, 0.0, 1.0)
+
+
+def _load_distance(me, mask):
+    attribute = me.attributes.get(_dist_name(mask))
+    if attribute is None or attribute.domain != "POINT":
+        return None
+    values = np.empty(len(me.vertices), dtype=np.float32)
+    attribute.data.foreach_get("value", values)
+    return values.astype(np.float64)
+
+
+def _drop_distance(me, mask):
+    attribute = me.attributes.get(_dist_name(mask))
+    if attribute is not None:
+        me.attributes.remove(attribute)
+
+
+def _falloff_np(t, kind):
+    if kind == "LINEAR":
+        return t
+    if kind == "SHARP":
+        return t * t
+    return t * t * (3.0 - 2.0 * t)  # SMOOTH (smoothstep) — same as _falloff
+
+
+def _rounded_profile(amount_mm, feather_mm, top_mm, bottom_mm):
+    """The ROUNDED transition (#54 Task 2): flat pad → top fillet ``top_mm``
+    → straight wall at angle θ → bottom fillet ``bottom_mm`` → untouched body,
+    drawn in the (distance-from-outline, height) plane, all in mm.
+
+    Height identity  A = (r_t + r_b)(1 − cos θ) + L·tan θ  with the straight
+    wall L = f − (r_t + r_b)·sin θ ≥ 0 is monotone in θ, solved by bisection.
+    Radii that do not fit the width are scaled down TOGETHER (the panel shows
+    the effective values).  Returns ``(theta, r_top, r_bottom, evaluate)``;
+    ``evaluate(d)`` maps a numpy array of distances (mm) to weights z / A.
+    """
+    amount = abs(float(amount_mm))
+    width = float(feather_mm)
+    r_t = max(0.0, float(top_mm))
+    r_b = max(0.0, float(bottom_mm))
+    if amount <= 1e-6 or width <= 1e-6:
+        return 0.0, r_t, r_b, (
+            lambda d: np.ones_like(np.asarray(d, dtype=np.float64))
+        )
+    # r_t + r_b < f is feasible for any amount; r_t + r_b == f only up to
+    # A == f (two tangent quarter-circles).
+    limit = width if amount <= width else width * 0.999
+    total = r_t + r_b
+    if total > limit and total > 0.0:
+        scale = limit / total
+        r_t *= scale
+        r_b *= scale
+        total = limit
+
+    def height(theta):
+        s, c = math.sin(theta), math.cos(theta)
+        return total * (1.0 - c) + (width - total * s) * (s / c)
+
+    lo, hi = 0.0, math.pi * 0.5 - 1e-9
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if height(mid) < amount:
+            lo = mid
+        else:
+            hi = mid
+    theta = 0.5 * (lo + hi)
+    s, c = math.sin(theta), math.cos(theta)
+    slope = s / c
+    x_b, z_b = r_b * s, r_b * (1.0 - c)
+    x_t = width - r_t * s
+
+    def evaluate(d):
+        d = np.clip(np.asarray(d, dtype=np.float64), 0.0, width)
+        z_bottom = r_b - np.sqrt(np.maximum(r_b * r_b - d * d, 0.0))
+        z_wall = z_b + (d - x_b) * slope
+        gap = width - d
+        z_top = amount - r_t + np.sqrt(np.maximum(r_t * r_t - gap * gap, 0.0))
+        z = np.where(d <= x_b, z_bottom, np.where(d >= x_t, z_top, z_wall))
+        return np.clip(z / amount, 0.0, 1.0)
+
+    evaluate.theta = theta
+    evaluate.x_bottom = x_b  # mm: end of the bottom fillet
+    evaluate.x_top = x_t  # mm: start of the top fillet
+    return theta, r_t, r_b, evaluate
+
+
+def _region_profile(region):
+    """(amount, top radius, bottom radius) — the ROUNDED profile's inputs."""
+    return (region.magnitude_mm, region.top_radius_mm, region.bottom_radius_mm)
+
+
+def transition_readout(region):
+    """Panel readout for the active region: what the profile bends over, and
+    whether this mesh can draw it.  Returns ``(text, warn)``."""
+    f_eff = region.feather_mm
+    if region.depth_mm > 0.0 and not region.feather_outside:
+        f_eff = min(f_eff, region.depth_mm)
+    amount = region.magnitude_mm
+    kind = region.falloff_type
+    corner = None
+    if kind == "ROUNDED":
+        theta, r_t, r_b, _evaluate = _rounded_profile(
+            amount, f_eff, region.top_radius_mm, region.bottom_radius_mm
+        )
+        text = f"Wall {math.degrees(theta):.0f}° · corners {r_t:.1f} / {r_b:.1f} mm"
+        if r_t + r_b < region.top_radius_mm + region.bottom_radius_mm - 1e-6:
+            text += " (shrunk to fit the width)"
+        corner = min(r_t, r_b)
+    elif kind == "SMOOTH":
+        if amount > 1e-6 and f_eff > 1e-6:
+            corner = f_eff * f_eff / (6.0 * amount)
+            text = f"Smooth bends over {corner:.1f} mm at both corners"
+        else:
+            text = "Smooth"
+    elif kind == "LINEAR":
+        corner = 0.0
+        text = "Linear: hard edges at both corners"
+    else:
+        corner = 0.0
+        text = "Sharp: hard edge at the pad top"
+    drawable = _drawable_corner_mm(region.edge_mm)
+    warn = bool(drawable is not None and corner is not None
+                and corner < drawable - 1e-9)
+    if warn:
+        text += f" — finer than this mesh draws ({drawable:.1f} mm)"
+    return text, warn
+
+
+def profile_readout(region):
+    return transition_readout(region)[0]
+
+
+def _weights_from_distance(depth_mm, feather_mm, falloff_kind,
+                           profile=(0.0, 0.0, 0.0)):
+    """Array of weights for member distances ``depth_mm`` (numpy, mm).
+
+    The feather cannot be wider than the region is deep — clamped to the
+    largest distance so the innermost vertices always reach 1.0 (the same
+    rule ``_region_weights_from_selection`` always applied).  ``profile`` =
+    (amount, top radius, bottom radius) feeds the ROUNDED kind only."""
+    depth_mm = np.asarray(depth_mm, dtype=np.float64)
+    if depth_mm.size == 0:
+        return depth_mm
+    f_eff = min(float(feather_mm), float(depth_mm.max()))
+    if f_eff <= 1e-6:
+        return np.ones_like(depth_mm)
+    if falloff_kind == "ROUNDED":
+        amount, top, bottom = profile
+        _theta, _rt, _rb, evaluate = _rounded_profile(amount, f_eff, top, bottom)
+        return evaluate(np.minimum(depth_mm, f_eff))
+    return _falloff_np(np.minimum(depth_mm, f_eff) / f_eff, falloff_kind)
+
+
+def _refresh_snapshot_weights(obj, mask, weights):
+    """Light snapshot refresh: only the weight column changes on a profile
+    edit (membership, frame and anchor are fixed by the painted outline)."""
+    snapshot = _load_snapshot(obj, mask)
+    if snapshot is None or snapshot.get("applied_field"):
+        return
+    samples = snapshot["samples"]
+    indices = sorted(weights)
+    if len(samples) != len(indices):
+        return
+    for sample, index in zip(samples, indices):
+        sample[2] = round(float(weights[index]), 5)
+    snapshot.pop("field", None)
+    _store_snapshot(obj, mask, snapshot)
+
+
+def reevaluate_region(obj, region):
+    """Rebuild the mask weights from the stored outline distance and the
+    region's own feather/falloff, then refresh the live preview.
+
+    Returns False (and only re-syncs the preview) when the region has no
+    stored distance: imported styles and mirrors carry a chart field, not a
+    distance, and legacy regions predate the attribute — for those the
+    feather is edited by Edit Selection → Update Preview, as before."""
+    if obj is None or obj.type != "MESH" or not region.surface_mask:
+        return False
+    if obj.get(_committed_key(region), False):
+        return False
+    me = obj.data
+    if me.is_editmode:
+        _sync_preview(obj, region)  # amount stays live; Update applies the rest
+        return False
+    group = obj.vertex_groups.get(region.surface_mask)
+    depth = _load_distance(me, region.surface_mask)
+    if group is None or depth is None:
+        _sync_preview(obj, region)
+        return False
+    contact = _load_contact(me, region.surface_mask)
+    if contact is not None:
+        return _reevaluate_outward(obj, region, group, depth, contact)
+    members = np.flatnonzero(depth >= 0.0)
+    if members.size == 0:
+        return False
+    weights = np.maximum(
+        _weights_from_distance(
+            depth[members], region.feather_mm, region.falloff_type,
+            _region_profile(region),
+        ),
+        _MASK_EDGE_WEIGHT,
+    )
+    by_index = dict(zip(members.tolist(), weights.tolist()))
+    for index, weight in by_index.items():
+        group.add([index], weight, "REPLACE")
+    _refresh_snapshot_weights(obj, region.surface_mask, by_index)
+    _sync_preview(obj, region)
+    return True
+
+
+def _reevaluate_outward(obj, region, group, depth, contact):
+    """#54 Task 7: the painted set stays at 1.0; the band is re-cut at the
+    feather from the stored candidates — members beyond it are REMOVED, so
+    a narrower feather releases the surface it no longer reaches."""
+    candidates = np.flatnonzero((~contact) & (~np.isnan(depth)))
+    d_out = -depth[candidates]
+    keep = d_out <= region.feather_mm + 1e-9
+    drop = candidates[~keep].tolist()
+    if drop:
+        group.remove(drop)
+    weights = np.maximum(
+        _band_weights(d_out[keep], region.feather_mm, region.falloff_type,
+                      _region_profile(region)),
+        _MASK_EDGE_WEIGHT,
+    )
+    for index in np.flatnonzero(contact).tolist():
+        group.add([index], 1.0, "REPLACE")
+    for index, weight in zip(candidates[keep].tolist(), weights.tolist()):
+        group.add([index], float(weight), "REPLACE")
+    _sync_preview(obj, region)
+    sync_outline(obj)
+    return True
+
+
+def sync_preview(obj, region):
+    """Public alias for the core property callbacks (live Amount)."""
+    if obj is None or obj.type != "MESH":
+        return None
+    return _sync_preview(obj, region)
 
 
 def _make_active(context, obj):
@@ -160,7 +774,7 @@ def _mesh_spacing_mm(scan):
 
 
 def _style_snapshot(scan, weights, coords=None, normals=None,
-                    build_field=False, origin_world=None):
+                    build_field=False, origin_world=None, pad=None):
     """Tangent-frame samples + resampled field of the UNdisplaced region.
 
     Captured at bake time (before any displacement is committed) so a saved
@@ -194,7 +808,12 @@ def _style_snapshot(scan, weights, coords=None, normals=None,
             centroid += (matrix @ coords[i]) * w
             total += w
         centroid /= total
-        strong = [i for i in indices if weights[i] >= 0.3] or indices
+        # #54 Task 7: an outward region anchors on its PAINTED set — the
+        # band fills a horseshoe's gap and would pull the anchor into it.
+        strong = (
+            [i for i in indices if i in pad] if pad
+            else [i for i in indices if weights[i] >= 0.3]
+        ) or indices
         anchor_index = min(
             strong,
             key=lambda i: (matrix @ coords[i] - centroid).length_squared,
@@ -769,13 +1388,38 @@ def _folded_pairs(me, fold_pairs, pre_face_normals):
     hardendbg `adjfold.foldover_creased`).
     """
     folded = set()
+    verts = me.vertices
     for a, b in fold_pairs:
-        if pre_face_normals[a].dot(pre_face_normals[b]) <= _FOLD_PRE_DOT:
+        pre = pre_face_normals[a].dot(pre_face_normals[b])
+        if pre <= _FOLD_PRE_DOT:
             continue  # already creased shut before us — not ours
-        if me.polygons[a].normal.dot(me.polygons[b].normal) < _FOLD_DOT:
+        post = me.polygons[a].normal.dot(me.polygons[b].normal)
+        if post < _FOLD_DOT:
+            folded.add(a)
+            folded.add(b)
+        elif post < _HINGE_DOT and pre > _HINGE_PRE_DOT:
+            # A hinge is a statement about two REAL faces: a needle's
+            # normal is numerically meaningless (measured 1.7° triangles
+            # reading 93–97° against sound neighbours), and needles are the
+            # sliver rule's business — flagging their neighbours as hinges
+            # sent the ladder through 47 s of hopeless retries.
+            if _face_height(me, verts, a) < _HINGE_MIN_HEIGHT_M \
+                    or _face_height(me, verts, b) < _HINGE_MIN_HEIGHT_M:
+                continue
             folded.add(a)
             folded.add(b)
     return folded
+
+
+def _face_height(me, verts, index):
+    """Shortest altitude of a triangle (2·area / longest edge), metres."""
+    vs = me.polygons[index].vertices
+    if len(vs) != 3:
+        return 1.0
+    longest = max(
+        (verts[vs[k]].co - verts[vs[(k + 1) % 3]].co).length for k in range(3)
+    )
+    return 2.0 * me.polygons[index].area / longest if longest > 1e-12 else 0.0
 
 
 def _surface_confirmed_flips(me, flipped, fold_pairs):
@@ -952,6 +1596,34 @@ def _refine_footprint(temp_me, group_index, offset,
 
     h_target = mean_edge  # provenance figure: tightest requirement seen
 
+    # #54 Task 3: turning criterion from the analytic profile.  The slope
+    # rule above is blind to a corner (a 1 mm fillet drawn with 1 mm edges
+    # passed it untouched, DEC-0064); an edge inside a fillet band must not
+    # turn more than _CORNER_TURN, floored at half the mesh's own edge so a
+    # coarse scan is refined one halving, not remeshed (contract growth gate).
+    corner_radius = getattr(field, "corner_radius", None)
+    distance_of = getattr(field, "distance", None)
+    corner_floor = _corner_edge_floor(mean_edge)
+    distance_cache = {}
+
+    def corner_requirement(va, vb):
+        if corner_radius is None or distance_of is None:
+            return None
+        radius = None
+        for v in (va, vb):
+            d = distance_cache.get(v)
+            if d is None:
+                d = distance_of(v.co)
+                distance_cache[v] = d
+            r = corner_radius(d)
+            if r is not None and (radius is None or r < radius):
+                radius = r
+        if radius is None:
+            return None
+        if radius < corner_floor / _CORNER_SKIP_TURN:
+            return None  # undrawable at the floor: the commit note says so
+        return max(_CORNER_TURN * radius, corner_floor)
+
     if field is not None:
         # #49e: the authored falloff is a closed-form function of the
         # region's own boundary — sample it at the new vertices instead of
@@ -1035,12 +1707,20 @@ def _refine_footprint(temp_me, group_index, offset,
             if length < 1e-9:
                 continue
             g = abs(offset) * abs(wa - wb) / length
-            h_req = h_required(g)
-            if h_req is None:
-                continue
             predicted = math.hypot(length, abs(offset) * abs(wa - wb))
-            if predicted > 1.4 * h_req:
-                h_target = min(h_target, h_req)
+            need = None
+            h_req = h_required(g)
+            if h_req is not None and predicted > 1.4 * h_req:
+                need = h_req
+            # The corner rule compares the PRE-displacement length: with the
+            # floor at half the mesh edge that is exactly one halving per
+            # commit in the fillet bands (the stretched length would demand
+            # two, measured 3.25x footprint faces on the B x4 fixture).
+            h_corner = corner_requirement(e.verts[0], e.verts[1])
+            if h_corner is not None and length > 1.4 * h_corner:
+                need = h_corner if need is None else min(need, h_corner)
+            if need is not None:
+                h_target = min(h_target, need)
                 marked.append(e)
         if not marked:
             break
@@ -1073,13 +1753,17 @@ def _refine_footprint(temp_me, group_index, offset,
                 key = (round(mid.x, 8), round(mid.y, 8), round(mid.z, 8))
                 lift_map[key] = mid + (lift - mid) * 0.75
         n_before = len(bm.verts)
-        bmesh.ops.subdivide_edges(
+        split = bmesh.ops.subdivide_edges(
             bm, edges=marked, cuts=1, use_grid_fill=False,
         )
+        fresh = {
+            ele for ele in split.get("geom_inner", ())
+            if isinstance(ele, bmesh.types.BMVert)
+        }
         ngons = [f for f in bm.faces if len(f.verts) > 3]
         if ngons:
             ngons.sort(key=_fkey)
-            bmesh.ops.triangulate(bm, faces=ngons)
+            _split_refined_ngons(bm, ngons, fresh)
         # Fresh vertices are created with index -1; the #53 tie-break keys
         # need every vertex uniquely numbered (new ones are the tail).
         bm.verts.index_update()
@@ -1186,6 +1870,12 @@ def _refine_footprint(temp_me, group_index, offset,
                     seen.add(e)
                     unique.append(e)
             unique.sort(key=_ekey)
+            # One batch call on purpose: every bmesh.ops call pays a
+            # whole-mesh setup, and rotating cap edges one at a time
+            # measured 22 s for 261 refinement vertices on a 180k mesh
+            # (#54 Task 6).  The rim needles that motivated the attempt
+            # turned out to be the SCAN's own needle triangles inherited
+            # by the split, not cap slivers.
             try:
                 bmesh.ops.rotate_edges(bm, edges=unique, use_ccw=False)
             except RuntimeError:
@@ -1343,6 +2033,50 @@ def _refine_footprint(temp_me, group_index, offset,
     bm.free()
     temp_me.update()
     return added, h_target * 1000.0
+
+
+def _split_refined_ngons(bm, ngons, fresh):
+    """Triangulate the n-gons a single-cut ``subdivide_edges`` leaves.
+
+    Only the QUAD with exactly one new midpoint (``fresh`` = the vertices the
+    subdivide just created; it runs before ``index_update``, in the same face
+    order as the plain triangulation it replaces) is split by hand — midpoint to the opposite vertex.  When that midpoint is
+    not Phong-lifted (endpoint normals nearly equal: exactly the fillet
+    bands) it lies on the old edge line, the quad has a 180° corner, and
+    ``bmesh.ops.triangulate``'s beauty rule ties and falls back to the
+    first diagonal — the OLD edge — on both sides of the split, stacking
+    four faces on one edge (measured: six non-manifold edges per commit,
+    which the ladder correctly refused; ERR-0038).  Every other n-gon keeps
+    the beauty triangulation: on irregular scan triangles it measurably
+    beats fixed patterns (golden painted route p95 17.6° vs 21.3°).
+    """
+    fallback = []
+    for face in ngons:
+        if not face.is_valid:
+            continue
+        verts = list(face.verts)
+        if len(verts) == 4:
+            mids = [k for k, v in enumerate(verts) if v in fresh]
+            if len(mids) == 1:
+                k = mids[0]
+                mid, prev, nxt = verts[k], verts[k - 1], verts[(k + 1) % 4]
+                # Only the UNLIFTED midpoint (boundary / crease edges keep
+                # it exactly on the old edge line) is degenerate for beauty;
+                # a lifted midpoint makes the quad convex and beauty's
+                # Delaunay choice is the right one — and measurably smooths
+                # better afterwards than a fixed pattern (regionqualtest
+                # w49f: ridges after Smooth Area 75 vs ceiling 64).
+                chord = nxt.co - prev.co
+                length = chord.length_squared
+                if length > 1e-24:
+                    rel = mid.co - prev.co
+                    off = rel - chord * (rel.dot(chord) / length)
+                    if off.length_squared < 1e-8 * length:  # 1e-4 relative
+                        bmesh.utils.face_split(face, mid, verts[(k + 2) % 4])
+                        continue
+        fallback.append(face)
+    if fallback:
+        bmesh.ops.triangulate(bm, faces=fallback)
 
 
 def _ekey(e):
@@ -1914,12 +2648,31 @@ def _boundary_distance(coords, adjacency, rim):
         value = measure(co, root.get(i))
         return dist.get(i, 0.0) if value is None else max(0.0, value - zero)
 
+    evaluate.raw = raw  # un-re-zeroed distances (the outward band, #54 Task 7)
+
+    def raw_at(co):
+        """The band's own measure (no re-zeroing) at an arbitrary position."""
+        _co, slot, _d = tree.find(co)
+        if slot is None:
+            return 0.0
+        i = order[slot]
+        value = measure(co, root.get(i))
+        return raw.get(i, 0.0) if value is None else value
+
+    def nearest(co):
+        _co, slot, _d = tree.find(co)
+        return None if slot is None else order[slot]
+
+    evaluate.raw_at = raw_at
+    evaluate.nearest = nearest
     return dist, evaluate
 
 
-def _authored_rim_field(me, group_index, falloff_kind):
+def _authored_rim_field(me, group_index, region):
     """Reconstruct a painted region's falloff as a closed-form function of
     its own boundary, or ``None`` if this region was not baked that way.
+    ``region`` is the CorrectionRegion (or, for the classic kinds only, its
+    falloff kind as a string).
 
     Commit-time refinement otherwise interpolates the authored samples (IDW +
     a harmonic pass anchored at the ORIGINAL vertices).  That interpolant is
@@ -1942,6 +2695,12 @@ def _authored_rim_field(me, group_index, falloff_kind):
                 break
     if len(weights) < 12:
         return None
+    contact = (
+        None if isinstance(region, str)
+        else _load_contact(me, region.surface_mask)
+    )
+    if contact is not None:
+        return _outward_rim_field(me, region, weights, contact)
     coords = {i: me.vertices[i].co.copy() for i in weights}
     adjacency = {i: [] for i in weights}
     # The rim is the PAINTED boundary — region vertices with a neighbour
@@ -1962,30 +2721,197 @@ def _authored_rim_field(me, group_index, falloff_kind):
     if len(rim) < 3 or len(weights) - len(rim) < 8:
         return None
     dist, evaluate = _boundary_distance(coords, adjacency, rim)
+    # ``region`` may also be a bare falloff kind (older probes): the classic
+    # estimation path needs nothing else.
+    falloff_kind = region if isinstance(region, str) else region.falloff_type
 
-    band = [
-        i for i, w in weights.items()
-        if 0.05 < w < 0.95 and dist[i] > 1e-9
-    ]
-    if len(band) < 8:
-        return None
-    ratios = sorted(
-        dist[i] / max(_inv_falloff(weights[i], falloff_kind), 1e-6)
-        for i in band
-    )
-    f_eff = ratios[len(ratios) // 2]
-    if f_eff <= 1e-9:
-        return None
+    amount_m = None if isinstance(region, str) else abs(region.magnitude_mm) * 0.001
+    if falloff_kind == "ROUNDED":
+        # #54 Task 2: the profile is a closed form of the STORED feather and
+        # the region's own corner radii — no estimation needed, still
+        # validated against the weights below.
+        if region.feather_mm <= 0.0:
+            return None
+        f_eff = min(region.feather_mm * 0.001, max(dist.values()))
+        if f_eff <= 1e-9:
+            return None
+        _theta, r_top, r_bottom, evaluate_w = _rounded_profile(
+            region.magnitude_mm, f_eff * 1000.0,
+            region.top_radius_mm, region.bottom_radius_mm,
+        )
+        x_bottom = evaluate_w.x_bottom * 0.001
+        x_top = evaluate_w.x_top * 0.001
+
+        def profile(d):
+            return float(evaluate_w(np.array([min(d, f_eff) * 1000.0]))[0])
+
+        def corner_radius(d):
+            # #54 Task 3: the target's curvature radius (m) at distance d —
+            # None on the straight wall and the flat pad, 0 on a kink.
+            if d <= x_bottom:
+                return r_bottom * 0.001
+            if d >= x_top and d < f_eff + 1e-9:
+                return r_top * 0.001
+            return None
+
+        min_corner = min(r_top, r_bottom) * 0.001
+    else:
+        band = [
+            i for i, w in weights.items()
+            if 0.05 < w < 0.95 and dist[i] > 1e-9
+        ]
+        if len(band) < 8:
+            return None
+        ratios = sorted(
+            dist[i] / max(_inv_falloff(weights[i], falloff_kind), 1e-6)
+            for i in band
+        )
+        f_eff = ratios[len(ratios) // 2]
+        if f_eff <= 1e-9:
+            return None
+
+        def profile(d):
+            return _falloff(min(d, f_eff) / f_eff, falloff_kind)
+
+        if amount_m is None or amount_m <= 1e-9:
+            corner_radius = None
+            min_corner = None
+        elif falloff_kind == "SMOOTH":
+            # z = A·w(d/f): tightest curvature at the two ends, r = f² / 6A —
+            # reported (readout + commit note), NOT refined: the classic
+            # kinds keep their measured baseline exactly (golden painted
+            # route), and the drawn-corner path is ROUNDED, where the
+            # orthotist authored the radii.
+            corner_radius = None
+            min_corner = f_eff * f_eff / (6.0 * amount_m)
+        else:
+            corner_radius = None  # LINEAR / SHARP: kinks, nothing to sample
+            min_corner = 0.0
+
     deviation = sorted(
-        abs(_falloff(min(dist[i], f_eff) / f_eff, falloff_kind) - w)
-        for i, w in weights.items()
+        abs(profile(dist[i]) - w) for i, w in weights.items()
     )
     if deviation[int(len(deviation) * 0.95)] > _RIM_FIELD_TOLERANCE:
         return None
 
     def field(co):
-        return _falloff(min(evaluate(co), f_eff) / f_eff, falloff_kind)
+        return profile(evaluate(co))
 
+    field.distance = evaluate
+    field.corner_radius = corner_radius
+    field.min_corner_radius = min_corner
+    return field
+
+
+def _outward_rim_field(me, region, weights, contact):
+    """Closed form of an OUTWARD region (#54 Task 7): 1 on the painted set,
+    profile(feather - d_out) on the band, in the same (x = distance from
+    the outline toward the pad) coordinate the inward field uses, so the
+    corner rule, the drawable-corner note and refinement sampling work
+    unchanged.  Self-validated against the stored weights like the inward
+    field; ``None`` hands refinement back to interpolation."""
+    f = region.feather_mm * 0.001
+    if f <= 1e-9:
+        return None
+    coords = {i: me.vertices[i].co.copy() for i in weights}
+    adjacency = {i: [] for i in weights}
+    rim = set()
+    for edge in me.edges:
+        a, b = edge.vertices
+        a_in, b_in = a in adjacency, b in adjacency
+        if a_in and b_in:
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+        if a_in and contact[a] and not contact[b]:
+            rim.add(a)
+        if b_in and contact[b] and not contact[a]:
+            rim.add(b)
+    if len(rim) < 3:
+        return None
+    _dist, evaluate = _boundary_distance(coords, adjacency, rim)
+    raw = evaluate.raw
+    kind = region.falloff_type
+    amount_m = abs(region.magnitude_mm) * 0.001
+    if kind == "ROUNDED":
+        _theta, r_top, r_bottom, evaluate_w = _rounded_profile(
+            region.magnitude_mm, region.feather_mm,
+            region.top_radius_mm, region.bottom_radius_mm,
+        )
+        x_bottom = evaluate_w.x_bottom * 0.001
+        x_top = evaluate_w.x_top * 0.001
+
+        def profile(x):
+            return float(evaluate_w(np.array([min(x, f) * 1000.0]))[0])
+
+        def corner_radius(x):
+            if x <= x_bottom:
+                return r_bottom * 0.001
+            if x >= x_top and x < f - 1e-9:
+                return r_top * 0.001
+            return None
+
+        min_corner = min(r_top, r_bottom) * 0.001
+    else:
+        def profile(x):
+            return _falloff(min(max(x / f, 0.0), 1.0), kind)
+
+        corner_radius = None
+        if amount_m <= 1e-9:
+            min_corner = None
+        elif kind == "SMOOTH":
+            min_corner = f * f / (6.0 * amount_m)
+        else:
+            min_corner = 0.0
+
+    def x_of_member(i):
+        if contact[i]:
+            return f
+        stored = float(np.float32(max(raw.get(i, 0.0) * 1000.0, 1e-6)))
+        return max(0.0, f - stored * 0.001)
+
+    deviation = sorted(
+        abs(profile(x_of_member(i)) - w) for i, w in weights.items()
+    )
+    if deviation[int(len(deviation) * 0.95)] > _RIM_FIELD_TOLERANCE:
+        return None
+
+    # Side of the outline for a refinement-born vertex: nearer to a band
+    # member than to a pad member = band.  A rim-adjacent midpoint is
+    # equidistant and goes to the BAND on purpose: reading it as pad put a
+    # steep profile's full amount half an edge outside the outline
+    # (measured: refined outward commits failed their repair, 670 defective
+    # faces, and the ladder fell back to the unrefined commit).
+    pad_tree = kdtree.KDTree(len(weights))
+    band_tree = kdtree.KDTree(len(weights))
+    n_pad = n_band = 0
+    for i in weights:
+        if contact[i]:
+            pad_tree.insert(coords[i], i)
+            n_pad += 1
+        else:
+            band_tree.insert(coords[i], i)
+            n_band += 1
+    pad_tree.balance()
+    band_tree.balance()
+
+    def distance(co):
+        # x from the outline toward the pad: the pad is the plateau (f),
+        # a band position is f - d_out.
+        if n_pad == 0:
+            return 0.0
+        _c, _i, d_pad = pad_tree.find(co)
+        if n_band:
+            _c, _j, d_band = band_tree.find(co)
+            if d_band <= d_pad + 1e-9:
+                return max(0.0, f - evaluate.raw_at(co))
+        return f
+
+    def field(co):
+        return profile(distance(co))
+
+    field.distance = distance
+    field.corner_radius = corner_radius
+    field.min_corner_radius = min_corner
     return field
 
 
@@ -2083,13 +3009,21 @@ def _style_applied_field(scan, mask, me, group_index):
     return field
 
 
-def _region_weights_from_selection(obj, feather_mm, falloff_kind):
+def _region_weights_from_selection(obj, feather_mm, falloff_kind,
+                                   profile=(0.0, 0.0, 0.0), outside=False):
     """Read the Edit-Mode selection and compute per-vertex falloff weights.
 
     Weight rises from 0 at the painted boundary to 1 at ``feather_mm`` deep
     (topological rings converted via the mean selected edge length), so the
     core of the region gets the full mm amount and the edge blends to zero.
-    Returns (weights {vert_index: w}, centroid, mean_normal, radius_mm).
+    Returns (weights {vert_index: w}, centroid, mean_normal, radius_mm,
+    depth_mm {vert_index: inward distance in mm} or None for a closed
+    selection, band_mm).  ``depth_mm`` is the region's continuous
+    definition (#54); the weights are evaluated from it by
+    ``_weights_from_distance``.  With ``outside`` (#54 Task 7) the painted
+    set is the full-depth pad (w = 1) and ``band_mm`` {index: outward
+    distance} holds the stored band candidates; otherwise ``band_mm`` is
+    None and the feather runs inward as before.
     """
     me = obj.data
     bm = bmesh.from_edit_mesh(me)
@@ -2097,7 +3031,7 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
 
     sel = [v for v in bm.verts if v.select]
     if not sel:
-        return None, None, None, 0.0
+        return None, None, None, 0.0, None, None
 
     centroid = Vector()
     for v in sel:
@@ -2115,7 +3049,7 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
         for v in sel:
             normal += v.normal
     if normal.length < 1e-9:
-        return None, None, None, 0.0
+        return None, None, None, 0.0, None, None
     normal.normalize()
 
     # Surface distance in METRES from the painted boundary inward.  Integer
@@ -2131,7 +3065,21 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
     ]
     if not boundary:  # closed selection (whole mesh) — no boundary anywhere
         weights = {v.index: 1.0 for v in sel}
-        return weights, centroid.copy(), normal, radius_mm
+        return weights, centroid.copy(), normal, radius_mm, None, None
+
+    if outside:
+        inward, outward, _evaluate = _outward_distance(
+            sel_set,
+            lambda i: [e.other_vert(bm.verts[i]).index
+                       for e in bm.verts[i].link_edges],
+            lambda i: bm.verts[i].co,
+            _BAND_CAP_MM * 0.001,
+        )
+        depth_mm = {i: d * 1000.0 for i, d in inward.items()}
+        band_mm = _stored_band_mm(outward)
+        weights = {i: 1.0 for i in sel_set}
+        weights.update(_band_members(band_mm, feather_mm, falloff_kind, profile))
+        return weights, centroid.copy(), normal, radius_mm, depth_mm, band_mm
 
     coords = {i: bm.verts[i].co.copy() for i in sel_set}
     adjacency = {i: [] for i in sel_set}
@@ -2144,18 +3092,13 @@ def _region_weights_from_selection(obj, feather_mm, falloff_kind):
         coords, adjacency, {v.index for v in boundary}
     )
     max_depth = max(depth.values())
-
-    # Feather cannot be wider than the region is deep — normalize so the
-    # innermost vertices always reach full weight 1.0.
-    f_eff = min(feather_mm * 0.001, max_depth)
-    weights = {}
-    for idx in sel_set:
-        d = depth.get(idx, max_depth)
-        if f_eff <= 1e-9:
-            weights[idx] = 1.0
-        else:
-            weights[idx] = _falloff(min(d, f_eff) / f_eff, falloff_kind)
-    return weights, centroid.copy(), normal, radius_mm
+    order = sorted(sel_set)
+    depth_mm = {idx: depth.get(idx, max_depth) * 1000.0 for idx in order}
+    values = _weights_from_distance(
+        [depth_mm[idx] for idx in order], feather_mm, falloff_kind, profile
+    )
+    weights = dict(zip(order, values.tolist()))
+    return weights, centroid.copy(), normal, radius_mm, depth_mm, None
 
 
 class RIGO_OT_region_add(Operator):
@@ -2176,8 +3119,13 @@ class RIGO_OT_region_add(Operator):
             return {"CANCELLED"}
         settings = context.scene.rigo_brace
 
-        weights, centroid, normal, radius_mm = _region_weights_from_selection(
-            obj, settings.region_feather, settings.region_falloff
+        weights, centroid, normal, radius_mm, depth_mm, band_mm = (
+            _region_weights_from_selection(
+                obj, settings.region_feather, settings.region_falloff,
+                (settings.region_magnitude, settings.region_top_radius,
+                 settings.region_bottom_radius),
+                outside=True,  # #54 Task 7: paint = the pad, feather outside
+            )
         )
         if not weights:
             self.report({"ERROR"}, "Paint a region on the scan first")
@@ -2193,13 +3141,20 @@ class RIGO_OT_region_add(Operator):
             # Keep zero-falloff boundary vertices as near-zero group members so
             # Edit Selection can reconstruct the original painted face border.
             vg.add([idx], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+        if depth_mm is not None:
+            _store_distance(obj.data, mask, depth_mm, band_mm)
+            if band_mm is not None:
+                _store_contact(obj.data, mask, depth_mm.keys())
         # Snapshot against the EVALUATED surface (what the user painted on),
         # like the circle path — the last raw-vs-evaluated mixed-state path
         # (#48 Wave 2); falls back to raw coords when a modifier changes the
         # vertex count.
         coords_e, normals_e = _evaluated_positions(obj)
         _store_snapshot(
-            obj, mask, _style_snapshot(obj, weights, coords_e, normals_e)
+            obj, mask, _style_snapshot(
+                obj, weights, coords_e, normals_e,
+                pad=set(depth_mm) if band_mm is not None else None,
+            )
         )
 
         region = obj.rigo_regions.add()
@@ -2209,10 +3164,17 @@ class RIGO_OT_region_add(Operator):
         region.direction = normal
         region.magnitude_mm = settings.region_magnitude
         region.radius_mm = radius_mm
+        region.feather_mm = settings.region_feather
+        region.depth_mm = max(depth_mm.values()) if depth_mm else 0.0
+        region.edge_mm = (_mean_touching_edge(obj.data, set(weights)) or 0.0) * 1000.0
         region.falloff_type = settings.region_falloff
+        region.top_radius_mm = settings.region_top_radius
+        region.bottom_radius_mm = settings.region_bottom_radius
+        region.feather_outside = band_mm is not None
         region.surface_mask = mask
         obj.rigo_region_index = len(obj.rigo_regions) - 1
         _sync_preview(obj, region)
+        sync_outline(obj)
 
         self.report(
             {"INFO"},
@@ -2288,11 +3250,19 @@ class RIGO_OT_region_add_circle(Operator):
                     heapq.heappush(heap, (nd, j))
 
         falloff = settings.region_falloff
-        weights = {
-            i: _falloff(1.0 - d / radius, falloff) for i, d in dist.items()
+        # Continuous definition (#54): inward distance from the circle's rim;
+        # feather = radius reproduces the classic falloff(1 - g / radius).
+        depth_mm = {
+            i: (radius - d) * 1000.0 for i, d in dist.items() if d < radius
         }
-        weights = {i: w for i, w in weights.items() if w > 0.0}
-        weights[seed] = 1.0
+        depth_mm[seed] = radius * 1000.0
+        order = sorted(depth_mm)
+        values = _weights_from_distance(
+            [depth_mm[i] for i in order], settings.region_radius, falloff,
+            (settings.region_magnitude, settings.region_top_radius,
+             settings.region_bottom_radius),
+        )
+        weights = dict(zip(order, values.tolist()))
         if len(weights) < 3:
             self.report({"ERROR"}, "Circle too small for this mesh density")
             return {"CANCELLED"}
@@ -2310,7 +3280,8 @@ class RIGO_OT_region_add_circle(Operator):
         mask = f"RIGO_REGION_{seq:03d}"
         vg = obj.vertex_groups.new(name=mask)
         for idx, w in weights.items():
-            vg.add([idx], w, "REPLACE")
+            vg.add([idx], max(w, _MASK_EDGE_WEIGHT), "REPLACE")
+        _store_distance(obj.data, mask, depth_mm)
         _store_snapshot(
             obj, mask, _style_snapshot(
                 obj, weights, coords, eval_normals,
@@ -2325,7 +3296,12 @@ class RIGO_OT_region_add_circle(Operator):
         region.direction = normal
         region.magnitude_mm = settings.region_magnitude
         region.radius_mm = settings.region_radius
+        region.feather_mm = settings.region_radius
+        region.depth_mm = settings.region_radius
+        region.edge_mm = (_mean_touching_edge(obj.data, set(weights)) or 0.0) * 1000.0
         region.falloff_type = falloff
+        region.top_radius_mm = settings.region_top_radius
+        region.bottom_radius_mm = settings.region_bottom_radius
         region.surface_mask = mask
         obj.rigo_region_index = len(obj.rigo_regions) - 1
         _sync_preview(obj, region)
@@ -2372,10 +3348,17 @@ class RIGO_OT_region_edit(Operator):
             bpy.ops.object.mode_set(mode="OBJECT")
         _make_active(context, obj)
         group_index = vg.index
-        included = set()
+        # #54 Task 7: an outward region edits its PAINTED set; the band is
+        # derived and must never be absorbed into the pad by an Update.
+        contact = _load_contact(obj.data, region.surface_mask)
+        included = (
+            set(np.flatnonzero(contact).tolist()) if contact is not None else set()
+        )
         for vertex in obj.data.vertices:
             vertex.select = False
-            if any(g.group == group_index and g.weight > 0.0 for g in vertex.groups):
+            if contact is None and any(
+                g.group == group_index and g.weight > 0.0 for g in vertex.groups
+            ):
                 included.add(vertex.index)
         for polygon in obj.data.polygons:
             polygon.select = all(index in included for index in polygon.vertices)
@@ -2404,9 +3387,15 @@ class RIGO_OT_region_update(Operator):
             return {"CANCELLED"}
 
         if context.mode == "EDIT_MESH":
+            # The region's OWN feather/falloff (#54); a legacy region without
+            # one adopts the panel default and records it.
             settings = context.scene.rigo_brace
-            weights, centroid, normal, radius_mm = _region_weights_from_selection(
-                obj, settings.region_feather, settings.region_falloff
+            feather_mm = region.feather_mm or settings.region_feather
+            weights, centroid, normal, radius_mm, depth_mm, band_mm = (
+                _region_weights_from_selection(
+                    obj, feather_mm, region.falloff_type, _region_profile(region),
+                    outside=region.feather_outside,
+                )
             )
             if not weights:
                 self.report({"ERROR"}, "Select faces for this region first")
@@ -2418,6 +3407,14 @@ class RIGO_OT_region_update(Operator):
             group = obj.vertex_groups.new(name=region.surface_mask)
             for index, weight in weights.items():
                 group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+            if depth_mm is not None:
+                _store_distance(obj.data, region.surface_mask, depth_mm, band_mm)
+            else:
+                _drop_distance(obj.data, region.surface_mask)
+            if band_mm is not None:
+                _store_contact(obj.data, region.surface_mask, depth_mm.keys())
+            else:
+                _drop_contact(obj.data, region.surface_mask)
             # Snapshot the evaluated surface WITHOUT this region's own live
             # preview — otherwise the update would bake its own displacement
             # into the authored field (the RC3 failure, via the preview).
@@ -2428,16 +3425,23 @@ class RIGO_OT_region_update(Operator):
             coords_e, normals_e = _evaluated_positions(obj)
             _store_snapshot(
                 obj, region.surface_mask,
-                _style_snapshot(obj, weights, coords_e, normals_e),
+                _style_snapshot(
+                    obj, weights, coords_e, normals_e,
+                    pad=set(depth_mm) if band_mm is not None else None,
+                ),
             )
             if own_preview is not None:
                 own_preview.show_viewport = shown
             region.center = centroid
             region.direction = normal
             region.radius_mm = radius_mm
-            region.falloff_type = settings.region_falloff
+            region.depth_mm = max(depth_mm.values()) if depth_mm else 0.0
+            region.edge_mm = (_mean_touching_edge(obj.data, set(weights)) or 0.0) * 1000.0
+            if region.feather_mm != feather_mm:
+                region.feather_mm = feather_mm  # re-evaluates from the fresh distance
 
         _sync_preview(obj, region)
+        sync_outline(obj)
         self.report({"INFO"}, "Preview updated along the body's local normals")
         return {"FINISHED"}
 
@@ -2554,6 +3558,10 @@ class RIGO_OT_region_style_save(Operator):
             "kind": region.kind,
             "magnitude_mm": region.magnitude_mm,
             "falloff": region.falloff_type,
+            "feather_mm": region.feather_mm,
+            "feather_outside": bool(region.feather_outside),
+            "top_radius_mm": region.top_radius_mm,
+            "bottom_radius_mm": region.bottom_radius_mm,
             "samples": snapshot["samples"],
             "sample_radius_mm": snapshot["sample_radius_mm"],
             "normal_tolerance_mm": snapshot["normal_tolerance_mm"],
@@ -2664,6 +3672,15 @@ class RIGO_OT_region_style_import(Operator):
             default=0.0,
         )
         region.falloff_type = entry.get("falloff", "SMOOTH")
+        region.feather_mm = float(entry.get("feather_mm", 0.0) or 0.0)
+        region.top_radius_mm = float(entry.get("top_radius_mm", 4.0))
+        region.bottom_radius_mm = float(entry.get("bottom_radius_mm", 3.0))
+        if entry.get("feather_outside"):
+            # #54 Task 7: the style's field carries the pad at 1.0; the band
+            # is re-derived here from that pad and the region's own feather,
+            # so an imported region never falls back to inward semantics.
+            _adopt_outward(scan, group, mask, region,
+                           [i for i, w in weights.items() if w >= 0.999])
         clinical = entry.get("clinical") or {}
         if clinical.get("anatomical_label"):
             try:
@@ -2673,6 +3690,7 @@ class RIGO_OT_region_style_import(Operator):
         region.surface_mask = mask
         scan.rigo_region_index = len(scan.rigo_regions) - 1
         _sync_preview(scan, region)
+        sync_outline(scan)
         pair_note = (
             " — authored as part of a corrective pair; the counterpart was "
             "not imported" if clinical.get("paired") else ""
@@ -2815,7 +3833,7 @@ class RIGO_OT_region_apply(Operator):
         # vertices SAMPLE it rather than interpolate the coarse authored
         # anchors.  Returns None (and changes nothing) for library/style and
         # legacy regions, which is verified by reconstruction, not assumed.
-        rim_field = _authored_rim_field(me, group.index, region.falloff_type)
+        rim_field = _authored_rim_field(me, group.index, region)
         if rim_field is None:
             # #49k: a PLACED STYLE owns a continuous field too — the grid (v2)
             # or sample cloud (v1) it was authored from, recorded on the region
@@ -2828,6 +3846,7 @@ class RIGO_OT_region_apply(Operator):
             rim_field = _style_applied_field(
                 obj, region.surface_mask, me, group.index
             )
+        n_original = len(me.vertices)
         refined_me = me.copy()
         added0, refine_mm0 = _refine_footprint(refined_me, group.index,
                                                offset, field=rim_field)
@@ -2986,6 +4005,23 @@ class RIGO_OT_region_apply(Operator):
 
         obj.modifiers.remove(modifier)
         obj[_committed_key(region)] = True
+        _drop_distance(me, region.surface_mask)  # baked: the definition is now the mesh
+        _drop_contact(me, region.surface_mask)
+        _mark_refined_nonmember(obj, region, n_original)
+        sync_outline(obj)
+        # #54 Task 3: say what the mesh could not draw as authored.
+        note = ""
+        min_corner = getattr(rim_field, "min_corner_radius", None)
+        drawable = _drawable_corner_mm(region.edge_mm)
+        if min_corner is not None and drawable is not None \
+                and min_corner * 1000.0 < drawable - 1e-9:
+            note = (
+                f"Corner {min_corner * 1000.0:.1f} mm is finer than this mesh "
+                f"draws cleanly ({drawable:.1f} mm): use Rounded corners of "
+                f"{drawable:.1f} mm or more, a wider feather, or Subdivide "
+                "Scan first"
+            )
+        region.commit_note = note
         region.refined_added = added
         region.refined_edge_mm = refine_mm
         # Downstream invalidation (#49 audit B4/B7): the cached faired base
@@ -3011,6 +4047,8 @@ class RIGO_OT_region_apply(Operator):
             f" — wall refined to carry the transition ({added} points, "
             f"{refine_mm:.1f} mm)" if added else ""
         )
+        if note:
+            self.report({"WARNING"}, f"{region.name}: {note}")
         self.report(
             {"INFO"},
             f"{region.name}: committed {verb} "
@@ -3028,6 +4066,32 @@ _SIDED_LABELS = {
     "PSIS_L": "PSIS_R", "TROCHANTER_L": "TROCHANTER_R",
 }
 _SIDED_LABELS.update({v: k for k, v in list(_SIDED_LABELS.items())})
+
+
+def _adopt_outward(obj, group, mask, region, contact):
+    """Turn a freshly created region (group already filled from a chart
+    field) into an outward one from its painted set (#54 Task 7)."""
+    fields = _outward_fields_from_contact(
+        obj.data, contact, region.feather_mm, region.falloff_type,
+        _region_profile(region),
+    )
+    if fields is None:
+        return False
+    weights, depth_mm, band_mm = fields
+    stale = [
+        vertex.index for vertex in obj.data.vertices
+        if vertex.index not in weights
+        and any(g.group == group.index for g in vertex.groups)
+    ]
+    if stale:
+        group.remove(stale)
+    for index, weight in weights.items():
+        group.add([index], max(weight, _MASK_EDGE_WEIGHT), "REPLACE")
+    _store_distance(obj.data, mask, depth_mm, band_mm)
+    _store_contact(obj.data, mask, contact)
+    region.feather_outside = True
+    region.depth_mm = max(depth_mm.values()) if depth_mm else 0.0
+    return True
 
 
 class RIGO_OT_region_mirror(Operator):
@@ -3163,11 +4227,20 @@ class RIGO_OT_region_mirror(Operator):
         new.magnitude_mm = src.magnitude_mm
         new.radius_mm = src.radius_mm
         new.falloff_type = src.falloff_type
+        new.feather_mm = src.feather_mm
+        new.top_radius_mm = src.top_radius_mm
+        new.bottom_radius_mm = src.bottom_radius_mm
+        if src.feather_outside:
+            # #54 Task 7: mirror the PAD, then re-derive the band on the
+            # opposite surface (the mirrored field only names the pad).
+            _adopt_outward(obj, vg_new, mask, new,
+                           [i for i, w in weights_m.items() if w >= 0.999])
         new.surface_mask = mask
         new.opposing_region = src_index
         obj.rigo_regions[src_index].opposing_region = len(obj.rigo_regions) - 1
         obj.rigo_region_index = len(obj.rigo_regions) - 1
         _sync_preview(obj, new)
+        sync_outline(obj)
 
         # On an asymmetric (scoliotic) body the exact mirror position can lie
         # off-surface; the region is anchored to the closest real surface
@@ -3188,6 +4261,32 @@ class RIGO_OT_region_mirror(Operator):
             f"{new.name}: {len(weights_m)} verts ({how}) — review the kind",
         )
         return {"FINISHED"}
+
+
+def _mark_refined_nonmember(obj, region, n_original):
+    """Refinement-born vertices are NOT members of any OTHER live region:
+    a fresh point attribute reads 0.0, which the signed encoding would take
+    for a pad vertex at the outline (#54 Task 7, Codex round 3 blind spot)."""
+    me = obj.data
+    n = len(me.vertices)
+    if n <= n_original:
+        return
+    for other in obj.rigo_regions:
+        if other == region or not other.surface_mask:
+            continue
+        depth = _load_distance(me, other.surface_mask)
+        if depth is None:
+            continue
+        contact = _load_contact(me, other.surface_mask)
+        depth[n_original:] = np.nan if contact is not None else -1.0
+        me.attributes[_dist_name(other.surface_mask)].data.foreach_set(
+            "value", depth.astype(np.float32)
+        )
+        if contact is not None:
+            contact[n_original:] = False
+            me.attributes[_contact_name(other.surface_mask)].data.foreach_set(
+                "value", contact
+            )
 
 
 class RIGO_OT_region_remove(Operator):
@@ -3214,6 +4313,8 @@ class RIGO_OT_region_remove(Operator):
         if committed_key in obj:
             del obj[committed_key]
         _drop_snapshot(obj, region.surface_mask)
+        _drop_distance(obj.data, region.surface_mask)
+        _drop_contact(obj.data, region.surface_mask)
         vg = obj.vertex_groups.get(region.surface_mask)
         if vg is not None:
             obj.vertex_groups.remove(vg)
@@ -3227,6 +4328,7 @@ class RIGO_OT_region_remove(Operator):
             elif r.opposing_region > idx:
                 r.opposing_region -= 1
         obj.rigo_region_index = min(idx, len(obj.rigo_regions) - 1)
+        sync_outline(obj)
 
         self.report({"INFO"}, f"Removed {name}")
         return {"FINISHED"}

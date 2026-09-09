@@ -27,15 +27,24 @@ A `RigoCorrectionRegion` PropertyGroup in a `CollectionProperty` on the brace ob
 | `center` | FloatVector (m) | region centroid, captured from the paint selection |
 | `direction` | Enum + FloatVector | NORMAL (mean surface normal) or explicit axis |
 | `magnitude_mm` | Float | signed push/pull depth in mm (UI mm → `*0.001`) |
-| `radius_mm` | Float | influence radius for falloff |
-| `falloff_type` | Enum | SMOOTH / SPHERE / LINEAR / SHARP (matches proportional-edit) |
-| `surface_mask` | str | name of the vertex group storing the painted region (weights = falloff) |
+| `radius_mm` | Float | measured extent of the painted region (informational) |
+| `feather_mm` | Float | width of the soft edge; OUTSIDE the painted outline for regions painted after #54 Task 7 (`feather_outside`), inward for older regions; LIVE until Commit (0 = older region without a stored distance) |
+| `feather_outside` | bool | #54 Task 7: True = paint is the full-depth pad and the feather is a band on the body around it (drawn as a second outline while the region is active); False = legacy inward feather, incl. circle regions |
+| `<surface_mask>.contact` | mesh BOOLEAN POINT attribute | #54 Task 7: the painted set, stored explicitly; Edit Selection selects it, Update rebuilds it; absent on legacy regions |
+| `<surface_mask>.outline` | scene object (loose edges) | #54 Task 7: the drawn painted outline + band outline of the ACTIVE live region only; unselectable, in front, removed on Commit/Remove/deactivation |
+| `falloff_type` | Enum | SMOOTH / LINEAR / SHARP; LIVE until Commit (#54) |
+| `surface_mask` | str | name of the vertex group holding the region weights — a VIEW of the definition below, re-evaluated on every feather/falloff edit |
+| `<surface_mask>.dist` | mesh FLOAT POINT attribute | the region's continuous definition (#54): surface distance in mm from the mollified painted outline (outward regions: contact >= 0, band stored NEGATIVE = -d_out, non-member NaN; legacy: -1 outside), −1 outside; absent for imported styles / mirrors / legacy regions, dropped at Commit |
 | `opposing_region` | int | index of the coupled expansion region (−1 = none) |
 | `enabled` | bool | toggle without deleting |
 | `requires_review` | bool (True) | clinical-safety flag, always set |
 
 Why a vertex group as the mask: it is deterministic, survives edits, re-applies exactly,
 and the weights ARE the falloff — so Apply and Undo reproduce the same geometry.
+Since #54 the weights are derived: `w = falloff(min(d, f) / f)` with `d` read from the
+`.dist` attribute and `f = min(feather_mm, max d)`; `reevaluate_region()` rebuilds the group
+(and the DISPLACE preview) whenever the orthotist edits Feather or Falloff, so nothing about
+the transition is baked before Commit.
 
 ## Operators (`operators/region_ops.py`, new — reuses existing code)
 - `rigo.region_add` — from the current paint selection (reuse `select_ops` region): compute

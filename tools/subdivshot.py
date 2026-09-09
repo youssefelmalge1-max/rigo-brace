@@ -22,15 +22,19 @@ import bmesh
 from mathutils import Vector, kdtree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bracefixture import A_SCAN  # noqa: E402
+from bracefixture import A_SCAN, B_SCAN  # noqa: E402
 
 LEVELS = int(os.environ.get("RIGO_SUBDIV", "0"))
 MODE = os.environ.get("RIGO_SUBDIV_MODE", "editsub")  # editsub | subsurf
 PROFILE = os.environ.get("RIGO_PROFILE", "0") == "1"  # cProfile the commit
+SCAN = os.environ.get("RIGO_SCAN", "A")  # A | B fixture scan
+AMOUNT_MM = float(os.environ.get("RIGO_AMOUNT", "15"))
+FEATHER_MM = float(os.environ.get("RIGO_FEATHER", "10"))
 ROOT = r"C:\Projects\Blender Add-on Braces"
-TAG = f"subdivshot_L{LEVELS}" + ("" if LEVELS == 0 else f"_{MODE}")
-AMOUNT_MM = 15.0
-FEATHER_MM = 10.0
+TAG = (
+    f"subdivshot_{SCAN}_L{LEVELS}" + ("" if LEVELS == 0 else f"_{MODE}")
+    + f"_a{AMOUNT_MM:g}_f{FEATHER_MM:g}"
+)
 PATCH_R = 0.045
 TRIES = {"n": 0}
 LOG = []
@@ -74,6 +78,37 @@ def _wall(me, weights):
             angles.append(180.0)
     bm.free()
     return _spectrum(angles)
+
+
+def _speck_census(me, weights):
+    """Cheap discriminators for dark specks on a smooth-shaded wall: sharp-
+    flagged edges inside the band (set_sharp_from_angle leftovers), zero-area
+    faces, and faces whose normal disagrees with every neighbour by >90 deg
+    (a flip)."""
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    band_edges = 0
+    sharp_band = 0
+    for e in bm.edges:
+        a, b = e.verts[0].index, e.verts[1].index
+        if weights.get(a, 0.0) > 0.0 or weights.get(b, 0.0) > 0.0:
+            band_edges += 1
+            if not e.smooth:
+                sharp_band += 1
+    zero_area = 0
+    flipped = 0
+    for f in bm.faces:
+        if not any(weights.get(v.index, 0.0) > 0.0 for v in f.verts):
+            continue
+        if f.calc_area() < 1e-10:
+            zero_area += 1
+            continue
+        nbrs = [g for e in f.edges for g in e.link_faces if g is not f]
+        if nbrs and all(f.normal.dot(g.normal) < 0.0 for g in nbrs):
+            flipped += 1
+    bm.free()
+    return (f"specks: band_edges={band_edges} sharp_flagged={sharp_band} "
+            f"zero_area_faces={zero_area} flipped_faces={flipped}")
 
 
 def _style(space, wire):
@@ -134,7 +169,7 @@ def _run():
     )
     settings = bpy.context.scene.rigo_brace
     try:
-        bpy.ops.wm.stl_import(filepath=A_SCAN)
+        bpy.ops.wm.stl_import(filepath=B_SCAN if SCAN == "B" else A_SCAN)
         obj = bpy.context.active_object
         settings.scan_object = obj
         settings.scan_units = "mm"
@@ -234,6 +269,7 @@ def _run():
             f"faces={len(me.polygons)}"
         )
         _log(f"wall {_wall(me, weights)}")
+        _log(_speck_census(me, weights))
 
         for other in bpy.context.scene.objects:
             other.hide_set(other is not obj)

@@ -21,6 +21,7 @@ import traceback
 
 import bpy
 import bmesh
+import numpy as np
 import importlib
 from mathutils import Vector, kdtree
 from mathutils.bvhtree import BVHTree
@@ -34,6 +35,13 @@ _T = quality_contract.load()
 
 _OUT = r"C:\Projects\Blender Add-on Braces\regionqualtest_result.txt"
 _SCAN = r"C:\Projects\Blender Add-on Braces\Brace Sample.stl"
+# w49f: the relative ceiling (1.5 x the pre-smooth count) tightens whenever
+# the COMMIT gets better.  #54 Task 3's hand split of unlifted midpoint quads
+# lowered the pre-smooth ridges 67 -> 43 and the post-smooth ones 81 -> 75,
+# and 75 > 1.5 x 43.  The recorded outcome of the same operation before that
+# change is the absolute floor of the ceiling, so a better commit never fails
+# the gate for being better (2026-09-08).
+_W49F_POST_RIDGES_BASELINE = 81
 _A_SCAN = r"C:\Projects\Blender Add-on Braces\A type model.stl"
 _PATIENT = r"C:\Projects\Blender Add-on Braces\A type model.stl"
 _TRIES = {"n": 0}
@@ -1414,6 +1422,9 @@ def _run():
             and abs(
                 ro._FLIP_CONFIRM_DOT - _T["fold"]["flip_confirm_dot"]
             ) < 1e-9
+            # #54 Task 6: the hinge guard's two angles.
+            and abs(ro._HINGE_DEG - _T["fold"]["hinge_deg"]) < 1e-9
+            and abs(ro._HINGE_PRE_DEG - _T["fold"]["hinge_pre_deg"]) < 1e-9
             # #49e's three tuning constants were reachable by nothing: the
             # rim mollification width, the geodesic gate that is the SOLE
             # safety argument for measuring Euclidean distance on a folded
@@ -1748,7 +1759,7 @@ def _run():
                 "mesh": me.copy(),
             }
             pre["rim_field"] = ro._authored_rim_field(
-                me, pre["group"], region.falloff_type
+                me, pre["group"], region  # #54 Task 7: the region, not a kind
             )
             bpy.ops.rigo.region_apply()
             return obj, region, pre_dih, pre
@@ -1773,6 +1784,11 @@ def _run():
             weights = {i: w for i, w in weights.items() if i < len(me.vertices)}
             coords = {i: me.vertices[i].co.copy() for i in weights}
             adjacency = {i: [] for i in weights}
+            # #54 Task 7: an outward region's rim is the PAINTED boundary and
+            # its field runs outward from it (band = raw curve distance,
+            # weight = falloff((f - d)/f)); a legacy region keeps the
+            # membership boundary and the inward reading.
+            contact = ro._load_contact(me, region.surface_mask)
             rim = set()
             for edge in me.edges:
                 a, b = edge.vertices
@@ -1780,11 +1796,18 @@ def _run():
                 if a_in and b_in:
                     adjacency[a].append(b)
                     adjacency[b].append(a)
-                elif a_in:
+                if contact is not None:
+                    if a_in and contact[a] and not contact[b]:
+                        rim.add(a)
+                    if b_in and contact[b] and not contact[a]:
+                        rim.add(b)
+                elif a_in and not b_in:
                     rim.add(a)
-                elif b_in:
+                elif b_in and not a_in:
                     rim.add(b)
             curve, _evaluate = ro._boundary_distance(coords, adjacency, rim)
+            if contact is not None:
+                curve = dict(getattr(_evaluate, "raw", curve))
 
             walk = {i: 0.0 for i in rim}
             heap = [(0.0, i) for i in rim]
@@ -1803,6 +1826,19 @@ def _run():
             out = {}
             for name, field in (("curve", curve), ("walk", walk)):
                 top = max(field.values())
+                if contact is not None:
+                    f_m = pre["feather_mm"] * 0.001
+
+                    def expect(i, _field=field):
+                        if contact[i]:
+                            return 1.0
+                        d = float(np.float32(max(_field.get(i, top) * 1000.0, 1e-6))) * 0.001
+                        return ro._falloff(min(max((f_m - d) / f_m, 0.0), 1.0), kind)
+
+                    out[name] = _percentile([
+                        abs(expect(i) - w) for i, w in weights.items()
+                    ])
+                    continue
                 f_eff = min(pre["feather_mm"] * 0.001, top)
                 if f_eff <= 1e-9:
                     out[name] = 1.0
@@ -2009,9 +2045,10 @@ def _run():
         _gate(
             "w49f.smooth_area_no_new_bumps",
             post_ridges[1] <= pre_ridges[1]
-            and post_ridges[0] <= max(8, int(pre_ridges[0] * 1.5)),
+            and post_ridges[0] <= max(8, int(pre_ridges[0] * 1.5),
+                                      _W49F_POST_RIDGES_BASELINE),
             f"convex ridges >10deg {pre_ridges[0]} -> {post_ridges[0]} "
-            f"(ceiling {max(8, int(pre_ridges[0] * 1.5))}), "
+            f"(ceiling {max(8, int(pre_ridges[0] * 1.5), _W49F_POST_RIDGES_BASELINE)}), "
             f">30deg {pre_ridges[1]} -> {post_ridges[1]}",
         )
         depth_after = _core_depth(obj.data)

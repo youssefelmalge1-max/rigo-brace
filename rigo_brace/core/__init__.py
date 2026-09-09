@@ -307,6 +307,40 @@ def brace_stage_assist(stage_id):
     return ""
 
 
+REGION_FALLOFF_ITEMS = (
+    ("SMOOTH", "Smooth", "Smoothstep feather (recommended)"),
+    ("LINEAR", "Linear", "Straight-line feather"),
+    ("SHARP", "Sharp", "Narrow feather, hard edge"),
+    ("ROUNDED", "Rounded corners",
+     "Flat pad, straight wall and two corner radii you set in mm (#54)"),
+)
+
+
+def _on_region_amount_changed(self, _context):
+    """Live Amount (#54): the preview strength follows; a ROUNDED profile's
+    weights depend on the amount too, so the mask is re-evaluated as well."""
+    if not self.surface_mask:  # still being created by an operator
+        return
+    from ..operators import region_ops
+    region_ops.reevaluate_region(self.id_data, self)
+
+
+def _on_region_profile_changed(self, _context):
+    """Live Feather / Falloff: re-evaluate the mask from the stored outline
+    distance (#54).  No-op for committed regions and for regions without a
+    stored distance (imported styles, mirrors, legacy)."""
+    if not self.surface_mask:
+        return
+    from ..operators import region_ops
+    region_ops.reevaluate_region(self.id_data, self)
+
+
+def _on_region_index_changed(self, _context):
+    """The drawn outline follows the ACTIVE live region only (#54 Task 7)."""
+    from ..operators import region_ops
+    region_ops.sync_outline(self)
+
+
 class RigoCorrectionRegion(PropertyGroup):
     """One measurable pressure/expansion correction, stored ON the brace object.
 
@@ -345,20 +379,63 @@ class RigoCorrectionRegion(PropertyGroup):
         name="Amount (mm)",
         description="How far the surface moves at the region core",
         default=5.0, min=0.0, max=60.0, soft_max=25.0,
+        update=_on_region_amount_changed,
     )
     radius_mm: FloatProperty(
         name="Radius (mm)",
         description="Measured extent of the painted region (informational)",
         default=0.0, min=0.0,
     )
+    feather_mm: FloatProperty(
+        name="Feather (mm)",
+        description="Width of the soft edge from the painted outline to full "
+                    "effect; editable live until Commit (0 = older region "
+                    "without a stored outline distance)",
+        default=0.0, min=0.0, max=60.0, soft_max=30.0,
+        update=_on_region_profile_changed,
+    )
+    feather_outside: BoolProperty(
+        name="Feather Outside",
+        description="The painted outline is the full-depth pad and the "
+                    "feather is a band OUTSIDE it on the body (#54 Task 7); "
+                    "off for older regions, whose feather runs inward",
+        default=False,
+    )
+    depth_mm: FloatProperty(
+        name="Footprint Depth (mm)",
+        description="Largest surface distance from the painted outline "
+                    "(the feather is clamped to it)",
+        default=0.0, min=0.0,
+    )
+    edge_mm: FloatProperty(
+        name="Mesh Edge (mm)",
+        description="Mean triangle edge under the region when it was "
+                    "authored — sets how fine a corner this mesh can draw",
+        default=0.0, min=0.0,
+    )
+    commit_note: StringProperty(
+        name="Commit Note", default="",
+        description="What Commit could not draw as authored, if anything",
+    )
     falloff_type: EnumProperty(
         name="Falloff",
-        items=(
-            ("SMOOTH", "Smooth", "Smoothstep feather (recommended)"),
-            ("LINEAR", "Linear", "Straight-line feather"),
-            ("SHARP", "Sharp", "Narrow feather, hard edge"),
-        ),
+        items=REGION_FALLOFF_ITEMS,
         default="SMOOTH",
+        update=_on_region_profile_changed,
+    )
+    top_radius_mm: FloatProperty(
+        name="Top Corner (mm)",
+        description="Rounded corners only: radius where the flat pad rounds "
+                    "over into the wall",
+        default=4.0, min=0.0, max=60.0, soft_max=20.0,
+        update=_on_region_profile_changed,
+    )
+    bottom_radius_mm: FloatProperty(
+        name="Outline Corner (mm)",
+        description="Rounded corners only: radius where the wall meets the "
+                    "untouched body at the painted outline",
+        default=3.0, min=0.0, max=60.0, soft_max=20.0,
+        update=_on_region_profile_changed,
     )
     surface_mask: StringProperty(
         name="Mask",
@@ -518,12 +595,20 @@ class RigoBraceSettings(PropertyGroup):
     region_falloff: EnumProperty(
         name="Falloff",
         description="How the effect fades from the region core to its edge",
-        items=(
-            ("SMOOTH", "Smooth", "Smoothstep feather (recommended)"),
-            ("LINEAR", "Linear", "Straight-line feather"),
-            ("SHARP", "Sharp", "Narrow feather, hard edge"),
-        ),
+        items=REGION_FALLOFF_ITEMS,
         default="SMOOTH",
+    )
+    region_top_radius: FloatProperty(
+        name="Top Corner (mm)",
+        description="Rounded corners: radius where the flat pad rounds over "
+                    "into the wall (default for a new region)",
+        default=4.0, min=0.0, max=60.0, soft_max=20.0,
+    )
+    region_bottom_radius: FloatProperty(
+        name="Outline Corner (mm)",
+        description="Rounded corners: radius where the wall meets the body at "
+                    "the painted outline (default for a new region)",
+        default=3.0, min=0.0, max=60.0, soft_max=20.0,
     )
     region_style: EnumProperty(
         name="Saved Style",
@@ -1265,7 +1350,9 @@ def register():
     # Corrections travel WITH the mesh they correct (saved in the .blend,
     # duplicated with history versions) — hence Object, not Scene.
     bpy.types.Object.rigo_regions = CollectionProperty(type=RigoCorrectionRegion)
-    bpy.types.Object.rigo_region_index = IntProperty(default=0)
+    bpy.types.Object.rigo_region_index = IntProperty(
+        default=0, update=_on_region_index_changed
+    )
 
 
 def unregister():

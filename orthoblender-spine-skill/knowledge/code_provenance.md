@@ -329,3 +329,49 @@ Copied|modified|rewritten|learned-from-only: modified in place; old bodies kept 
 Reason: 61% of commit time was one mesh-wide bmesh op called per collapse; the rest whole-mesh Python loops.
 Changes: see DEC-0062. Compatibility risk: purge order semantics (documented). Clinical risk: none.
 Test added: the four probes above; selftest op_subdivide_scan.
+
+## PROV-0018 — 2026-09-08 — #54 Task 1: stored outline distance + live feather/falloff
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: rigo_brace/core/__init__.py (feather_mm, update callbacks), rigo_brace/operators/region_ops.py (_store/_load/_drop_distance, _falloff_np, _weights_from_distance, _refresh_snapshot_weights, reevaluate_region, sync_preview; Add/circle/Update/Apply/Remove wiring), rigo_brace/ui/panels.py (active-region Feather/Falloff rows), tools/feathertest.py (new test), knowledge/transition_authoring_plan.md (task specs), knowledge/correction_region_model.md (data-model table).
+License/copyright: existing project terms; numpy is bundled with Blender; no external code copied.
+Permission basis: orthotist approval of the DEC-0064 plan, 2026-09-08.
+Copied|modified|rewritten|learned-from-only: modified in place.
+Reason: the transition profile was baked into vertex-group weights at Add time; only Amount was live (DEC-0064, proposition E).
+Changes: see DEC-0065. Compatibility risk: saved .blends without the attribute behave as before (feather via Edit Selection -> Update). Clinical risk: none — weights are bit-for-bit the same formula.
+Test added: tools/feathertest.py (11 gates); regression battery recorded in DEC-0065.
+
+## PROV-0019 — 2026-09-08 — #54 Task 2: ROUNDED profile (fillet ramp)
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: rigo_brace/core/__init__.py (REGION_FALLOFF_ITEMS, top/bottom radius, depth_mm, scene defaults), rigo_brace/operators/region_ops.py (_rounded_profile, _region_profile, profile_readout, _weights_from_distance profile argument, _authored_rim_field region argument, style/mirror wiring), rigo_brace/ui/panels.py (radius sliders + readout), tools/profiletest.py (new), tools/targetsurfdbg.py (round_<top>_<bottom> arm).
+License/copyright: existing project terms; the fillet-ramp construction is elementary geometry written here; no external code.
+Permission basis: orthotist approval of the DEC-0064 plan, 2026-09-08.
+Copied|modified|rewritten|learned-from-only: new code + modified in place.
+Reason: DEC-0064 — the authored profile's corner sharpness was not controllable.
+Changes: see DEC-0066. Compatibility risk: none for classic kinds (regression identical); library entries gain three optional fields. Clinical risk: none — geometry only, labelled in mm, review flag untouched.
+Test added: tools/profiletest.py (7 gates).
+
+## PROV-0020 — 2026-09-08 — #54 Task 3: corner-aware sampling, deterministic n-gon split, corner readout and commit note
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: rigo_brace/operators/region_ops.py (_CORNER_TURN / _CORNER_EDGE_FLOOR_M / _CORNER_SKIP_TURN, _corner_edge_floor, _drawable_corner_mm, transition_readout, field.distance / corner_radius / min_corner_radius on _authored_rim_field, corner_requirement in _refine_footprint, _split_refined_ngons, commit note in region_apply, edge_mm at Add/circle/Update), rigo_brace/core/__init__.py (edge_mm, commit_note), rigo_brace/ui/panels.py (readout for every kind, commit note), tools/cornertest.py (new test), tools/cornerdbg.py + tools/cornerdbg2.py (probes), tools/targetsurfdbg.py (round_ arm).
+License/copyright: existing project terms; the 1→2/1→3/1→4 split patterns are textbook; no external code.
+Permission basis: orthotist approval of the DEC-0064 plan, 2026-09-08.
+Copied|modified|rewritten|learned-from-only: new code + modified in place.
+Reason: DEC-0064 — the slope-only refinement criterion is blind to corner turning.
+Changes: see DEC-0067 / ERR-0038. Compatibility risk: refinement topology changes for every refined commit (deterministic split instead of beauty); golden route measured in DEC-0067. Clinical risk: none — geometry only; the note never blocks a commit.
+Test added: tools/cornertest.py (8 gates).
+
+## PROV-0021 — 2026-09-08 — #54 Task 6: hinge guard
+Source project: user-owned Rigo Brace Designer repository.
+Path/source files: rigo_brace/operators/region_ops.py (_HINGE_DEG / _HINGE_PRE_DEG / _HINGE_MIN_HEIGHT_M, _folded_pairs hinge branch, _face_height), orthoblender-spine-skill/knowledge/region_quality_contract.md (fold.hinge_deg / hinge_pre_deg + prose), tools/regionqualtest.py (contract_constants gate), tools/hingetest.py (new test), tools/cornerdbg.py / cornerdbg2.py / ngondbg.py (probes, diagnostic only).
+License/copyright: existing project terms; no external code.
+Permission basis: orthotist approval of the DEC-0064 plan, 2026-09-08 (Task 6).
+Copied|modified|rewritten|learned-from-only: modified in place.
+Reason: validators accepted 123° and 150.9° fold-backs (DEC-0064 / DEC-0067).
+Changes: see DEC-0069. Compatibility risk: commits that previously shipped a hinge now repair or refuse it; classic routes unchanged (golden identical). Clinical risk: none — the guard only refuses geometry that folds back on itself.
+Test added: tools/hingetest.py (2 gates); hingetest joins the battery.
+
+## PROV-0022 — 2026-09-08 — tools/featherdbg.py (probe only; no add-on code changed for DEC-0070)
+Source project: user-owned Rigo Brace Designer repository. New file tools/featherdbg.py: inward-feather plateau share, A·w realized depth, outward-band recruit count, preview/commit dihedrals binned by rim/wall/core. License: project terms, no external code. Permission basis: the orthotist's request 2026-09-08 to debate the feather semantics with Codex. Copied|modified|rewritten|learned-from-only: new, patterned on tools/hingetest.py. Compatibility risk: none (probe). Codex's caveat recorded: arms move the patch between feathers and keep earlier commits; "realized depth" is A·median(w), not measured displacement.
+
+## PROV-0023 — 2026-09-09 — #54 Task 7: outward feather (production code + tests)
+Source project: user-owned Rigo Brace Designer repository. Files: rigo_brace/core/__init__.py (feather_outside, region-index update callback), rigo_brace/operators/region_ops.py (contact/signed-distance storage, _band_weights/_band_members/_stored_band_mm, _outward_distance, _mesh_neighbours, _outward_fields_from_contact, _adopt_outward, _reevaluate_outward, _mark_refined_nonmember, _outward_rim_field, sync_outline/_outline_geometry/_boundary_edge_pairs/_region_member_flags, operator edits in region_add/edit/update/apply/style_save/style_import/mirror/remove), rigo_brace/ui/panels.py (label). Tests: tools/featherlifecycletest.py (file content authored by Codex gpt-6-astra round A from Claude's interface contract; harness fixes, overlap semantics and 10 mm overlap fixture by Claude), tools/makelegacyfixture.py (bakes the gitignored legacy_inward_region.blend with the pre-Task-7 add-on), tools/task7_uishot.py (UI screenshots), tools/hingedbg.py (ladder trace), tools/featherdbg.py (DEC-0070 measurements); tools/feathertest.py, profiletest.py, cornertest.py gates updated to the outward contract (DEC-0071). License/copyright: project terms; no external code. Permission basis: the orthotist's written instruction 2026-09-09 ("Proceed with Task 7 ... delegate it to codex Astra") and his test of the installed build. Copied|modified|rewritten|learned-from-only: modified in place; new helpers. Compatibility risk: newly painted regions change semantics (pad = paint, feather outside); stored regions, circle regions, styles saved before Task 7 and the golden route are unchanged by construction and by test. Clinical risk: the band moves surface OUTSIDE the paint — that is the orthotist's stated intent and it is drawn as the outer outline.

@@ -32,7 +32,8 @@ editing the test.
   "wall": {"clearance_mm": 3.0, "cross_sheet_new": 0},
   "fold": {"dot": -0.95, "pre_dot": -0.5, "flip_confirm_dot": 0.0,
            "new_folds": 0,
-           "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0},
+           "oracle_post_deg": 160.0, "oracle_pre_deg": 120.0,
+           "hinge_deg": 100.0, "hinge_pre_deg": 60.0},
   "rim": {"smooth_passes": 6, "gate_steps": 3, "field_tolerance": 0.01},
   "style": {"field_tolerance": 0.05},
   "golden": {"commit_wall_p95_max": 22.0, "commit_wall_max_deg": 45.0,
@@ -76,6 +77,13 @@ dihedral p95 23.0° interpolated vs 16.9° sampled, edges over 30° 35 vs 10).
 The reconstruction is self-validating — compared against the stored weights
 and rejected unless it agrees to 0.01 — so library/style and legacy regions
 keep the interpolation path and no saved correction is silently re-authored.
+
+**A hinge is a fold too (#54 Task 6).** The fold-over test (`fold.dot`) fires only
+past 162°. Two neighbouring footprint faces that were smoother than `hinge_pre_deg`
+(60°) before the commit and turn past `hinge_deg` (100°) after it are a fold the
+commit made: a repair target and, if the repair cannot undo it, a refusal — never a
+shipped surface (measured shipped hinges before the guard: 123° and 150.9°). Legitimate
+steep walls measured ≤ ~70° per edge.
 
 **Inversion is a question about the SURFACE, not about one triangle (#49e).**
 `normal · pre_normal ≤ 0` conflates two different events: the surface folding
