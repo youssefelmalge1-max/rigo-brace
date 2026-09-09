@@ -266,4 +266,7 @@ cornertest re-baselined for the outward corner, feathertest/profiletest
 definition gates on the outward contract; UI screenshots in
 tools/task7_uishot.py. Open: ERR-0040 (interpolation-path fold escape),
 rim-adjacent refined-vertex side rule, Design-stage hide of the outline,
-circle regions still inward, Codex round C review.
+circle regions still inward. Codex round C reviewed (DEC-0072): four defects
+fixed, two proposals measured worse and reverted, ERR-0043 disclosed in the
+commit note; open: needle-aware directions, band at open scan edges, slider
+latency of the outline rebuild, overlap beyond the 10 mm fixture.
