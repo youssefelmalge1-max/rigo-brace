@@ -13,6 +13,15 @@
 - [Autodesk Fusion: Fillet Reference](https://help.autodesk.com/view/fusion360/ENU/?contextId=SLD-REF-FILLET)
   Official definition of constant versus variable radius and Tangent (G1) versus Curvature (G2) continuity. Use as the target vocabulary for “Fusion-style fillet.”
 
+## Clinical literature
+
+Cited, not redistributed. These are the sources the correction semantics are built on.
+
+- Rigo MD, Villagrasa M, Gallo D. *A specific scoliosis classification correlating with
+  brace treatment: description and reliability.* Scoliosis 2010;5:1.
+  [doi:10.1186/1748-7161-5-1](https://doi.org/10.1186/1748-7161-5-1) — open access (CC-BY).
+  Defines the five curve types the correction rules key off.
+
 ## Wisdom (Communities)
 
 - [Blender Development Forum](https://devtalk.blender.org/)

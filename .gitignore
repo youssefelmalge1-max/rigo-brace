@@ -35,3 +35,13 @@ tmp/
 # Blender working files
 *.blend1
 *.blend2
+
+# Third-party copyrighted literature. Cite papers by DOI in RESOURCES.md; never
+# redistribute the PDF — journal articles are not ours to publish under GPL.
+*.pdf
+
+# Screen recordings and captures: they show real torso scans, so they are patient
+# data by the same rule as *.stl (CONTRIBUTING.md, clinical_safety_protocol.md).
+*.mp4
+*.mov
+*.mkv
